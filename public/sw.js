@@ -1,5 +1,5 @@
-// v3: /api/ ルートをキャッシュ対象から除外・キャッシュ名更新
-const CACHE_NAME = 'nobushop-v3';
+// v4: 全キャッシュ再構築・接続エラー修正対応
+const CACHE_NAME = 'nobushop-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

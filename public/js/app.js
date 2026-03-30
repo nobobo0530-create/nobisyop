@@ -257,28 +257,36 @@ const initSupabase = (url, key) => {
 
 // Supabase から全データ取得
 const fetchSupabaseData = async () => {
-  if (!_sb) throw new Error('Supabase client is null – initSupabase() was not called');
-  // テーブル未作成を示すエラーか判定
-  const isTableMissing = (e) => e && (
-    e.code === '42P01' ||
-    e.code === 'PGRST116' ||
-    (typeof e.message === 'string' && (
-      e.message.includes('does not exist') ||
-      e.message.includes('relation')
-    ))
-  );
+  if (!_sb) throw new Error('Supabase client not initialized');
+
+  // ── Step1: inventory から1件だけ取得して接続確認 ──────────
+  const testRes = await _sb.from('inventory').select('id').limit(1);
+  const testErr = testRes.error;
+  console.log('[Supabase] connection test → status:', testRes.status,
+    '| error:', testErr ? (testErr.code + ' ' + testErr.message) : 'none');
+
+  if (testErr) {
+    const code = testErr.code || '';
+    const msg  = testErr.message || '';
+    // テーブル未作成
+    if (code === '42P01' || msg.includes('does not exist') || msg.includes('relation')) {
+      console.warn('[Supabase] テーブル未作成');
+      return { _noTables: true, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
+    }
+    // それ以外（権限エラー・ネットワーク等）→ エラー詳細を持ち帰る
+    console.error('[Supabase] 接続エラー:', code, msg);
+    return { _connError: `[${code || 'ERR'}] ${msg}`, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
+  }
+
+  // ── Step2: 接続成功 → 全データ取得（エラーは非致命的に処理）──
   const [invRes, salesRes, cfgRes] = await Promise.all([
     _sb.from('inventory').select('id,data,created_at').order('created_at', {ascending: true}),
     _sb.from('sales').select('id,data,created_at').order('created_at', {ascending: true}),
     _sb.from('app_settings').select('data').eq('id', 'default').maybeSingle(),
   ]);
-  console.log('[Supabase] inv err:', invRes.error, '| sales err:', salesRes.error);
-  if (isTableMissing(invRes.error) || isTableMissing(salesRes.error)) {
-    console.warn('[Supabase] テーブルが存在しません。SQLを実行してください。');
-    return { _noTables: true, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
-  }
-  if (invRes.error)  throw invRes.error;
-  if (salesRes.error) throw salesRes.error;
+  if (invRes.error)  console.warn('[Supabase] inventory fetch warn:', invRes.error.code, invRes.error.message);
+  if (salesRes.error) console.warn('[Supabase] sales fetch warn:', salesRes.error.code, salesRes.error.message);
+
   return {
     inventory: (invRes.data  || []).map(r => ({...r.data,  id: r.id})),
     sales:     (salesRes.data || []).map(r => ({...r.data, id: r.id})),
@@ -2159,7 +2167,7 @@ const SalesTab = () => {
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
-  const { data, setData, dbStatus } = React.useContext(AppContext);
+  const { data, setData, dbStatus, dbError } = React.useContext(AppContext);
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
@@ -2558,6 +2566,11 @@ const OtherTab = () => {
                  dbStatus==='error' ? '❌ 接続エラー' :
                  dbStatus==='offline' ? '📴 オフライン（env未設定）' : '⏳ 初期化中'}
               </div>
+              {dbError ? (
+                <div style={{marginTop:8,fontSize:11,background:'#1e1e1e',color:'#fca5a5',borderRadius:8,padding:'8px 10px',fontFamily:'monospace',wordBreak:'break-all'}}>
+                  {dbError}
+                </div>
+              ) : null}
             </div>
 
             <div className="card" style={{padding:16,marginBottom:12}}>
@@ -2566,40 +2579,54 @@ const OtherTab = () => {
                 Supabase → SQL Editor で以下を実行してください
               </div>
               <div style={{background:'#1e1e1e',color:'#e2e8f0',borderRadius:10,padding:12,fontSize:11,fontFamily:'monospace',lineHeight:1.6,overflowX:'auto',whiteSpace:'pre'}}>
-{`CREATE TABLE IF NOT EXISTS inventory (
+{`-- テーブル作成
+CREATE TABLE IF NOT EXISTS inventory (
   id TEXT PRIMARY KEY,
   data JSONB NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 CREATE TABLE IF NOT EXISTS sales (
   id TEXT PRIMARY KEY,
   data JSONB NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 CREATE TABLE IF NOT EXISTS app_settings (
   id TEXT PRIMARY KEY,
   data JSONB NOT NULL
 );
 
+-- RLS有効化
 ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "allow_all_inventory" ON inventory
-  FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_sales" ON sales
-  FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "allow_all_settings" ON app_settings
-  FOR ALL USING (true) WITH CHECK (true);`}
+-- ポリシー（既存なら無視）
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='inventory' AND policyname='allow_all_inventory') THEN
+    CREATE POLICY "allow_all_inventory" ON inventory FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sales' AND policyname='allow_all_sales') THEN
+    CREATE POLICY "allow_all_sales" ON sales FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_settings' AND policyname='allow_all_settings') THEN
+    CREATE POLICY "allow_all_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+END $$;
+
+-- anon ロールへの権限付与（重要）
+GRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON sales TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON sales TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`}
               </div>
               <button className="btn-secondary" style={{width:'100%',marginTop:10}}
                 onClick={() => {
-                  const sql = `CREATE TABLE IF NOT EXISTS inventory (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS sales (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS app_settings (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL\n);\n\nALTER TABLE inventory ENABLE ROW LEVEL SECURITY;\nALTER TABLE sales ENABLE ROW LEVEL SECURITY;\nALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY "allow_all_inventory" ON inventory\n  FOR ALL USING (true) WITH CHECK (true);\nCREATE POLICY "allow_all_sales" ON sales\n  FOR ALL USING (true) WITH CHECK (true);\nCREATE POLICY "allow_all_settings" ON app_settings\n  FOR ALL USING (true) WITH CHECK (true);`;
+                  const sql = `-- テーブル作成\nCREATE TABLE IF NOT EXISTS inventory (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE TABLE IF NOT EXISTS sales (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE TABLE IF NOT EXISTS app_settings (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL\n);\n\n-- RLS有効化\nALTER TABLE inventory ENABLE ROW LEVEL SECURITY;\nALTER TABLE sales ENABLE ROW LEVEL SECURITY;\nALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;\n\n-- ポリシー\nDO $$ BEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='inventory' AND policyname='allow_all_inventory') THEN\n    CREATE POLICY "allow_all_inventory" ON inventory FOR ALL USING (true) WITH CHECK (true);\n  END IF;\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sales' AND policyname='allow_all_sales') THEN\n    CREATE POLICY "allow_all_sales" ON sales FOR ALL USING (true) WITH CHECK (true);\n  END IF;\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_settings' AND policyname='allow_all_settings') THEN\n    CREATE POLICY "allow_all_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);\n  END IF;\nEND $$;\n\n-- anon ロールへの権限付与（重要）\nGRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON sales TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON sales TO authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`;
                   navigator.clipboard.writeText(sql).then(() => alert('✅ SQLをコピーしました！\nSupabase → SQL Editor に貼り付けて実行してください'));
                 }}>
-                📋 SQLをコピー
+                📋 SQLをコピー（既存テーブルに適用可）
               </button>
             </div>
 
@@ -2627,8 +2654,9 @@ const App = () => {
   const [data, setDataRaw]       = React.useState(loadData);   // ローカルキャッシュで即表示
   const [tab, setTab]            = React.useState('home');
   const [editingItem, setEditingItem] = React.useState(null);
-  // 'init'=起動中 | 'ok'=DB接続済 | 'migrated'=移行完了 | 'offline'=設定なし | 'error'=接続失敗
+  // 'init'=起動中 | 'ok'=DB接続済 | 'migrated'=移行完了 | 'offline'=設定なし | 'error'=接続失敗 | 'setup'=テーブル未作成
   const [dbStatus, setDbStatus]  = React.useState('init');
+  const [dbError,  setDbError]   = React.useState(''); // エラー詳細メッセージ
   const dataRef = React.useRef(data); // 差分計算用（最新値を保持）
 
   // setData: ローカル + localStorage + Supabase に同期
@@ -2654,8 +2682,14 @@ const App = () => {
         initSupabase(cfg.supabaseUrl, cfg.supabaseKey);
         const cloudData = await fetchSupabaseData();
 
-        // テーブル未作成の場合 → setupステータスでSQL案内
+        // テーブル未作成
         if (cloudData?._noTables) { setDbStatus('setup'); return; }
+        // 接続エラー詳細あり
+        if (cloudData?._connError) {
+          setDbError(cloudData._connError);
+          setDbStatus('error');
+          return;
+        }
         if (!cloudData) { setDbStatus('error'); return; }
 
         const localData = dataRef.current;
@@ -2674,7 +2708,9 @@ const App = () => {
           setDbStatus('ok');
         }
       } catch(e) {
-        console.error('[App] DB init error:', e.message || e);
+        const msg = e?.message || String(e);
+        console.error('[App] DB init error:', msg);
+        setDbError(msg);
         setDbStatus('error');
       }
     })();
@@ -2737,7 +2773,7 @@ const App = () => {
   const showApiWarning = !data.settings?.apiKey && tab !== 'other';
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
@@ -2757,8 +2793,9 @@ const App = () => {
           )}
           {dbStatus === 'error' && (
             <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#dc2626',color:'white',
-                         textAlign:'center',padding:'6px 16px',fontSize:12}}>
-              ⚠️ DB接続エラー。ローカル保存で動作中（データは端末のみ）
+                         textAlign:'center',padding:'6px 16px',fontSize:11,cursor:'pointer'}}
+                 onClick={() => setTab('other')}>
+              ⚠️ DB接続エラー（ローカル保存中）{dbError ? ` → ${dbError.slice(0,60)}` : ''} → DBタブを確認
             </div>
           )}
           {dbStatus === 'setup' && (
