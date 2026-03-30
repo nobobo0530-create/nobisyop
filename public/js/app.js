@@ -249,32 +249,42 @@ const saveData = (data) => {
 let _sb = null; // Supabase クライアント（初期化後にセット）
 
 const initSupabase = (url, key) => {
-  if (window.supabase && url && key) {
-    _sb = window.supabase.createClient(url, key);
-  }
+  if (!window.supabase) throw new Error('Supabase JS library not loaded (window.supabase undefined)');
+  if (!url || !key) throw new Error('Supabase URL or key is empty');
+  _sb = window.supabase.createClient(url, key);
+  console.log('[Supabase] client initialized, url:', url.slice(0, 40));
 };
 
 // Supabase から全データ取得
 const fetchSupabaseData = async () => {
-  if (!_sb) return null;
-  try {
-    const [invRes, salesRes, cfgRes] = await Promise.all([
-      _sb.from('inventory').select('id,data,created_at').order('created_at', {ascending: true}),
-      _sb.from('sales').select('id,data,created_at').order('created_at', {ascending: true}),
-      _sb.from('app_settings').select('data').eq('id', 'default').maybeSingle(),
-    ]);
-    if (invRes.error)  throw invRes.error;
-    if (salesRes.error) throw salesRes.error;
-    return {
-      inventory: (invRes.data  || []).map(r => ({...r.data,  id: r.id})),
-      sales:     (salesRes.data || []).map(r => ({...r.data, id: r.id})),
-      settings:  cfgRes.data?.data || getInitialData().settings,
-      receipts:  [],
-    };
-  } catch(e) {
-    console.error('[Supabase] fetchSupabaseData:', e);
-    return null;
+  if (!_sb) throw new Error('Supabase client is null – initSupabase() was not called');
+  // テーブル未作成を示すエラーか判定
+  const isTableMissing = (e) => e && (
+    e.code === '42P01' ||
+    e.code === 'PGRST116' ||
+    (typeof e.message === 'string' && (
+      e.message.includes('does not exist') ||
+      e.message.includes('relation')
+    ))
+  );
+  const [invRes, salesRes, cfgRes] = await Promise.all([
+    _sb.from('inventory').select('id,data,created_at').order('created_at', {ascending: true}),
+    _sb.from('sales').select('id,data,created_at').order('created_at', {ascending: true}),
+    _sb.from('app_settings').select('data').eq('id', 'default').maybeSingle(),
+  ]);
+  console.log('[Supabase] inv err:', invRes.error, '| sales err:', salesRes.error);
+  if (isTableMissing(invRes.error) || isTableMissing(salesRes.error)) {
+    console.warn('[Supabase] テーブルが存在しません。SQLを実行してください。');
+    return { _noTables: true, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
   }
+  if (invRes.error)  throw invRes.error;
+  if (salesRes.error) throw salesRes.error;
+  return {
+    inventory: (invRes.data  || []).map(r => ({...r.data,  id: r.id})),
+    sales:     (salesRes.data || []).map(r => ({...r.data, id: r.id})),
+    settings:  cfgRes.data?.data || getInitialData().settings,
+    receipts:  [],
+  };
 };
 
 // ローカルデータを Supabase に一括移行
@@ -2149,7 +2159,7 @@ const SalesTab = () => {
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
-  const { data, setData } = React.useContext(AppContext);
+  const { data, setData, dbStatus } = React.useContext(AppContext);
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
@@ -2330,6 +2340,7 @@ const OtherTab = () => {
     { id: 'receipts', label: 'レシート', icon: '🧾' },
     { id: 'export', label: 'エクスポート', icon: '📊' },
     { id: 'settings', label: '設定', icon: '⚙️' },
+    { id: 'db', label: 'DB', icon: '🗄️' },
   ];
 
   return (
@@ -2531,6 +2542,79 @@ const OtherTab = () => {
             </button>
           </div>
         )}
+
+        {/* DB設定 */}
+        {activeSection === 'db' && (
+          <div>
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>☁️ DB接続状態</div>
+              <div style={{fontSize:13,padding:'8px 12px',borderRadius:8,
+                background: dbStatus==='ok'||dbStatus==='migrated' ? '#d1fae5' : dbStatus==='setup' ? '#ede9fe' : dbStatus==='error' ? '#fee2e2' : '#f3f4f6',
+                color: dbStatus==='ok'||dbStatus==='migrated' ? '#065f46' : dbStatus==='setup' ? '#5b21b6' : dbStatus==='error' ? '#991b1b' : '#6b7280',
+                fontWeight:600}}>
+                {dbStatus==='ok' ? '✅ Supabase接続済み' :
+                 dbStatus==='migrated' ? '✅ クラウド移行完了' :
+                 dbStatus==='setup' ? '🔧 テーブル未作成' :
+                 dbStatus==='error' ? '❌ 接続エラー' :
+                 dbStatus==='offline' ? '📴 オフライン（env未設定）' : '⏳ 初期化中'}
+              </div>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🗄️ Supabaseテーブル作成SQL</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                Supabase → SQL Editor で以下を実行してください
+              </div>
+              <div style={{background:'#1e1e1e',color:'#e2e8f0',borderRadius:10,padding:12,fontSize:11,fontFamily:'monospace',lineHeight:1.6,overflowX:'auto',whiteSpace:'pre'}}>
+{`CREATE TABLE IF NOT EXISTS inventory (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS sales (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL
+);
+
+ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "allow_all_inventory" ON inventory
+  FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_sales" ON sales
+  FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "allow_all_settings" ON app_settings
+  FOR ALL USING (true) WITH CHECK (true);`}
+              </div>
+              <button className="btn-secondary" style={{width:'100%',marginTop:10}}
+                onClick={() => {
+                  const sql = `CREATE TABLE IF NOT EXISTS inventory (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS sales (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\n\nCREATE TABLE IF NOT EXISTS app_settings (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL\n);\n\nALTER TABLE inventory ENABLE ROW LEVEL SECURITY;\nALTER TABLE sales ENABLE ROW LEVEL SECURITY;\nALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;\n\nCREATE POLICY "allow_all_inventory" ON inventory\n  FOR ALL USING (true) WITH CHECK (true);\nCREATE POLICY "allow_all_sales" ON sales\n  FOR ALL USING (true) WITH CHECK (true);\nCREATE POLICY "allow_all_settings" ON app_settings\n  FOR ALL USING (true) WITH CHECK (true);`;
+                  navigator.clipboard.writeText(sql).then(() => alert('✅ SQLをコピーしました！\nSupabase → SQL Editor に貼り付けて実行してください'));
+                }}>
+                📋 SQLをコピー
+              </button>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>🔄 DB再接続</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                SQLを実行後、再接続ボタンを押してください
+              </div>
+              <button className="btn-primary" style={{width:'100%'}}
+                onClick={() => window.location.reload()}>
+                🔄 アプリを再読み込み
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2560,13 +2644,18 @@ const App = () => {
   React.useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/config');
-        if (!res.ok) { setDbStatus('offline'); return; }
+        // cache:'no-store' でSW・ブラウザキャッシュを完全バイパス
+        const res = await fetch('/api/config', { cache: 'no-store' });
+        if (!res.ok) { console.error('[App] /api/config status:', res.status); setDbStatus('offline'); return; }
         const cfg = await res.json();
+        console.log('[App] config ok – url_len:', cfg.supabaseUrl?.length, 'key_len:', cfg.supabaseKey?.length);
         if (!cfg.supabaseUrl || !cfg.supabaseKey) { setDbStatus('offline'); return; }
 
         initSupabase(cfg.supabaseUrl, cfg.supabaseKey);
         const cloudData = await fetchSupabaseData();
+
+        // テーブル未作成の場合 → setupステータスでSQL案内
+        if (cloudData?._noTables) { setDbStatus('setup'); return; }
         if (!cloudData) { setDbStatus('error'); return; }
 
         const localData = dataRef.current;
@@ -2585,7 +2674,7 @@ const App = () => {
           setDbStatus('ok');
         }
       } catch(e) {
-        console.error('[App] DB init error:', e);
+        console.error('[App] DB init error:', e.message || e);
         setDbStatus('error');
       }
     })();
@@ -2670,6 +2759,13 @@ const App = () => {
             <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#dc2626',color:'white',
                          textAlign:'center',padding:'6px 16px',fontSize:12}}>
               ⚠️ DB接続エラー。ローカル保存で動作中（データは端末のみ）
+            </div>
+          )}
+          {dbStatus === 'setup' && (
+            <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#7c3aed',color:'white',
+                         textAlign:'center',padding:'6px 16px',fontSize:12,cursor:'pointer'}}
+                 onClick={() => { setTab('other'); }}>
+              🔧 テーブル未作成 → その他 → DBタブでSQLを実行してください
             </div>
           )}
           {dbStatus === 'offline' && (
