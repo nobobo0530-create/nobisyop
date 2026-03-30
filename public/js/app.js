@@ -244,126 +244,78 @@ const saveData = (data) => {
 };
 
 // ============================================================
-// Supabase REST API（SDK不要・raw fetch直接実装）
-// Safari "Load failed" / CORS問題を回避するためSDKを廃止
+// Supabase クラウドDB（SDK使用）
 // ============================================================
-let _sbUrl = null;
-let _sbKey = null;
+let _sb = null;
 
 const initSupabase = (url, key) => {
-  if (!url || !key) throw new Error('Supabase URL or key is empty');
-  _sbUrl = url.replace(/\/$/, ''); // 末尾スラッシュ除去
-  _sbKey = key;
-  console.log('[Supabase] initialized (raw fetch mode), url:', _sbUrl.slice(0, 50));
-};
-
-// REST API 共通ヘッダー
-const _sbHeaders = (extra = {}) => ({
-  'apikey': _sbKey,
-  'Authorization': `Bearer ${_sbKey}`,
-  'Content-Type': 'application/json',
-  'Accept': 'application/json',
-  ...extra,
-});
-
-// GET: 複数行
-const _sbGet = async (table, query = '') => {
-  const url = `${_sbUrl}/rest/v1/${table}${query ? '?' + query : ''}`;
-  console.log('[Supabase] GET', url.replace(_sbUrl, ''));
-  const resp = await fetch(url, { method: 'GET', headers: _sbHeaders(), cache: 'no-store' });
-  const text = await resp.text();
-  if (!resp.ok) throw new Error(`[${resp.status}] ${text.slice(0, 200)}`);
-  return JSON.parse(text);
-};
-
-// GET: 単一行（存在しない場合は null）
-const _sbGetOne = async (table, query = '') => {
-  const url = `${_sbUrl}/rest/v1/${table}${query ? '?' + query : ''}`;
-  const resp = await fetch(url, {
-    method: 'GET',
-    headers: _sbHeaders({ 'Accept': 'application/vnd.pgrst.object+json' }),
-    cache: 'no-store',
+  if (!window.supabase) throw new Error('window.supabase not loaded');
+  if (!url || !key) throw new Error('URL or key is empty');
+  // auth・realtime の自動起動を最小化してiOS互換性を高める
+  _sb = window.supabase.createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      fetch: (...args) => fetch(...args),
+    },
   });
-  if (resp.status === 406 || resp.status === 404 || resp.status === 204) return null;
-  const text = await resp.text();
-  if (!resp.ok) return null; // 設定取得失敗は非致命的
-  try { return JSON.parse(text); } catch { return null; }
-};
-
-// POST: Upsert（insert or update）
-const _sbUpsert = async (table, rows) => {
-  if (!rows || rows.length === 0) return;
-  const resp = await fetch(`${_sbUrl}/rest/v1/${table}`, {
-    method: 'POST',
-    headers: _sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
-    body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
-    cache: 'no-store',
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`upsert ${table} [${resp.status}] ${text.slice(0, 200)}`);
-  }
-};
-
-// DELETE: id の IN リスト
-const _sbDelete = async (table, ids) => {
-  if (!ids || ids.length === 0) return;
-  const inList = ids.map(id => `"${id}"`).join(',');
-  const resp = await fetch(`${_sbUrl}/rest/v1/${table}?id=in.(${inList})`, {
-    method: 'DELETE',
-    headers: _sbHeaders({ 'Prefer': 'return=minimal' }),
-    cache: 'no-store',
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`delete ${table} [${resp.status}] ${text.slice(0, 200)}`);
-  }
+  console.log('[Supabase] SDK client initialized, url:', url.slice(0, 50));
 };
 
 // Supabase から全データ取得
 const fetchSupabaseData = async () => {
-  if (!_sbUrl || !_sbKey) throw new Error('Supabase not initialized');
+  if (!_sb) throw new Error('Supabase client not initialized');
 
-  // ── Step1: inventory から1件取得して接続確認 ──────────────
-  let invData;
-  try {
-    invData = await _sbGet('inventory', 'select=id,data,created_at&order=created_at.asc');
-  } catch(e) {
-    const msg = e.message || String(e);
-    console.error('[Supabase] inventory fetch failed:', msg);
-    // テーブル未作成 (42P01 / does not exist)
-    if (msg.includes('42P01') || msg.includes('does not exist') || msg.includes('relation')) {
+  // Step1: inventory から1件取得して接続を確認
+  const testRes = await _sb.from('inventory').select('id').limit(1);
+  const testErr = testRes.error;
+  console.log('[Supabase] test fetch → status:', testRes.status,
+    '| error:', testErr ? `${testErr.code} ${testErr.message}` : 'none');
+
+  if (testErr) {
+    const code = testErr.code || '';
+    const msg  = testErr.message || '';
+    // テーブル未作成
+    if (code === '42P01' || msg.includes('does not exist') || msg.includes('relation')) {
+      console.warn('[Supabase] テーブル未作成');
       return { _noTables: true, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
     }
-    // その他エラー（CORS・権限・ネットワーク）
-    return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
+    // その他エラー（権限・ネットワーク等）→ 詳細を返す
+    console.error('[Supabase] 接続エラー:', code, msg);
+    return { _connError: `[${code || 'ERR'}] ${msg}`, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
   }
 
-  // ── Step2: 接続成功 → sales / settings も取得 ──────────
-  const [salesData, cfgRow] = await Promise.all([
-    _sbGet('sales', 'select=id,data,created_at&order=created_at.asc').catch(e => { console.warn('[Supabase] sales:', e.message); return []; }),
-    _sbGetOne('app_settings', 'select=data&id=eq.default').catch(() => null),
+  // Step2: 接続成功 → 全テーブル取得
+  const [invRes, salesRes, cfgRes] = await Promise.all([
+    _sb.from('inventory').select('id,data,created_at').order('created_at', { ascending: true }),
+    _sb.from('sales').select('id,data,created_at').order('created_at', { ascending: true }),
+    _sb.from('app_settings').select('data').eq('id', 'default').maybeSingle(),
   ]);
+  if (invRes.error)   console.warn('[Supabase] inv warn:', invRes.error.message);
+  if (salesRes.error) console.warn('[Supabase] sales warn:', salesRes.error.message);
 
   return {
-    inventory: (invData  || []).map(r => ({ ...r.data, id: r.id })),
-    sales:     (salesData || []).map(r => ({ ...r.data, id: r.id })),
-    settings:  cfgRow?.data || getInitialData().settings,
+    inventory: (invRes.data  || []).map(r => ({ ...r.data, id: r.id })),
+    sales:     (salesRes.data || []).map(r => ({ ...r.data, id: r.id })),
+    settings:  cfgRes.data?.data || getInitialData().settings,
     receipts:  [],
   };
 };
 
 // ローカルデータを Supabase に一括移行
 const migrateLocalToSupabase = async (localData) => {
-  if (!_sbUrl || !_sbKey) return;
+  if (!_sb) return;
   try {
     const ops = [];
     if (localData.inventory?.length > 0)
-      ops.push(_sbUpsert('inventory', localData.inventory.map(item => ({ id: item.id, data: item }))));
+      ops.push(_sb.from('inventory').upsert(localData.inventory.map(item => ({ id: item.id, data: item })), { onConflict: 'id' }));
     if (localData.sales?.length > 0)
-      ops.push(_sbUpsert('sales', localData.sales.map(s => ({ id: s.id, data: s }))));
+      ops.push(_sb.from('sales').upsert(localData.sales.map(s => ({ id: s.id, data: s })), { onConflict: 'id' }));
     if (localData.settings)
-      ops.push(_sbUpsert('app_settings', [{ id: 'default', data: localData.settings }]));
+      ops.push(_sb.from('app_settings').upsert({ id: 'default', data: localData.settings }, { onConflict: 'id' }));
     await Promise.all(ops);
     console.log('[Supabase] ローカルデータ移行完了');
   } catch(e) {
@@ -373,7 +325,7 @@ const migrateLocalToSupabase = async (localData) => {
 
 // 差分を検出してSupabaseに同期（setData から呼ばれる）
 const syncToSupabase = async (oldData, newData) => {
-  if (!_sbUrl || !_sbKey) return;
+  if (!_sb) return;
   try {
     const invOld   = new Map((oldData?.inventory || []).map(i => [i.id, i]));
     const invNew   = new Map((newData?.inventory || []).map(i => [i.id, i]));
@@ -392,11 +344,11 @@ const syncToSupabase = async (oldData, newData) => {
     const settingsChanged = JSON.stringify(oldData?.settings) !== JSON.stringify(newData?.settings);
 
     const ops = [];
-    if (invUpsert.length)   ops.push(_sbUpsert('inventory', invUpsert));
-    if (invDelete.length)   ops.push(_sbDelete('inventory', invDelete));
-    if (salesUpsert.length) ops.push(_sbUpsert('sales', salesUpsert));
-    if (salesDelete.length) ops.push(_sbDelete('sales', salesDelete));
-    if (settingsChanged)    ops.push(_sbUpsert('app_settings', [{ id: 'default', data: newData.settings }]));
+    if (invUpsert.length)   ops.push(_sb.from('inventory').upsert(invUpsert, { onConflict: 'id' }));
+    if (invDelete.length)   ops.push(_sb.from('inventory').delete().in('id', invDelete));
+    if (salesUpsert.length) ops.push(_sb.from('sales').upsert(salesUpsert, { onConflict: 'id' }));
+    if (salesDelete.length) ops.push(_sb.from('sales').delete().in('id', salesDelete));
+    if (settingsChanged)    ops.push(_sb.from('app_settings').upsert({ id: 'default', data: newData.settings }, { onConflict: 'id' }));
     if (ops.length > 0) await Promise.all(ops);
   } catch(e) {
     console.error('[Supabase] syncToSupabase:', e.message);

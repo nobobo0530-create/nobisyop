@@ -1,5 +1,5 @@
-// v5: Supabase SDK廃止・raw fetch対応・全キャッシュ再構築
-const CACHE_NAME = 'nobushop-v5';
+// v6: iOS Safari "Load failed" 修正 – respondWith(fetch()) 明示化
+const CACHE_NAME = 'nobushop-v6';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -45,8 +45,13 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = event.request.url;
 
-  // キャッシュしないリクエストはそのままネットワークへ
-  if (shouldSkipCache(url)) return;
+  // キャッシュしないリクエスト（API・Supabase・CDN等）
+  // ※ iOS Safari は return だけだと fetch が "Load failed" になるため
+  //    必ず respondWith(fetch()) で明示的にネットワークへ転送する
+  if (shouldSkipCache(url)) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then(cached => {
