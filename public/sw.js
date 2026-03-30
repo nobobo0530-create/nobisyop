@@ -1,5 +1,5 @@
-// v6: iOS Safari "Load failed" 修正 – respondWith(fetch()) 明示化
-const CACHE_NAME = 'nobushop-v6';
+// v7: サーバープロキシ構造に変更・全キャッシュ再構築
+const CACHE_NAME = 'nobushop-v7';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

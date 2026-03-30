@@ -244,88 +244,58 @@ const saveData = (data) => {
 };
 
 // ============================================================
-// Supabase クラウドDB（SDK使用）
+// クラウド同期（/api/data 経由 – iOS Safari CORS問題を構造的に解消）
+// iPhone/MacBook ともに同じURLを使えば自動でデータが共有される
 // ============================================================
-let _sb = null;
+let _cloudEnabled = false;
 
+// 初期化確認のみ（実際の通信はサーバー側 api/data.js が行う）
 const initSupabase = (url, key) => {
-  if (!window.supabase) throw new Error('window.supabase not loaded');
-  if (!url || !key) throw new Error('URL or key is empty');
-  // auth・realtime の自動起動を最小化してiOS互換性を高める
-  _sb = window.supabase.createClient(url, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-    global: {
-      fetch: (...args) => fetch(...args),
-    },
-  });
-  console.log('[Supabase] SDK client initialized, url:', url.slice(0, 50));
+  if (!url || !key) throw new Error('Cloud config is empty on server');
+  _cloudEnabled = true;
+  console.log('[Cloud] server-proxy mode enabled');
 };
 
-// Supabase から全データ取得
+// 全データ取得（/api/data GET）
 const fetchSupabaseData = async () => {
-  if (!_sb) throw new Error('Supabase client not initialized');
-
-  // Step1: inventory から1件取得して接続を確認
-  const testRes = await _sb.from('inventory').select('id').limit(1);
-  const testErr = testRes.error;
-  console.log('[Supabase] test fetch → status:', testRes.status,
-    '| error:', testErr ? `${testErr.code} ${testErr.message}` : 'none');
-
-  if (testErr) {
-    const code = testErr.code || '';
-    const msg  = testErr.message || '';
-    // テーブル未作成
-    if (code === '42P01' || msg.includes('does not exist') || msg.includes('relation')) {
-      console.warn('[Supabase] テーブル未作成');
-      return { _noTables: true, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
-    }
-    // その他エラー（権限・ネットワーク等）→ 詳細を返す
-    console.error('[Supabase] 接続エラー:', code, msg);
-    return { _connError: `[${code || 'ERR'}] ${msg}`, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
+  const resp = await fetch('/api/data', { cache: 'no-store' });
+  const json = await resp.json();
+  if (!resp.ok || !json.ok) {
+    const msg = json.error || `HTTP ${resp.status}`;
+    console.error('[Cloud] fetch error:', msg);
+    return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
   }
-
-  // Step2: 接続成功 → 全テーブル取得
-  const [invRes, salesRes, cfgRes] = await Promise.all([
-    _sb.from('inventory').select('id,data,created_at').order('created_at', { ascending: true }),
-    _sb.from('sales').select('id,data,created_at').order('created_at', { ascending: true }),
-    _sb.from('app_settings').select('data').eq('id', 'default').maybeSingle(),
-  ]);
-  if (invRes.error)   console.warn('[Supabase] inv warn:', invRes.error.message);
-  if (salesRes.error) console.warn('[Supabase] sales warn:', salesRes.error.message);
-
   return {
-    inventory: (invRes.data  || []).map(r => ({ ...r.data, id: r.id })),
-    sales:     (salesRes.data || []).map(r => ({ ...r.data, id: r.id })),
-    settings:  cfgRes.data?.data || getInitialData().settings,
+    inventory: json.inventory || [],
+    sales:     json.sales     || [],
+    settings:  json.settings  || getInitialData().settings,
     receipts:  [],
   };
 };
 
-// ローカルデータを Supabase に一括移行
+// ローカルデータを一括移行（/api/data POST）
 const migrateLocalToSupabase = async (localData) => {
-  if (!_sb) return;
+  if (!_cloudEnabled) return;
   try {
-    const ops = [];
-    if (localData.inventory?.length > 0)
-      ops.push(_sb.from('inventory').upsert(localData.inventory.map(item => ({ id: item.id, data: item })), { onConflict: 'id' }));
-    if (localData.sales?.length > 0)
-      ops.push(_sb.from('sales').upsert(localData.sales.map(s => ({ id: s.id, data: s })), { onConflict: 'id' }));
-    if (localData.settings)
-      ops.push(_sb.from('app_settings').upsert({ id: 'default', data: localData.settings }, { onConflict: 'id' }));
-    await Promise.all(ops);
-    console.log('[Supabase] ローカルデータ移行完了');
+    await fetch('/api/data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        invUpsert:   (localData.inventory || []).map(item => ({ id: item.id, data: item })),
+        salesUpsert: (localData.sales     || []).map(s    => ({ id: s.id,    data: s    })),
+        settings:    localData.settings || null,
+      }),
+      cache: 'no-store',
+    });
+    console.log('[Cloud] ローカルデータ移行完了');
   } catch(e) {
-    console.error('[Supabase] migrateLocalToSupabase:', e.message);
+    console.error('[Cloud] migrate error:', e.message);
   }
 };
 
-// 差分を検出してSupabaseに同期（setData から呼ばれる）
+// 差分をサーバーに同期（/api/data POST）
 const syncToSupabase = async (oldData, newData) => {
-  if (!_sb) return;
+  if (!_cloudEnabled) return;
   try {
     const invOld   = new Map((oldData?.inventory || []).map(i => [i.id, i]));
     const invNew   = new Map((newData?.inventory || []).map(i => [i.id, i]));
@@ -343,15 +313,20 @@ const syncToSupabase = async (oldData, newData) => {
     for (const id of salesOld.keys()) { if (!salesNew.has(id)) salesDelete.push(id); }
     const settingsChanged = JSON.stringify(oldData?.settings) !== JSON.stringify(newData?.settings);
 
-    const ops = [];
-    if (invUpsert.length)   ops.push(_sb.from('inventory').upsert(invUpsert, { onConflict: 'id' }));
-    if (invDelete.length)   ops.push(_sb.from('inventory').delete().in('id', invDelete));
-    if (salesUpsert.length) ops.push(_sb.from('sales').upsert(salesUpsert, { onConflict: 'id' }));
-    if (salesDelete.length) ops.push(_sb.from('sales').delete().in('id', salesDelete));
-    if (settingsChanged)    ops.push(_sb.from('app_settings').upsert({ id: 'default', data: newData.settings }, { onConflict: 'id' }));
-    if (ops.length > 0) await Promise.all(ops);
+    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged;
+    if (!hasChanges) return;
+
+    await fetch('/api/data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        invUpsert, invDelete, salesUpsert, salesDelete,
+        settings: settingsChanged ? newData.settings : undefined,
+      }),
+      cache: 'no-store',
+    });
   } catch(e) {
-    console.error('[Supabase] syncToSupabase:', e.message);
+    console.error('[Cloud] sync error:', e.message);
   }
 };
 
@@ -2657,29 +2632,25 @@ const App = () => {
     syncToSupabase(oldData, newData); // 非同期・エラーは内部で吸収
   }, []);
 
-  // ── Supabase 初期化 & データロード ──────────────────────────
+  // ── クラウドデータ読み込み（/api/data 経由・iOS Safari対応）──
   React.useEffect(() => {
     (async () => {
       try {
-        // cache:'no-store' でSW・ブラウザキャッシュを完全バイパス
-        const res = await fetch('/api/config', { cache: 'no-store' });
-        if (!res.ok) { console.error('[App] /api/config status:', res.status); setDbStatus('offline'); return; }
-        const cfg = await res.json();
-        console.log('[App] config ok – url_len:', cfg.supabaseUrl?.length, 'key_len:', cfg.supabaseKey?.length);
-        if (!cfg.supabaseUrl || !cfg.supabaseKey) { setDbStatus('offline'); return; }
-
-        initSupabase(cfg.supabaseUrl, cfg.supabaseKey);
+        // /api/data はサーバー側でSupabaseに接続するため CORS問題なし
         const cloudData = await fetchSupabaseData();
 
-        // テーブル未作成
-        if (cloudData?._noTables) { setDbStatus('setup'); return; }
         // 接続エラー詳細あり
         if (cloudData?._connError) {
           setDbError(cloudData._connError);
           setDbStatus('error');
           return;
         }
-        if (!cloudData) { setDbStatus('error'); return; }
+
+        // サーバー側でenv未設定の場合
+        if (!cloudData) { setDbStatus('offline'); return; }
+
+        // initSupabase で cloudEnabled フラグを立てる（url/keyはサーバーが持つ）
+        initSupabase('server', 'server');
 
         const localData = dataRef.current;
         const hasLocal = localData.inventory.length > 0 || localData.sales.length > 0;
