@@ -243,6 +243,111 @@ const saveData = (data) => {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error(e); }
 };
 
+// ============================================================
+// Supabase クラウドDB
+// ============================================================
+let _sb = null; // Supabase クライアント（初期化後にセット）
+
+const initSupabase = (url, key) => {
+  if (window.supabase && url && key) {
+    _sb = window.supabase.createClient(url, key);
+  }
+};
+
+// Supabase から全データ取得
+const fetchSupabaseData = async () => {
+  if (!_sb) return null;
+  try {
+    const [invRes, salesRes, cfgRes] = await Promise.all([
+      _sb.from('inventory').select('id,data,created_at').order('created_at', {ascending: true}),
+      _sb.from('sales').select('id,data,created_at').order('created_at', {ascending: true}),
+      _sb.from('app_settings').select('data').eq('id', 'default').maybeSingle(),
+    ]);
+    if (invRes.error)  throw invRes.error;
+    if (salesRes.error) throw salesRes.error;
+    return {
+      inventory: (invRes.data  || []).map(r => ({...r.data,  id: r.id})),
+      sales:     (salesRes.data || []).map(r => ({...r.data, id: r.id})),
+      settings:  cfgRes.data?.data || getInitialData().settings,
+      receipts:  [],
+    };
+  } catch(e) {
+    console.error('[Supabase] fetchSupabaseData:', e);
+    return null;
+  }
+};
+
+// ローカルデータを Supabase に一括移行
+const migrateLocalToSupabase = async (localData) => {
+  if (!_sb) return;
+  try {
+    const ops = [];
+    if (localData.inventory?.length > 0) {
+      const rows = localData.inventory.map(item => ({ id: item.id, data: item }));
+      ops.push(_sb.from('inventory').upsert(rows, {onConflict: 'id'}));
+    }
+    if (localData.sales?.length > 0) {
+      const rows = localData.sales.map(s => ({ id: s.id, data: s }));
+      ops.push(_sb.from('sales').upsert(rows, {onConflict: 'id'}));
+    }
+    if (localData.settings) {
+      ops.push(_sb.from('app_settings').upsert({id: 'default', data: localData.settings}, {onConflict: 'id'}));
+    }
+    await Promise.all(ops);
+    console.log('[Supabase] ローカルデータ移行完了');
+  } catch(e) {
+    console.error('[Supabase] migrateLocalToSupabase:', e);
+  }
+};
+
+// 差分を検出してSupabaseに同期（setData から呼ばれる）
+const syncToSupabase = async (oldData, newData) => {
+  if (!_sb) return;
+  try {
+    const invOld  = new Map((oldData?.inventory || []).map(i => [i.id, i]));
+    const invNew  = new Map((newData?.inventory || []).map(i => [i.id, i]));
+    const salesOld = new Map((oldData?.sales || []).map(s => [s.id, s]));
+    const salesNew = new Map((newData?.sales || []).map(s => [s.id, s]));
+
+    const invUpsert  = [];
+    const invDelete  = [];
+    const salesUpsert = [];
+    const salesDelete = [];
+
+    for (const [id, item] of invNew) {
+      const old = invOld.get(id);
+      if (!old || JSON.stringify(old) !== JSON.stringify(item))
+        invUpsert.push({ id, data: item });
+    }
+    for (const id of invOld.keys()) {
+      if (!invNew.has(id)) invDelete.push(id);
+    }
+    for (const [id, sale] of salesNew) {
+      const old = salesOld.get(id);
+      if (!old || JSON.stringify(old) !== JSON.stringify(sale))
+        salesUpsert.push({ id, data: sale });
+    }
+    for (const id of salesOld.keys()) {
+      if (!salesNew.has(id)) salesDelete.push(id);
+    }
+    const settingsChanged = JSON.stringify(oldData?.settings) !== JSON.stringify(newData?.settings);
+
+    const ops = [];
+    if (invUpsert.length)  ops.push(_sb.from('inventory').upsert(invUpsert, {onConflict: 'id'}));
+    if (invDelete.length)  ops.push(_sb.from('inventory').delete().in('id', invDelete));
+    if (salesUpsert.length) ops.push(_sb.from('sales').upsert(salesUpsert, {onConflict: 'id'}));
+    if (salesDelete.length) ops.push(_sb.from('sales').delete().in('id', salesDelete));
+    if (settingsChanged)   ops.push(_sb.from('app_settings').upsert({id:'default', data: newData.settings}, {onConflict:'id'}));
+
+    if (ops.length > 0) {
+      const results = await Promise.all(ops);
+      results.forEach(r => { if (r.error) console.error('[Supabase] sync error:', r.error); });
+    }
+  } catch(e) {
+    console.error('[Supabase] syncToSupabase:', e);
+  }
+};
+
 const getInitialData = () => ({
   inventory: [],
   sales: [],
@@ -2435,16 +2540,58 @@ const OtherTab = () => {
 // メインApp
 // ============================================================
 const App = () => {
-  const [data, setDataRaw] = React.useState(loadData);
-  const [tab, setTab] = React.useState('home');
+  const [data, setDataRaw]       = React.useState(loadData);   // ローカルキャッシュで即表示
+  const [tab, setTab]            = React.useState('home');
   const [editingItem, setEditingItem] = React.useState(null);
+  // 'init'=起動中 | 'ok'=DB接続済 | 'migrated'=移行完了 | 'offline'=設定なし | 'error'=接続失敗
+  const [dbStatus, setDbStatus]  = React.useState('init');
+  const dataRef = React.useRef(data); // 差分計算用（最新値を保持）
 
+  // setData: ローカル + localStorage + Supabase に同期
   const setData = React.useCallback((newData) => {
+    const oldData = dataRef.current;
+    dataRef.current = newData;
     setDataRaw(newData);
-    saveData(newData);
+    saveData(newData); // localStorage キャッシュ
+    syncToSupabase(oldData, newData); // 非同期・エラーは内部で吸収
   }, []);
 
-  // 起動時: localStorageにbase64写真が残っている場合はIndexedDBに移行
+  // ── Supabase 初期化 & データロード ──────────────────────────
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/config');
+        if (!res.ok) { setDbStatus('offline'); return; }
+        const cfg = await res.json();
+        if (!cfg.supabaseUrl || !cfg.supabaseKey) { setDbStatus('offline'); return; }
+
+        initSupabase(cfg.supabaseUrl, cfg.supabaseKey);
+        const cloudData = await fetchSupabaseData();
+        if (!cloudData) { setDbStatus('error'); return; }
+
+        const localData = dataRef.current;
+        const hasLocal = localData.inventory.length > 0 || localData.sales.length > 0;
+        const hasCloud = cloudData.inventory.length > 0 || cloudData.sales.length > 0;
+
+        if (hasLocal && !hasCloud) {
+          // ローカルにデータあり・クラウド空 → 移行
+          await migrateLocalToSupabase(localData);
+          setDbStatus('migrated');
+        } else {
+          // クラウドのデータで画面を更新
+          dataRef.current = cloudData;
+          setDataRaw(cloudData);
+          saveData(cloudData);
+          setDbStatus('ok');
+        }
+      } catch(e) {
+        console.error('[App] DB init error:', e);
+        setDbStatus('error');
+      }
+    })();
+  }, []);
+
+  // ── 写真データ移行（旧 base64 → IndexedDB） ────────────────
   React.useEffect(() => {
     (async () => {
       try {
@@ -2501,9 +2648,38 @@ const App = () => {
   const showApiWarning = !data.settings?.apiKey && tab !== 'other';
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
+
+          {/* ── DBステータスバナー ── */}
+          {dbStatus === 'init' && (
+            <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#1a1a2e',color:'white',
+                         textAlign:'center',padding:'6px 16px',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+              <span className="spinner" style={{width:14,height:14,borderWidth:2}}/> クラウドデータ読み込み中...
+            </div>
+          )}
+          {dbStatus === 'migrated' && (
+            <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#16a34a',color:'white',
+                         textAlign:'center',padding:'6px 16px',fontSize:12}}
+                 onClick={() => setDbStatus('ok')}>
+              ✅ ローカルデータをクラウドに移行しました！タップで閉じる
+            </div>
+          )}
+          {dbStatus === 'error' && (
+            <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#dc2626',color:'white',
+                         textAlign:'center',padding:'6px 16px',fontSize:12}}>
+              ⚠️ DB接続エラー。ローカル保存で動作中（データは端末のみ）
+            </div>
+          )}
+          {dbStatus === 'offline' && (
+            <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#92400e',color:'white',
+                         textAlign:'center',padding:'6px 16px',fontSize:12}}
+                 onClick={() => setTab('other')}>
+              ☁️ Supabase未設定。ローカル保存中 → 設定画面へ
+            </div>
+          )}
+
           {/* メインコンテンツ */}
           <div className="main-content">
             {showApiWarning && (
