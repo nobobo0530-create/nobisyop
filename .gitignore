@@ -1,0 +1,10 @@
+# ローカル環境専用ファイル（IPアドレスが入るためGitに含めない）
+public/config.json
+
+# Vercel
+.vercel
+
+# Node
+node_modules/
+.env
+.env.local

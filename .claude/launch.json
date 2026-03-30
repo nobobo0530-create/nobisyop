@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nobushop-pwa",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-p", "3333", "/Users/yoshidanoboru/nobushop-pwa/public"],
+      "port": 3333
+    }
+  ]
+}
