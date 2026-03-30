@@ -2,15 +2,15 @@
   "name": "のびSHOP 管理アプリ",
   "short_name": "のびSHOP",
   "description": "メルカリせどり在庫・売上管理アプリ",
-  "theme_color": "#E84040",
-  "background_color": "#ffffff",
+  "theme_color": "#1a1a2e",
+  "background_color": "#1a1a2e",
   "display": "standalone",
   "orientation": "portrait",
   "start_url": "/",
   "scope": "/",
   "icons": [
     {
-      "src": "/icons/apple-touch-icon.png",
+      "src": "/apple-touch-icon.png",
       "sizes": "180x180",
       "type": "image/png",
       "purpose": "any"
@@ -22,7 +22,7 @@
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-512.png",
+      "src": "/icon.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
