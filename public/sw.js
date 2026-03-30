@@ -1,5 +1,5 @@
-// v4: 全キャッシュ再構築・接続エラー修正対応
-const CACHE_NAME = 'nobushop-v4';
+// v5: Supabase SDK廃止・raw fetch対応・全キャッシュ再構築
+const CACHE_NAME = 'nobushop-v5';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
