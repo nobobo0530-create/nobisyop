@@ -2279,13 +2279,39 @@ const OtherTab = () => {
     e.target.value = '';
   };
 
-  // ── CSVダウンロードヘルパー ──────────────────────────────
-  const downloadCsvBlob = (rows, filename) => {
+  // ── CSVヘルパー ──────────────────────────────────────────
+  // iOS Safari は <a download> が動かないため Web Share API を優先使用
+  // 複数ファイルをまとめて渡せる（まとめてDL用）
+  const makeCsvFile = (rows, filename) => {
     const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
+    return new File(['\uFEFF' + csv], filename, { type: 'text/csv;charset=utf-8;' });
+  };
+
+  const shareOrDownloadFiles = async (files) => {
+    // iOS Safari 15+: Web Share API でファイル共有（"ファイルに保存" が選べる）
+    if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
+      try {
+        await navigator.share({ files, title: files.map(f => f.name).join(' + ') });
+        return;
+      } catch(e) {
+        if (e.name === 'AbortError') return; // キャンセルは無視
+        // フォールバックへ
+      }
+    }
+    // デスクトップ / フォールバック: 通常ダウンロード
+    files.forEach(file => {
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url; a.download = file.name;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  };
+
+  const downloadCsvBlob = (rows, filename) => {
+    // 後方互換用ラッパー（旧呼び出し箇所があれば対応）
+    shareOrDownloadFiles([makeCsvFile(rows, filename)]);
   };
 
   // ── 売上管理表CSV ────────────────────────────────────────
@@ -2310,9 +2336,9 @@ const OtherTab = () => {
     return [headers, ...rows];
   };
 
-  const exportCSV = () => {
-    downloadCsvBlob(buildSalesRows(), `売上管理表_${today()}.csv`);
-    toast('📥 売上管理表をダウンロードしました');
+  const exportCSV = async () => {
+    await shareOrDownloadFiles([makeCsvFile(buildSalesRows(), `売上管理表_${today()}.csv`)]);
+    toast('📤 売上管理表を出力しました');
   };
 
   // ── 古物台帳CSV（仕入れ＋売却を時系列で1本に）──────────────
@@ -2348,18 +2374,19 @@ const OtherTab = () => {
     return [headers, ...merged];
   };
 
-  const exportKobotsuCSV = () => {
-    downloadCsvBlob(buildKobotsuRows(), `古物台帳_${today()}.csv`);
-    toast('📥 古物台帳をダウンロードしました');
+  const exportKobotsuCSV = async () => {
+    await shareOrDownloadFiles([makeCsvFile(buildKobotsuRows(), `古物台帳_${today()}.csv`)]);
+    toast('📤 古物台帳を出力しました');
   };
 
   // ── まとめてDL（両方同時）───────────────────────────────
-  const exportAll = () => {
-    downloadCsvBlob(buildSalesRows(),   `売上管理表_${today()}.csv`);
-    setTimeout(() => {
-      downloadCsvBlob(buildKobotsuRows(), `古物台帳_${today()}.csv`);
-      toast('📥 売上管理表 + 古物台帳 をダウンロードしました');
-    }, 300);
+  const exportAll = async () => {
+    const files = [
+      makeCsvFile(buildSalesRows(),   `売上管理表_${today()}.csv`),
+      makeCsvFile(buildKobotsuRows(), `古物台帳_${today()}.csv`),
+    ];
+    await shareOrDownloadFiles(files);
+    toast('📤 売上管理表 ＋ 古物台帳 を出力しました');
   };
 
   const downloadBackup = () => {
