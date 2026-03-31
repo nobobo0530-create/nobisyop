@@ -1,5 +1,5 @@
-// v8: index.html / app.js をネットワークファーストに変更（即時反映）
-const CACHE_NAME = 'nobushop-v8';
+// v9: hooks violation fix（useRef/useEffect を IIFE外へ移動）
+const CACHE_NAME = 'nobushop-v9';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

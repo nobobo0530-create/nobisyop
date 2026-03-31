@@ -391,8 +391,10 @@ const getInitialData = () => ({
     // ヤフオクストア一覧（ストアごとに許可証番号が異なるため別管理）
     // { id, storeName, license, companyName }
     yahooStores: [],
-    // Google Sheets連携
+    // Google Sheets連携（OAuth2）
     gasUrl: '',
+    googleClientId: '',
+    googleSpreadsheetId: '',
   },
 });
 
@@ -722,6 +724,12 @@ const HomeTab = () => {
   };
   const nextMilestone = milestones.find(m => getAchievedCount(m) < (m.targetCount || 1));
 
+  // ── 月次グラフ用 ref（IIFE内でhookを呼べないためトップレベルで宣言）──
+  const chartRef = React.useRef();
+  React.useEffect(() => {
+    if (chartRef.current) chartRef.current.scrollLeft = chartRef.current.scrollWidth;
+  }, []);
+
   // ── 目標編集モーダル ──
   const [editingGoal, setEditingGoal] = React.useState(false);
   const [goalInput, setGoalInput] = React.useState('');
@@ -850,10 +858,6 @@ const HomeTab = () => {
           const getY = p => PAD_T + (CH - PAD_T - PAD_B) * (1 - (p - minP) / range);
           const getX = i => i * COL_W + COL_W / 2;
           const totalW = months.length * COL_W;
-          const chartRef = React.useRef();
-          React.useEffect(() => {
-            if (chartRef.current) chartRef.current.scrollLeft = chartRef.current.scrollWidth;
-          }, []);
           // 折れ線パス
           const linePath = months.map((m, i) => `${i === 0 ? 'M' : 'L'}${getX(i)},${getY(m.profit)}`).join(' ');
           // グラデーション塗りつぶしパス
@@ -2966,6 +2970,269 @@ const SalesTab = () => {
 };
 
 // ============================================================
+// エクスポートパネル（独立コンポーネント）
+// ============================================================
+const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV }) => {
+  const [gToken, setGToken]                   = React.useState(null);
+  const [gSyncing, setGSyncing]               = React.useState(false);
+  const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
+  const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
+
+  const spreadsheetId = settings.googleSpreadsheetId || '';
+
+  const buildRows = () => {
+    const headers = ['売却日','ブランド','商品名','カテゴリー','プラットフォーム','販売価格','手数料','送料','純利益','仕入れ価格','仕入れ日','仕入れ先','商品ID','管理番号'];
+    const rows = [headers];
+    data.sales.forEach(s => {
+      const item = data.inventory.find(i => i.id === s.inventoryId) || {};
+      const fee = Math.round((s.salePrice||0) * (s.feeRate||0));
+      rows.push([s.saleDate||'', item.brand||'', item.productName||'', item.category||'',
+        s.platform||'', s.salePrice||0, fee, s.shipping||0, s.profit||0,
+        item.purchasePrice||0, item.purchaseDate||'', item.purchaseStore||'',
+        s.platformId||'', item.mgmtNo||'']);
+    });
+    return rows;
+  };
+
+  const doSheetsSync = async (token) => {
+    setGSyncing(true);
+    try {
+      const rows = buildRows();
+      let sid = spreadsheetId;
+      if (!sid) {
+        const cr = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ properties: { title: 'SalesLog 売上管理表' }, sheets: [{ properties: { title: '売上管理表' } }] }),
+        });
+        const crJson = await cr.json();
+        if (!cr.ok) throw new Error(crJson.error?.message || 'シート作成失敗');
+        sid = crJson.spreadsheetId;
+        setSetting('googleSpreadsheetId', sid);
+      }
+      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/%E5%A3%B2%E4%B8%8A%E7%AE%A1%E7%90%86%E8%A1%A8!A1:Z9999:clear`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const wr = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/%E5%A3%B2%E4%B8%8A%E7%AE%A1%E7%90%86%E8%A1%A8!A1?valueInputOption=RAW`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values: rows }),
+      });
+      if (!wr.ok) throw new Error((await wr.json()).error?.message || '書き込み失敗');
+      toast(`✅ ${data.sales.length}件を同期しました`);
+      window.open(`https://docs.google.com/spreadsheets/d/${sid}`, '_blank');
+    } catch(err) {
+      if (err.message?.includes('401') || err.message?.includes('invalid_token')) {
+        setGToken(null);
+        toast('⚠️ 認証が切れました。再度ログインしてください');
+      } else {
+        toast('❌ 同期失敗: ' + err.message);
+      }
+    } finally {
+      setGSyncing(false);
+    }
+  };
+
+  const handleGoogleLogin = () => {
+    const cid = (clientIdInput || settings.googleClientId || '').trim();
+    if (!cid) { setShowClientIdSetup(true); return; }
+    if (!window.google?.accounts?.oauth2) { toast('⚠️ Google APIを読み込み中です。少し待って再試行してください'); return; }
+    const tc = window.google.accounts.oauth2.initTokenClient({
+      client_id: cid,
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      callback: (res) => {
+        if (res.error) { toast('❌ ログイン失敗: ' + res.error); return; }
+        setSetting('googleClientId', cid);
+        setGToken(res.access_token);
+        toast('✅ Googleアカウントに接続しました');
+        doSheetsSync(res.access_token);
+      },
+    });
+    tc.requestAccessToken({ prompt: gToken ? '' : 'consent' });
+  };
+
+  const salesPreview = [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
+  const kobotsuPreview = [...data.inventory]
+    .sort((a,b)=>(a.purchaseDate||'')>(b.purchaseDate||'')?1:-1)
+    .map(item => ({ item, sale: data.sales.find(s=>s.inventoryId===item.id) }));
+  const thStyle = {padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'};
+  const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
+
+  return (
+    <div>
+      {/* ── Google Sheets連携カード ── */}
+      <div className="card" style={{padding:16,marginBottom:12,border:'1px solid #d1fae5'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+          <span style={{fontSize:22}}>📗</span>
+          <div>
+            <div style={{fontWeight:700,fontSize:15}}>Googleスプレッドシート連携</div>
+            <div style={{fontSize:11,color:'#999',marginTop:1}}>ワンタップで売上データをシートに同期</div>
+          </div>
+        </div>
+        {showClientIdSetup ? (
+          <div style={{marginBottom:12}}>
+            <label className="field-label">Google OAuth クライアントID</label>
+            <input className="input-field" style={{marginBottom:6,fontSize:13}}
+              value={clientIdInput} onChange={e => setClientIdInput(e.target.value)}
+              placeholder="xxxxx.apps.googleusercontent.com"/>
+            <div style={{fontSize:11,color:'#888',lineHeight:1.7,marginBottom:6}}>
+              取得方法：<a href="https://console.cloud.google.com/" target="_blank" style={{color:'#2563eb'}}>Google Cloud Console</a> →「APIとサービス」→「認証情報」→「OAuth 2.0 クライアント ID」を作成。アプリのURLを「承認済みJavaScriptオリジン」に追加してください。
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn-primary" style={{flex:1,background:'#16a34a',fontSize:13}}
+                onClick={() => { if(clientIdInput.trim()) { setSetting('googleClientId', clientIdInput.trim()); setShowClientIdSetup(false); toast('✅ Client IDを保存しました'); } }}>
+                保存
+              </button>
+              <button className="btn-secondary" style={{fontSize:13}} onClick={() => setShowClientIdSetup(false)}>
+                キャンセル
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {gToken && (
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10,padding:'6px 10px',background:'#d1fae5',borderRadius:8}}>
+                <span style={{fontSize:14}}>✅</span>
+                <span style={{fontSize:12,color:'#065f46',fontWeight:600}}>Googleアカウントに接続中</span>
+              </div>
+            )}
+            {spreadsheetId && (
+              <div style={{marginBottom:10}}>
+                <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
+                  style={{display:'flex',alignItems:'center',gap:6,fontSize:13,color:'#2563eb',textDecoration:'none',padding:'7px 10px',background:'#eff6ff',borderRadius:8}}>
+                  <span>📊</span><span style={{fontWeight:600}}>同期済みシートを開く</span>
+                  <span style={{marginLeft:'auto',fontSize:11,color:'#93c5fd'}}>↗</span>
+                </a>
+              </div>
+            )}
+            <button className="btn-primary" style={{width:'100%',background:'#16a34a',marginBottom:8,fontSize:15}}
+              onClick={handleGoogleLogin} disabled={gSyncing}>
+              {gSyncing ? <><span className="spinner"/> 同期中...</>
+                : gToken ? `🔄 再同期する（${data.sales.length}件）`
+                : `📊 Googleでログイン＆同期（${data.sales.length}件）`}
+            </button>
+            <button style={{width:'100%',background:'none',border:'none',fontSize:11,color:'#aaa',cursor:'pointer',padding:'4px'}}
+              onClick={() => setShowClientIdSetup(true)}>
+              {settings.googleClientId ? '⚙️ Client IDを変更する' : '⚙️ Client IDを設定する（初回のみ）'}
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* まとめてDL */}
+      <button className="btn-primary" style={{width:'100%',marginBottom:16,fontSize:15}} onClick={exportAll}>
+        📦 売上管理表 ＋ 古物台帳　まとめてDL
+      </button>
+
+      {/* ── 売上管理表プレビュー ── */}
+      <div className="card" style={{padding:16,marginBottom:12}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15}}>📊 売上管理表</div>
+            <div style={{fontSize:12,color:'#999',marginTop:2}}>売上 {data.sales.length}件</div>
+          </div>
+          <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportCSV}>CSVのみ</button>
+        </div>
+        {salesPreview.length === 0 ? (
+          <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>売上記録がありません</div>
+        ) : (
+          <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+            <table style={{fontSize:12,borderCollapse:'collapse',minWidth:520}}>
+              <thead>
+                <tr style={{background:'#f8f8f8'}}>
+                  {['仕入日','仕入先','仕入単価','出品日','販売日','販路','売上','手数料','送料','販売利益','純利益','利益率'].map(h=>(
+                    <th key={h} style={thStyle}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {salesPreview.slice(0,10).map(s => {
+                  const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
+                  const sp   = s.salePrice||0;
+                  const fee  = Math.round(sp*(s.feeRate||0));
+                  const ship = s.shipping||0;
+                  const sProfit = sp - fee - ship;
+                  const nProfit = sProfit - (item.purchasePrice||0);
+                  const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
+                  return (
+                    <tr key={s.id} style={{borderBottom:'1px solid #f3f3f3'}}>
+                      <td style={tdStyle({color:'#777'})}>{item.purchaseDate}</td>
+                      <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore}</td>
+                      <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
+                      <td style={tdStyle({color:'#777'})}>{item.listDate||'−'}</td>
+                      <td style={tdStyle({color:'#555'})}>{s.saleDate}</td>
+                      <td style={tdStyle()}>{s.platform}</td>
+                      <td style={tdStyle({fontWeight:700})}>¥{formatMoney(sp)}</td>
+                      <td style={tdStyle({color:'#888'})}>¥{formatMoney(fee)}</td>
+                      <td style={tdStyle({color:'#888'})}>¥{formatMoney(ship)}</td>
+                      <td style={tdStyle({fontWeight:600,color:sProfit>=0?'#2563eb':'#dc2626'})}>¥{formatMoney(sProfit)}</td>
+                      <td style={tdStyle({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
+                      <td style={tdStyle({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {salesPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {salesPreview.length-10}件（CSVに全件含まれます）</div>}
+          </div>
+        )}
+      </div>
+
+      {/* ── 古物台帳プレビュー ── */}
+      <div className="card" style={{padding:16,marginBottom:12}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15}}>📜 古物台帳</div>
+            <div style={{fontSize:12,color:'#999',marginTop:2}}>在庫 {data.inventory.length}件（売却済 {data.sales.length}件含む）</div>
+          </div>
+          <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportKobotsuCSV}>CSVのみ</button>
+        </div>
+        <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
+          📌 1商品1行・仕入れ＋売却を横並び記録（古物営業法対応）
+        </div>
+        {kobotsuPreview.length === 0 ? (
+          <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>データがありません</div>
+        ) : (
+          <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+            <table style={{fontSize:12,borderCollapse:'collapse',minWidth:560}}>
+              <thead>
+                <tr>
+                  <th colSpan={5} style={{...thStyle,background:'#dbeafe',color:'#1e3a5f',textAlign:'center'}}>◀ 仕入れ（入れ）</th>
+                  <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
+                </tr>
+                <tr style={{background:'#f8f8f8'}}>
+                  {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路'].map(h=>(
+                    <th key={h} style={thStyle}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {kobotsuPreview.slice(0,10).map(({item,sale},i) => (
+                  <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
+                    <td style={tdStyle({color:'#555'})}>{item.purchaseDate}</td>
+                    <td style={tdStyle()}>{item.category||'−'}</td>
+                    <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
+                    <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
+                    <td style={tdStyle({color:'#555',fontSize:11,maxWidth:70,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||'−'}</td>
+                    <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
+                      {item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '未設定'}
+                    </td>
+                    <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
+                    <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
+                    <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {kobotsuPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {kobotsuPreview.length-10}件（CSVに全件含まれます）</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
@@ -3031,8 +3298,8 @@ const OtherTab = () => {
   const setSetting = (key, val) => {
     setSettings(prev => {
       const updated = { ...prev, [key]: val };
-      // 古物商番号・ヤフオクストア設定は即時保存（保存ボタン不要）
-      if (key === 'storeLicenses' || key === 'yahooStores') {
+      // 即時保存が必要なキー
+      if (['storeLicenses','yahooStores','googleClientId','googleSpreadsheetId'].includes(key)) {
         setData({ ...data, settings: updated });
       }
       return updated;
@@ -3331,238 +3598,17 @@ const OtherTab = () => {
         )}
 
         {/* エクスポート */}
-        {activeSection === 'export' && (() => {
-          const salesPreview = [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
-          // ── Google Sheets 同期 ──
-          const GAS_SCRIPT = `function doPost(e) {
-  try {
-    var payload = JSON.parse(e.postData.contents);
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('売上管理表') || ss.insertSheet('売上管理表');
-    sheet.clearContents();
-    if (payload.rows && payload.rows.length > 0) {
-      sheet.getRange(1,1,payload.rows.length,payload.rows[0].length).setValues(payload.rows);
-      var h = sheet.getRange(1,1,1,payload.rows[0].length);
-      h.setBackground('#E84040'); h.setFontColor('#FFFFFF'); h.setFontWeight('bold');
-      sheet.autoResizeColumns(1, payload.rows[0].length);
-    }
-    return ContentService.createTextOutput(JSON.stringify({success:true,count:payload.rows.length-1}))
-      .setMimeType(ContentService.MimeType.JSON);
-  } catch(err) {
-    return ContentService.createTextOutput(JSON.stringify({success:false,error:err.toString()}))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-}
-function doGet(e) {
-  return ContentService.createTextOutput('SalesLog Sheets Sync OK').setMimeType(ContentService.MimeType.TEXT);
-}`;
-          const [gasUrlInput, setGasUrlInput] = React.useState(settings.gasUrl || '');
-          const [syncing, setSyncing] = React.useState(false);
-          const [showSetup, setShowSetup] = React.useState(false);
-          const handleSheetsSync = async () => {
-            const url = gasUrlInput.trim();
-            if (!url) { toast('⚠️ GAS URLを入力してください'); return; }
-            setSyncing(true);
-            try {
-              // ヘッダー行
-              const headers = ['売却日','ブランド','商品名','カテゴリー','プラットフォーム','販売価格','手数料','送料','純利益','仕入れ価格','仕入れ日','仕入れ先','商品ID','管理番号'];
-              const rows = [headers];
-              data.sales.forEach(s => {
-                const item = data.inventory.find(i => i.id === s.inventoryId) || {};
-                const fee = Math.round((s.salePrice||0) * (s.feeRate||0));
-                rows.push([
-                  s.saleDate||'', item.brand||'', item.productName||'', item.category||'',
-                  s.platform||'', s.salePrice||0, fee, s.shipping||0, s.profit||0,
-                  item.purchasePrice||0, item.purchaseDate||'', item.purchaseStore||'',
-                  s.platformId||'', item.mgmtNo||'',
-                ]);
-              });
-              await fetch(url, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: { 'Content-Type': 'text/plain' },
-                body: JSON.stringify({ rows }),
-              });
-              // GAS URLを設定に保存
-              setSetting('gasUrl', url);
-              toast(`📊 ${data.sales.length}件をGoogleスプレットシートに送信しました。シートを確認してください。`);
-            } catch(err) {
-              toast('❌ 送信失敗: ' + err.message);
-            } finally {
-              setSyncing(false);
-            }
-          };
-          // 古物台帳プレビュー: 在庫を仕入日順・1商品1行
-          const kobotsuPreview = [...data.inventory]
-            .sort((a,b)=>(a.purchaseDate||'')>(b.purchaseDate||'')?1:-1)
-            .map(item => {
-              const sale = data.sales.find(s=>s.inventoryId===item.id);
-              return { item, sale };
-            });
-          const thStyle = {padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'};
-          const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
-          return (
-            <div>
-              {/* ── Google Sheets連携カード ── */}
-              <div className="card" style={{padding:16,marginBottom:12,border:'1px solid #d1fae5'}}>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
-                  <span style={{fontSize:20}}>📗</span>
-                  <div>
-                    <div style={{fontWeight:700,fontSize:15}}>Googleスプレットシート連携</div>
-                    <div style={{fontSize:11,color:'#999',marginTop:1}}>ワンタップで売上データをシートに同期</div>
-                  </div>
-                </div>
-                {/* GAS URL入力 */}
-                <input className="input-field" style={{marginBottom:8,fontSize:12}}
-                  value={gasUrlInput} onChange={e => setGasUrlInput(e.target.value)}
-                  placeholder="https://script.google.com/macros/s/..."/>
-                <button className="btn-primary" style={{width:'100%',background:'#16a34a',marginBottom:10}}
-                  onClick={handleSheetsSync} disabled={syncing}>
-                  {syncing ? <><span className="spinner"/> 送信中...</> : `📊 シートに同期する（${data.sales.length}件）`}
-                </button>
-                {/* セットアップ手順 */}
-                <button style={{width:'100%',background:'none',border:'1px solid #d1d5db',borderRadius:10,padding:'8px',fontSize:12,color:'#555',cursor:'pointer',fontWeight:600}}
-                  onClick={() => setShowSetup(v => !v)}>
-                  {showSetup ? '▲ セットアップ手順を閉じる' : '▼ 初回セットアップ手順を見る'}
-                </button>
-                {showSetup && (
-                  <div style={{marginTop:10,fontSize:12,color:'#444',lineHeight:1.8}}>
-                    <div style={{fontWeight:700,marginBottom:6,color:'#16a34a'}}>📋 手順（5分で完了）</div>
-                    <div style={{background:'#f8f8f8',borderRadius:8,padding:'10px 12px',marginBottom:10}}>
-                      <div><b>①</b> <a href="https://sheets.google.com" target="_blank" style={{color:'#2563eb'}}>Googleスプレットシート</a>を新規作成</div>
-                      <div><b>②</b> メニュー「拡張機能」→「Apps Script」を開く</div>
-                      <div><b>③</b> 既存のコードを全部消して、下のコードをペースト</div>
-                      <div><b>④</b> 「デプロイ」→「新しいデプロイ」→「ウェブアプリ」</div>
-                      <div><b>⑤</b> 「次のユーザーとして実行：自分」「アクセスできるユーザー：全員」→「デプロイ」</div>
-                      <div><b>⑥</b> 表示されたURLをコピーして上の欄に貼り付け</div>
-                    </div>
-                    <div style={{fontWeight:700,marginBottom:6}}>GASスクリプト（コピーしてペースト）</div>
-                    <div style={{position:'relative'}}>
-                      <pre style={{background:'#1e1e2e',color:'#cdd6f4',borderRadius:8,padding:'10px 12px',fontSize:10,overflowX:'auto',lineHeight:1.6,margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all'}}>
-                        {GAS_SCRIPT}
-                      </pre>
-                      <button style={{position:'absolute',top:6,right:6,background:'#E84040',color:'white',border:'none',borderRadius:6,padding:'4px 10px',fontSize:11,fontWeight:700,cursor:'pointer'}}
-                        onClick={() => copyToClipboard(GAS_SCRIPT).then(ok => toast(ok ? '📋 コピーしました' : 'コピー失敗'))}>
-                        コピー
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* まとめてDL */}
-              <button className="btn-primary" style={{width:'100%',marginBottom:16,fontSize:15}} onClick={exportAll}>
-                📦 売上管理表 ＋ 古物台帳　まとめてDL
-              </button>
-
-              {/* ── 売上管理表プレビュー ── */}
-              <div className="card" style={{padding:16,marginBottom:12}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-                  <div>
-                    <div style={{fontWeight:700,fontSize:15}}>📊 売上管理表</div>
-                    <div style={{fontSize:12,color:'#999',marginTop:2}}>売上 {data.sales.length}件</div>
-                  </div>
-                  <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportCSV}>CSVのみ</button>
-                </div>
-                {salesPreview.length === 0 ? (
-                  <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>売上記録がありません</div>
-                ) : (
-                  <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-                    <table style={{fontSize:12,borderCollapse:'collapse',minWidth:520}}>
-                      <thead>
-                        <tr style={{background:'#f8f8f8'}}>
-                          {['仕入日','仕入先','仕入単価','出品日','販売日','販路','売上','手数料','送料','販売利益','純利益','利益率'].map(h=>(
-                            <th key={h} style={thStyle}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {salesPreview.slice(0,10).map(s => {
-                          const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
-                          const sp   = s.salePrice||0;
-                          const fee  = Math.round(sp*(s.feeRate||0));
-                          const ship = s.shipping||0;
-                          const sProfit = sp - fee - ship;
-                          const nProfit = sProfit - (item.purchasePrice||0);
-                          const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
-                          return (
-                            <tr key={s.id} style={{borderBottom:'1px solid #f3f3f3'}}>
-                              <td style={tdStyle({color:'#777'})}>{item.purchaseDate}</td>
-                              <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore}</td>
-                              <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                              <td style={tdStyle({color:'#777'})}>{item.listDate||'−'}</td>
-                              <td style={tdStyle({color:'#555'})}>{s.saleDate}</td>
-                              <td style={tdStyle()}>{s.platform}</td>
-                              <td style={tdStyle({fontWeight:700})}>¥{formatMoney(sp)}</td>
-                              <td style={tdStyle({color:'#888'})}>¥{formatMoney(fee)}</td>
-                              <td style={tdStyle({color:'#888'})}>¥{formatMoney(ship)}</td>
-                              <td style={tdStyle({fontWeight:600,color:sProfit>=0?'#2563eb':'#dc2626'})}>¥{formatMoney(sProfit)}</td>
-                              <td style={tdStyle({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
-                              <td style={tdStyle({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {salesPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {salesPreview.length-10}件（CSVに全件含まれます）</div>}
-                  </div>
-                )}
-              </div>
-
-              {/* ── 古物台帳プレビュー ── */}
-              <div className="card" style={{padding:16,marginBottom:12}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                  <div>
-                    <div style={{fontWeight:700,fontSize:15}}>📜 古物台帳</div>
-                    <div style={{fontSize:12,color:'#999',marginTop:2}}>在庫 {data.inventory.length}件（売却済 {data.sales.length}件含む）</div>
-                  </div>
-                  <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportKobotsuCSV}>CSVのみ</button>
-                </div>
-                <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
-                  📌 1商品1行・仕入れ＋売却を横並び記録（古物営業法対応）
-                </div>
-                {kobotsuPreview.length === 0 ? (
-                  <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>データがありません</div>
-                ) : (
-                  <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-                    <table style={{fontSize:12,borderCollapse:'collapse',minWidth:560}}>
-                      <thead>
-                        <tr>
-                          <th colSpan={5} style={{...thStyle,background:'#dbeafe',color:'#1e3a5f',textAlign:'center'}}>◀ 仕入れ（入れ）</th>
-                          <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
-                        </tr>
-                        <tr style={{background:'#f8f8f8'}}>
-                          {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路'].map(h=>(
-                            <th key={h} style={thStyle}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {kobotsuPreview.slice(0,10).map(({item,sale},i) => (
-                          <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
-                            <td style={tdStyle({color:'#555'})}>{item.purchaseDate}</td>
-                            <td style={tdStyle()}>{item.category||'−'}</td>
-                            <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
-                            <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                            <td style={tdStyle({color:'#555',fontSize:11,maxWidth:70,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||'−'}</td>
-                            <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>{(() => {
-                              const lic = item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '';
-                              return lic || '未設定';
-                            })()}</td>
-                            <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
-                            <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
-                            <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {kobotsuPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {kobotsuPreview.length-10}件（CSVに全件含まれます）</div>}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
+        {activeSection === 'export' && (
+          <ExportPanel
+            data={data}
+            settings={settings}
+            setSetting={setSetting}
+            toast={toast}
+            exportAll={exportAll}
+            exportCSV={exportCSV}
+            exportKobotsuCSV={exportKobotsuCSV}
+          />
+        )}
 
 
         {/* 設定 */}
