@@ -2315,22 +2315,36 @@ const OtherTab = () => {
   };
 
   // ── 売上管理表CSV ────────────────────────────────────────
+  // 販売利益 = 売上 − 手数料 − 送料（仕入れ前の粗利）
+  // 純利益   = 販売利益 − 仕入単価（最終手取り）
   const buildSalesRows = () => {
-    const headers = ['No','管理番号','ブランド','品名','販売日','曜日','月','販路','売上(円)','手数料率(%)','手数料(円)','送料(円)','仕入単価(円)','純利益(円)','利益率(%)','仕入日','仕入先','古物品目'];
+    const headers = [
+      'No','管理番号','ブランド','品名','古物品目',
+      '仕入日','仕入先','仕入単価(円)','出品日',
+      '販売日','曜日','月','販路',
+      '売上(円)','手数料率(%)','手数料(円)','送料(円)',
+      '販売利益(円)','純利益(円)','利益率(%)',
+      '販売済',
+    ];
     const rows = [...data.sales]
       .sort((a,b) => (a.saleDate||'') > (b.saleDate||'') ? 1 : -1)
       .map((s, i) => {
         const item = data.inventory.find(inv => inv.id === s.inventoryId) || {};
-        const fee = Math.round((s.salePrice||0) * (s.feeRate||0));
-        const profitRate = s.salePrice ? ((s.profit||0) / s.salePrice * 100).toFixed(1) : '0.0';
+        const sp   = s.salePrice || 0;
+        const fee  = Math.round(sp * (s.feeRate || 0));
+        const ship = s.shipping || 0;
+        const salesProfit = sp - fee - ship;                   // 販売利益
+        const netProfit   = salesProfit - (item.purchasePrice || 0); // 純利益
+        const profitRate  = sp > 0 ? (netProfit / sp * 100).toFixed(1) : '0.0';
         const saleDay = s.saleDate ? ['日','月','火','水','木','金','土'][new Date(s.saleDate).getDay()] : '';
-        const month = s.saleDate ? s.saleDate.slice(0,7) : '';
+        const month   = s.saleDate ? s.saleDate.slice(0,7) : '';
         return [
-          i+1, item.mgmtNo||'', item.brand||'', item.productName||'',
+          i+1, item.mgmtNo||'', item.brand||'', item.productName||'', item.category||'',
+          item.purchaseDate||'', item.purchaseStore||'', item.purchasePrice||0, item.listDate||'',
           s.saleDate||'', saleDay, month, s.platform||'',
-          s.salePrice||0, ((s.feeRate||0)*100).toFixed(1), fee, s.shipping||0,
-          item.purchasePrice||0, s.profit||0, profitRate,
-          item.purchaseDate||'', item.purchaseStore||'', item.category||'',
+          sp, ((s.feeRate||0)*100).toFixed(1), fee, ship,
+          salesProfit, netProfit, profitRate,
+          '済',
         ];
       });
     return [headers, ...rows];
@@ -2341,37 +2355,38 @@ const OtherTab = () => {
     toast('📤 売上管理表を出力しました');
   };
 
-  // ── 古物台帳CSV（仕入れ＋売却を時系列で1本に）──────────────
+  // ── 古物台帳CSV（1商品1行 / 仕入れ＋売却を横並びで記録）──────
+  // 古物営業法に基づく台帳フォーマット:
+  //  左側=仕入れ（入れ）/ 右側=売却（払出し）を同一行に記録
   const buildKobotsuRows = () => {
-    const headers = ['No','取引日','区分','管理番号','ブランド','品名','古物品目','数量','金額(円)','販路/決済','仕入先/売却先','確認方法','備考'];
-    // 仕入れ行
-    const purchaseRows = data.inventory.map(item => ({
-      date: item.purchaseDate || '',
-      row: [
-        '', item.purchaseDate||'', '仕入れ', item.mgmtNo||'',
-        item.brand||'', item.productName||'', item.category||'',
-        1, item.purchasePrice||0, item.paymentMethod||'現金',
-        item.purchaseStore||'', '目視確認', '',
-      ],
-    }));
-    // 売却行
-    const saleRows = data.sales.map(s => {
-      const item = data.inventory.find(i => i.id === s.inventoryId) || {};
-      return {
-        date: s.saleDate || '',
-        row: [
-          '', s.saleDate||'', '売却', item.mgmtNo||'',
-          item.brand||'', item.productName||'', item.category||'',
-          1, s.salePrice||0, s.platform||'',
-          s.platform||'', '−', '',
-        ],
-      };
-    });
-    // 日付順にマージ・連番付与
-    const merged = [...purchaseRows, ...saleRows]
-      .sort((a,b) => a.date > b.date ? 1 : -1)
-      .map((entry, i) => { entry.row[0] = i+1; return entry.row; });
-    return [headers, ...merged];
+    const headers = [
+      'No',
+      // ── 仕入れ（入れ）──
+      '仕入年月日','区分','品目','品名（特徴）','数量','仕入代価(円)',
+      '確認区分','仕入先','決済方法',
+      // ── 売却（払出し）──
+      '売却年月日','売却区分','売却代価(円)','販路/売却先','備考',
+    ];
+    // 全在庫を仕入日順に並べ、売却情報があれば横に付与
+    const rows = [...data.inventory]
+      .sort((a,b) => (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1)
+      .map((item, i) => {
+        const sale = data.sales.find(s => s.inventoryId === item.id);
+        // 確認区分: リサイクルショップ仕入れは「目視確認」、古物商経由は「古物商許可証」
+        const confirmType = item.purchaseStore ? '目視確認' : '古物商許可証';
+        return [
+          i+1,
+          item.purchaseDate||'', '仕入れ', item.category||'', `${item.brand||''} ${item.productName||''}`.trim(),
+          1, item.purchasePrice||0,
+          confirmType, item.purchaseStore||'', item.paymentMethod||'現金',
+          sale ? (sale.saleDate||'') : '',
+          sale ? '売却' : '',
+          sale ? (sale.salePrice||0) : '',
+          sale ? (sale.platform||'') : '',
+          '',
+        ];
+      });
+    return [headers, ...rows];
   };
 
   const exportKobotsuCSV = async () => {
@@ -2510,23 +2525,24 @@ const OtherTab = () => {
 
         {/* エクスポート */}
         {activeSection === 'export' && (() => {
-          const salesPreview = data.sales.length === 0 ? [] : [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
-          const kobotsuPreview = (() => {
-            const purchase = data.inventory.map(item => ({ date: item.purchaseDate||'', type:'仕入れ', name:`${item.brand||''} ${item.productName||''}`.trim(), amount: item.purchasePrice||0, partner: item.purchaseStore||'' }));
-            const sale = data.sales.map(s => {
-              const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
-              return { date: s.saleDate||'', type:'売却', name:`${item.brand||''} ${item.productName||''}`.trim(), amount: s.salePrice||0, partner: s.platform||'' };
+          const salesPreview = [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
+          // 古物台帳プレビュー: 在庫を仕入日順・1商品1行
+          const kobotsuPreview = [...data.inventory]
+            .sort((a,b)=>(a.purchaseDate||'')>(b.purchaseDate||'')?1:-1)
+            .map(item => {
+              const sale = data.sales.find(s=>s.inventoryId===item.id);
+              return { item, sale };
             });
-            return [...purchase,...sale].sort((a,b)=>a.date>b.date?1:-1);
-          })();
+          const thStyle = {padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'};
+          const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
           return (
             <div>
-              {/* まとめてDLボタン */}
+              {/* まとめてDL */}
               <button className="btn-primary" style={{width:'100%',marginBottom:16,fontSize:15}} onClick={exportAll}>
                 📦 売上管理表 ＋ 古物台帳　まとめてDL
               </button>
 
-              {/* 売上管理表カード */}
+              {/* ── 売上管理表プレビュー ── */}
               <div className="card" style={{padding:16,marginBottom:12}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
                   <div>
@@ -2539,75 +2555,91 @@ const OtherTab = () => {
                   <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>売上記録がありません</div>
                 ) : (
                   <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-                    <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',minWidth:380}}>
+                    <table style={{fontSize:12,borderCollapse:'collapse',minWidth:520}}>
                       <thead>
                         <tr style={{background:'#f8f8f8'}}>
-                          {['販売日','ブランド・品名','販路','売上','利益','利益率'].map(h=>(
-                            <th key={h} style={{padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'}}>{h}</th>
+                          {['仕入日','仕入先','仕入単価','出品日','販売日','販路','売上','手数料','送料','販売利益','純利益','利益率'].map(h=>(
+                            <th key={h} style={thStyle}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {salesPreview.slice(0,8).map(s => {
+                        {salesPreview.slice(0,10).map(s => {
                           const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
-                          const rate = s.salePrice>0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
+                          const sp   = s.salePrice||0;
+                          const fee  = Math.round(sp*(s.feeRate||0));
+                          const ship = s.shipping||0;
+                          const sProfit = sp - fee - ship;
+                          const nProfit = sProfit - (item.purchasePrice||0);
+                          const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
                           return (
                             <tr key={s.id} style={{borderBottom:'1px solid #f3f3f3'}}>
-                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',color:'#555'}}>{s.saleDate}</td>
-                              <td style={{padding:'6px 7px',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.brand} {item.productName}</td>
-                              <td style={{padding:'6px 7px',whiteSpace:'nowrap'}}>{s.platform}</td>
-                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700}}>¥{formatMoney(s.salePrice)}</td>
-                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700,color:s.profit>=0?'#16a34a':'#dc2626'}}>¥{formatMoney(s.profit)}</td>
-                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'}}>{rate}%</td>
+                              <td style={tdStyle({color:'#777'})}>{item.purchaseDate}</td>
+                              <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore}</td>
+                              <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
+                              <td style={tdStyle({color:'#777'})}>{item.listDate||'−'}</td>
+                              <td style={tdStyle({color:'#555'})}>{s.saleDate}</td>
+                              <td style={tdStyle()}>{s.platform}</td>
+                              <td style={tdStyle({fontWeight:700})}>¥{formatMoney(sp)}</td>
+                              <td style={tdStyle({color:'#888'})}>¥{formatMoney(fee)}</td>
+                              <td style={tdStyle({color:'#888'})}>¥{formatMoney(ship)}</td>
+                              <td style={tdStyle({fontWeight:600,color:sProfit>=0?'#2563eb':'#dc2626'})}>¥{formatMoney(sProfit)}</td>
+                              <td style={tdStyle({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
+                              <td style={tdStyle({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
                             </tr>
                           );
                         })}
                       </tbody>
                     </table>
-                    {salesPreview.length > 8 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {salesPreview.length-8}件（CSVには全件含まれます）</div>}
+                    {salesPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {salesPreview.length-10}件（CSVに全件含まれます）</div>}
                   </div>
                 )}
               </div>
 
-              {/* 古物台帳カード */}
+              {/* ── 古物台帳プレビュー ── */}
               <div className="card" style={{padding:16,marginBottom:12}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
                   <div>
                     <div style={{fontWeight:700,fontSize:15}}>📜 古物台帳</div>
-                    <div style={{fontSize:12,color:'#999',marginTop:2}}>仕入れ {data.inventory.length}件 ＋ 売却 {data.sales.length}件</div>
+                    <div style={{fontSize:12,color:'#999',marginTop:2}}>在庫 {data.inventory.length}件（売却済 {data.sales.length}件含む）</div>
                   </div>
                   <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportKobotsuCSV}>CSVのみ</button>
                 </div>
-                <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',borderRadius:8,padding:'7px 10px',marginBottom:10}}>
-                  📌 仕入れ・売却を時系列でまとめて記録（古物営業法対応）
+                <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
+                  📌 1商品1行・仕入れ＋売却を横並び記録（古物営業法対応）
                 </div>
                 {kobotsuPreview.length === 0 ? (
                   <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>データがありません</div>
                 ) : (
                   <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-                    <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',minWidth:360}}>
+                    <table style={{fontSize:12,borderCollapse:'collapse',minWidth:560}}>
                       <thead>
+                        <tr>
+                          <th colSpan={5} style={{...thStyle,background:'#dbeafe',color:'#1e3a5f',textAlign:'center'}}>◀ 仕入れ（入れ）</th>
+                          <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
+                        </tr>
                         <tr style={{background:'#f8f8f8'}}>
-                          {['取引日','区分','品名','金額','取引先'].map(h=>(
-                            <th key={h} style={{padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'}}>{h}</th>
+                          {['仕入年月日','品目','品名（特徴）','仕入単価','確認区分','売却年月日','売却単価','販路'].map(h=>(
+                            <th key={h} style={thStyle}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {kobotsuPreview.slice(0,10).map((row,i) => (
-                          <tr key={i} style={{borderBottom:'1px solid #f3f3f3',background: row.type==='売却' ? '#f9fafb' : 'white'}}>
-                            <td style={{padding:'6px 7px',whiteSpace:'nowrap',color:'#555'}}>{row.date}</td>
-                            <td style={{padding:'6px 7px',whiteSpace:'nowrap'}}>
-                              <span style={{fontSize:11,fontWeight:700,padding:'1px 7px',borderRadius:10,background:row.type==='仕入れ'?'#dbeafe':'#d1fae5',color:row.type==='仕入れ'?'#1e3a5f':'#065f46'}}>{row.type}</span>
-                            </td>
-                            <td style={{padding:'6px 7px',maxWidth:130,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{row.name||'−'}</td>
-                            <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700}}>¥{formatMoney(row.amount)}</td>
-                            <td style={{padding:'6px 7px',whiteSpace:'nowrap',color:'#555'}}>{row.partner}</td>
+                        {kobotsuPreview.slice(0,10).map(({item,sale},i) => (
+                          <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
+                            <td style={tdStyle({color:'#555'})}>{item.purchaseDate}</td>
+                            <td style={tdStyle()}>{item.category||'−'}</td>
+                            <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
+                            <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
+                            <td style={tdStyle({color:'#777',fontSize:10})}>目視確認</td>
+                            <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
+                            <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
+                            <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                    {kobotsuPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {kobotsuPreview.length-10}件（CSVには全件含まれます）</div>}
+                    {kobotsuPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {kobotsuPreview.length-10}件（CSVに全件含まれます）</div>}
                   </div>
                 )}
               </div>
