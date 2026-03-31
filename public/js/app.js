@@ -1048,6 +1048,7 @@ const PurchaseTab = () => {
   const [tagReading, setTagReading] = React.useState(false);
   const [tagReadResult, setTagReadResult] = React.useState(null);
   const [seoCategoryInput, setSeoCategoryInput] = React.useState('');
+  const [swapIdx, setSwapIdx] = React.useState(null); // 入れ替え元インデックス
   const cameraInputRef = React.useRef();
   const libraryInputRef = React.useRef();
   const multiInputRef = React.useRef();
@@ -1623,15 +1624,73 @@ const PurchaseTab = () => {
 
             {/* サムネイルプレビュー */}
             {photos.length > 0 && (
-              <div className="photo-grid" style={{marginBottom:12}}>
-                {photos.map((p, i) => (
-                  <div key={p.id} className="photo-item">
-                    <img src={p.thumbUrl || p.previewUrl} alt={`photo${i}`}/>
-                    {i === 0 && <div style={{position:'absolute',top:4,left:4,background:'var(--color-primary)',color:'white',fontSize:10,padding:'2px 6px',borderRadius:4,fontWeight:700}}>TOP</div>}
-                    <button onClick={() => removePhoto(i)}
-                      style={{position:'absolute',top:4,right:4,background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:'50%',width:24,height:24,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:14}}>×</button>
-                  </div>
-                ))}
+              <div style={{marginBottom:12}}>
+                {/* 並び替えヒント */}
+                <div style={{fontSize:11,color: swapIdx !== null ? 'var(--color-primary)' : '#bbb',
+                  fontWeight:700,marginBottom:8,textAlign:'center',
+                  background: swapIdx !== null ? '#fff0f0' : '#f8f8f8',
+                  borderRadius:8,padding:'6px 10px',transition:'all 0.2s'}}>
+                  {swapIdx !== null
+                    ? `📸 ${swapIdx + 1}枚目を選択中 → 入れ替えたい写真をタップ`
+                    : '↕ 写真をタップして並び替え'}
+                </div>
+                <div className="photo-grid">
+                  {photos.map((p, i) => {
+                    const isSelected = swapIdx === i;
+                    return (
+                      <div key={p.id} className="photo-item"
+                        onClick={() => {
+                          if (swapIdx === null) {
+                            // 1枚目選択
+                            setSwapIdx(i);
+                          } else if (swapIdx === i) {
+                            // 同じ写真→選択解除
+                            setSwapIdx(null);
+                          } else {
+                            // 2枚目選択→入れ替え
+                            setPhotos(prev => {
+                              const arr = [...prev];
+                              [arr[swapIdx], arr[i]] = [arr[i], arr[swapIdx]];
+                              return arr;
+                            });
+                            setSwapIdx(null);
+                          }
+                        }}
+                        style={{
+                          outline: isSelected ? '3px solid var(--color-primary)' : 'none',
+                          outlineOffset: '-3px',
+                          transform: isSelected ? 'scale(0.94)' : 'scale(1)',
+                          transition: 'transform 0.15s, outline 0.15s',
+                          borderRadius: 12,
+                        }}>
+                        <img src={p.thumbUrl || p.previewUrl} alt={`photo${i}`}/>
+                        {/* TOPバッジ or 番号 */}
+                        <div style={{position:'absolute',top:5,left:5,
+                          background: i === 0 ? 'var(--color-primary)' : 'rgba(0,0,0,0.45)',
+                          color:'white',fontSize:10,padding:'2px 7px',borderRadius:6,fontWeight:700}}>
+                          {i === 0 ? 'TOP' : i + 1}
+                        </div>
+                        {/* 選択中インジケーター */}
+                        {isSelected && (
+                          <div style={{position:'absolute',inset:0,background:'rgba(232,64,64,0.15)',
+                            display:'flex',alignItems:'center',justifyContent:'center',borderRadius:12}}>
+                            <div style={{background:'var(--color-primary)',color:'white',borderRadius:99,padding:'4px 12px',fontSize:12,fontWeight:700}}>
+                              選択中
+                            </div>
+                          </div>
+                        )}
+                        {/* 削除ボタン（並び替えモード中は非表示） */}
+                        {swapIdx === null && (
+                          <button onClick={e => { e.stopPropagation(); removePhoto(i); }}
+                            style={{position:'absolute',top:5,right:5,background:'rgba(0,0,0,0.5)',
+                              color:'white',border:'none',borderRadius:'50%',width:26,height:26,
+                              display:'flex',alignItems:'center',justifyContent:'center',
+                              cursor:'pointer',fontSize:14,fontWeight:700}}>×</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
