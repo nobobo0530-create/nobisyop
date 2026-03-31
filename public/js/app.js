@@ -2069,14 +2069,12 @@ const InventoryTab = () => {
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
-  const { data, setData, currentUser } = React.useContext(AppContext);
+  const { data, setData, currentUser, setEditingItem, setTab } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
-  const [form, setForm] = React.useState({
-    inventoryId: '', platform: 'メルカリ', salePrice: '',
-    feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(),
-    saleDate: today(),
-  });
+  const [editingSale, setEditingSale] = React.useState(null); // 編集中の売上レコード
+  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today() };
+  const [form, setForm] = React.useState(emptyForm);
 
   const soldItems = data.inventory.filter(i => i.status === 'sold');
   const unrecordedSold = soldItems.filter(i => !data.sales.find(s => s.inventoryId === i.id));
@@ -2089,6 +2087,27 @@ const SalesTab = () => {
     setForm(prev => ({ ...prev, platform, feeRate: rate }));
   };
 
+  const openNew = () => {
+    setEditingSale(null);
+    setForm(emptyForm);
+    setShowForm(true);
+  };
+
+  const openEdit = (sale) => {
+    setEditingSale(sale);
+    setForm({
+      inventoryId: sale.inventoryId || '',
+      platform: sale.platform || 'メルカリ',
+      salePrice: String(sale.salePrice || ''),
+      feeRate: sale.feeRate ?? 0.10,
+      shipping: String(sale.shipping ?? CONFIG.ESTIMATED_SHIPPING),
+      saleDate: sale.saleDate || today(),
+    });
+    setShowForm(true);
+  };
+
+  const closeForm = () => { setShowForm(false); setEditingSale(null); setForm(emptyForm); };
+
   const selectedItem = data.inventory.find(i => i.id === form.inventoryId);
   const profit = selectedItem
     ? Math.round(Number(form.salePrice) * (1 - form.feeRate) - Number(form.shipping) - selectedItem.purchasePrice)
@@ -2097,19 +2116,41 @@ const SalesTab = () => {
   const handleSave = () => {
     if (!form.inventoryId) { toast('商品を選択してください'); return; }
     if (!form.salePrice) { toast('販売価格を入力してください'); return; }
-    const newSale = {
-      id: Date.now().toString(),
-      ...form,
-      userId: currentUser,
-      salePrice: Number(form.salePrice),
-      shipping: Number(form.shipping),
-      profit,
-      createdAt: new Date().toISOString(),
-    };
-    setData({ ...data, sales: [...data.sales, newSale] });
-    setShowForm(false);
-    toast('✅ 売上を記録しました');
-    setForm({ inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today() });
+
+    if (editingSale) {
+      // ── 編集 ──
+      const updated = {
+        ...editingSale,
+        ...form,
+        salePrice: Number(form.salePrice),
+        shipping: Number(form.shipping),
+        profit,
+        updatedAt: new Date().toISOString(),
+      };
+      setData({ ...data, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
+      toast('✅ 売上を更新しました');
+    } else {
+      // ── 新規 ──
+      const newSale = {
+        id: Date.now().toString(),
+        ...form,
+        userId: currentUser,
+        salePrice: Number(form.salePrice),
+        shipping: Number(form.shipping),
+        profit,
+        createdAt: new Date().toISOString(),
+      };
+      setData({ ...data, sales: [...data.sales, newSale] });
+      toast('✅ 売上を記録しました');
+    }
+    closeForm();
+  };
+
+  const handleDelete = (saleId) => {
+    if (!window.confirm('この売上記録を削除しますか？')) return;
+    setData({ ...data, sales: data.sales.filter(s => s.id !== saleId) });
+    closeForm();
+    toast('🗑️ 売上記録を削除しました');
   };
 
   // 月次サマリー
@@ -2140,7 +2181,7 @@ const SalesTab = () => {
         )}
 
         <button className="btn-primary" style={{width:'100%',marginBottom:16}}
-          onClick={() => setShowForm(true)}>
+          onClick={openNew}>
           ＋ 売上を登録する
         </button>
 
@@ -2194,9 +2235,10 @@ const SalesTab = () => {
               const item = data.inventory.find(i => i.id === s.inventoryId);
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               return (
-                <div key={s.id} className="card" style={{padding:14,marginBottom:8,display:'flex',gap:10,alignItems:'center'}}>
+                <div key={s.id} className="card" style={{padding:14,marginBottom:8,display:'flex',gap:10,alignItems:'center',cursor:'pointer'}}
+                  onClick={() => openEdit(s)}>
                   <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={50} fallback="💰" />
-                  <div style={{flex:1}}>
+                  <div style={{flex:1,minWidth:0}}>
                     <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item?.brand} {item?.productName || '商品'}</div>
                     <div style={{fontSize:12,color:'#999',marginTop:2}}>{s.saleDate} · <span style={{fontWeight:600,color:'#555'}}>{s.platform}</span></div>
                     <div style={{fontSize:13,marginTop:3,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
@@ -2205,6 +2247,7 @@ const SalesTab = () => {
                       <span style={{fontSize:11,color: sProfitRate >= 0 ? '#16a34a' : '#dc2626',background: sProfitRate >= 0 ? '#f0fdf4' : '#fef2f2',borderRadius:10,padding:'1px 6px',fontWeight:600}}>{sProfitRate}%</span>
                     </div>
                   </div>
+                  <div style={{fontSize:11,color:'#bbb',flexShrink:0}}>✏️</div>
                 </div>
               );
             })}
@@ -2212,14 +2255,33 @@ const SalesTab = () => {
         )}
       </div>
 
-      {/* 売上登録モーダル */}
+      {/* 売上登録・編集モーダル */}
       {showForm && (
-        <div className="modal-overlay" onClick={() => setShowForm(false)}>
+        <div className="modal-overlay" onClick={closeForm}>
           <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-              <div style={{fontWeight:700,fontSize:17}}>売上登録</div>
-              <button onClick={() => setShowForm(false)} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+              <div style={{fontWeight:700,fontSize:17}}>{editingSale ? '✏️ 売上を編集' : '売上登録'}</div>
+              <button onClick={closeForm} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
             </div>
+
+            {/* 編集時：商品写真の変更リンク */}
+            {editingSale && (() => {
+              const linkedItem = data.inventory.find(i => i.id === editingSale.inventoryId);
+              if (!linkedItem) return null;
+              return (
+                <div style={{background:'#f8f8f8',borderRadius:12,padding:'10px 12px',marginBottom:14,display:'flex',alignItems:'center',gap:10}}>
+                  <ItemThumbnail thumbId={linkedItem.photos?.[0]?.thumbId} thumbDataUrl={linkedItem.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{linkedItem.brand} {linkedItem.productName}</div>
+                    <div style={{fontSize:11,color:'#999',marginTop:1}}>仕入れ ¥{formatMoney(linkedItem.purchasePrice)}</div>
+                  </div>
+                  <button style={{background:'#E84040',color:'white',border:'none',borderRadius:8,padding:'6px 10px',fontSize:11,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}
+                    onClick={() => { closeForm(); setEditingItem(linkedItem); setTab('purchase'); }}>
+                    写真を変更
+                  </button>
+                </div>
+              );
+            })()}
 
             <div style={{marginBottom:12}}>
               <label className="field-label">商品選択</label>
@@ -2295,8 +2357,14 @@ const SalesTab = () => {
             })()}
 
             <button className="btn-primary" style={{width:'100%'}} onClick={handleSave}>
-              💾 売上を記録する
+              💾 {editingSale ? '売上を更新する' : '売上を記録する'}
             </button>
+            {editingSale && (
+              <button style={{width:'100%',marginTop:8,background:'none',border:'1px solid #fca5a5',color:'#dc2626',borderRadius:12,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer'}}
+                onClick={() => handleDelete(editingSale.id)}>
+                🗑️ この売上記録を削除する
+              </button>
+            )}
           </div>
         </div>
       )}
