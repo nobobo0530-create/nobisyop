@@ -526,6 +526,11 @@ const HomeTab = () => {
   const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
   const totalProfit = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const totalCount = monthlySales.length;
+  const profitRate = totalRevenue > 0 ? Math.round(totalProfit / totalRevenue * 100) : 0;
+  // 在庫金額合計（売れていない商品の仕入れ値合計）
+  const totalInventoryValue = data.inventory
+    .filter(i => i.status !== 'sold')
+    .reduce((a, i) => a + (i.purchasePrice || 0), 0);
 
   const recentInventory = [...data.inventory]
     .sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate))
@@ -547,10 +552,15 @@ const HomeTab = () => {
           <div className="kpi-card">
             <div className="kpi-label">純利益</div>
             <div className="kpi-value" style={{color: totalProfit >= 0 ? '#16a34a' : '#dc2626', fontSize:20}}>¥{formatMoney(totalProfit)}</div>
+            <div style={{fontSize:11,color:'#999',marginTop:2}}>利益率 {profitRate}%</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">在庫数</div>
             <div className="kpi-value" style={{fontSize:20}}>{data.inventory.filter(i => i.status !== 'sold').length}<span className="kpi-unit">件</span></div>
+          </div>
+          <div className="kpi-card" style={{gridColumn:'1/-1'}}>
+            <div className="kpi-label">在庫金額合計（仕入れ値）</div>
+            <div className="kpi-value" style={{fontSize:20}}>¥{formatMoney(totalInventoryValue)}</div>
           </div>
         </div>
 
@@ -846,11 +856,11 @@ const PurchaseTab = () => {
   const measureParts = measureFields.map(([key, label]) => form[key] ? `${label}${form[key]}cm` : '').filter(Boolean);
   const computedSize = [form.sizeTag, ...measureParts].filter(Boolean).join(' / ');
 
-  // 税抜計算ヘルパー
+  // 税抜計算ヘルパー（Math.roundで 3190÷1.1=2900 を正確に出す）
   const calcTaxEx = (taxIn, taxRate) => {
     const n = Number(taxIn) || 0;
     if (n === 0 || taxRate === 0) return n;
-    return Math.floor(n / (1 + taxRate / 100));
+    return Math.round(n / (1 + taxRate / 100));
   };
 
   // 仕入れ合計（税込・税抜）
@@ -1978,10 +1988,12 @@ const SalesTab = () => {
   const salesByMonth = {};
   data.sales.forEach(s => {
     const m = s.saleDate?.slice(0,7) || 'unknown';
-    if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0 };
+    if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, platforms: {} };
     salesByMonth[m].revenue += s.salePrice || 0;
     salesByMonth[m].profit += s.profit || 0;
     salesByMonth[m].count++;
+    const p = s.platform || 'その他';
+    salesByMonth[m].platforms[p] = (salesByMonth[m].platforms[p] || 0) + 1;
   });
   const months = Object.keys(salesByMonth).sort().reverse();
 
@@ -2008,25 +2020,41 @@ const SalesTab = () => {
         {months.length > 0 && (
           <>
             <div style={{fontWeight:700,fontSize:15,marginBottom:10,color:'#333'}}>月次サマリー</div>
-            {months.map(m => (
-              <div key={m} className="card" style={{padding:16,marginBottom:10}}>
-                <div style={{fontWeight:700,fontSize:15,marginBottom:10,color:'#333'}}>{m.replace('-','年')}月</div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-                  <div>
-                    <div style={{fontSize:11,color:'#999'}}>売上</div>
-                    <div style={{fontWeight:700,fontSize:15}}>¥{formatMoney(salesByMonth[m].revenue)}</div>
+            {months.map(m => {
+              const mData = salesByMonth[m];
+              const mProfitRate = mData.revenue > 0 ? Math.round(mData.profit / mData.revenue * 100) : 0;
+              const platformEntries = Object.entries(mData.platforms).sort((a,b) => b[1]-a[1]);
+              return (
+                <div key={m} className="card" style={{padding:16,marginBottom:10}}>
+                  <div style={{fontWeight:700,fontSize:15,marginBottom:10,color:'#333'}}>{m.replace('-','年')}月</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginBottom:8}}>
+                    <div>
+                      <div style={{fontSize:11,color:'#999'}}>売上</div>
+                      <div style={{fontWeight:700,fontSize:14}}>¥{formatMoney(mData.revenue)}</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:11,color:'#999'}}>純利益</div>
+                      <div style={{fontWeight:700,fontSize:14,color: mData.profit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(mData.profit)}</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:11,color:'#999'}}>利益率</div>
+                      <div style={{fontWeight:700,fontSize:14,color: mProfitRate >= 0 ? '#16a34a' : '#dc2626'}}>{mProfitRate}%</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:11,color:'#999'}}>件数</div>
+                      <div style={{fontWeight:700,fontSize:14}}>{mData.count}件</div>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{fontSize:11,color:'#999'}}>純利益</div>
-                    <div style={{fontWeight:700,fontSize:15,color: salesByMonth[m].profit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(salesByMonth[m].profit)}</div>
-                  </div>
-                  <div>
-                    <div style={{fontSize:11,color:'#999'}}>件数</div>
-                    <div style={{fontWeight:700,fontSize:15}}>{salesByMonth[m].count}件</div>
-                  </div>
+                  {platformEntries.length > 0 && (
+                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                      {platformEntries.map(([p,cnt]) => (
+                        <span key={p} style={{fontSize:11,background:'#f3f4f6',color:'#374151',borderRadius:20,padding:'2px 8px',fontWeight:600}}>{p} {cnt}件</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </>
         )}
 
@@ -2036,15 +2064,17 @@ const SalesTab = () => {
             <div style={{fontWeight:700,fontSize:15,margin:'16px 0 10px',color:'#333'}}>売上履歴</div>
             {[...data.sales].reverse().map(s => {
               const item = data.inventory.find(i => i.id === s.inventoryId);
+              const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               return (
                 <div key={s.id} className="card" style={{padding:14,marginBottom:8,display:'flex',gap:10,alignItems:'center'}}>
                   <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} size={50} fallback="💰" />
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item?.brand} {item?.productName || '商品'}</div>
-                    <div style={{fontSize:12,color:'#999',marginTop:2}}>{s.saleDate} · {s.platform}</div>
-                    <div style={{fontSize:13,marginTop:3}}>
+                    <div style={{fontSize:12,color:'#999',marginTop:2}}>{s.saleDate} · <span style={{fontWeight:600,color:'#555'}}>{s.platform}</span></div>
+                    <div style={{fontSize:13,marginTop:3,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                       <span style={{fontWeight:700}}>¥{formatMoney(s.salePrice)}</span>
-                      <span style={{marginLeft:8,color: s.profit >= 0 ? '#16a34a' : '#dc2626',fontWeight:600}}>利益: ¥{formatMoney(s.profit)}</span>
+                      <span style={{color: s.profit >= 0 ? '#16a34a' : '#dc2626',fontWeight:600}}>利益 ¥{formatMoney(s.profit)}</span>
+                      <span style={{fontSize:11,color: sProfitRate >= 0 ? '#16a34a' : '#dc2626',background: sProfitRate >= 0 ? '#f0fdf4' : '#fef2f2',borderRadius:10,padding:'1px 6px',fontWeight:600}}>{sProfitRate}%</span>
                     </div>
                   </div>
                 </div>
@@ -2084,11 +2114,19 @@ const SalesTab = () => {
                 </select>
               </div>
               <div>
-                <label className="field-label">手数料率 (%)</label>
+                <label className="field-label">
+                  手数料率 (%)
+                  {form.platform === 'ラクマ' && <span style={{fontSize:10,color:'#f59e0b',marginLeft:4}}>※変動型・手動確認</span>}
+                </label>
                 <input type="number" className="input-field" value={(form.feeRate * 100).toFixed(1)}
                   onChange={e => setF('feeRate', Number(e.target.value) / 100)} step="0.1"/>
               </div>
             </div>
+            {form.platform === 'ラクマ' && (
+              <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
+                ⚠️ ラクマの手数料は商品カテゴリー・販売価格により変動します。実際の手数料を確認して手動で入力してください。
+              </div>
+            )}
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
@@ -2109,13 +2147,24 @@ const SalesTab = () => {
                 onChange={e => setF('saleDate', e.target.value)}/>
             </div>
 
-            {form.salePrice && selectedItem && (
-              <div style={{background: profit >= 0 ? '#f0fdf4' : '#fef2f2',border:`1px solid ${profit >= 0 ? '#bbf7d0' : '#fecaca'}`,borderRadius:10,padding:12,marginBottom:16}}>
-                <div style={{fontSize:12,color:'#666',marginBottom:4}}>純利益</div>
-                <div style={{fontSize:22,fontWeight:700,color: profit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(profit)}</div>
-                <div style={{fontSize:11,color:'#999',marginTop:2}}>仕入れ ¥{formatMoney(selectedItem.purchasePrice)} / 手数料 ¥{Math.round(Number(form.salePrice) * form.feeRate).toLocaleString()} / 送料 ¥{Number(form.shipping).toLocaleString()}</div>
-              </div>
-            )}
+            {form.salePrice && selectedItem && (() => {
+              const profitRate = Number(form.salePrice) > 0 ? Math.round(profit / Number(form.salePrice) * 100) : 0;
+              return (
+                <div style={{background: profit >= 0 ? '#f0fdf4' : '#fef2f2',border:`1px solid ${profit >= 0 ? '#bbf7d0' : '#fecaca'}`,borderRadius:10,padding:12,marginBottom:16}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                    <div>
+                      <div style={{fontSize:12,color:'#666',marginBottom:4}}>純利益</div>
+                      <div style={{fontSize:22,fontWeight:700,color: profit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(profit)}</div>
+                    </div>
+                    <div style={{textAlign:'right'}}>
+                      <div style={{fontSize:12,color:'#666',marginBottom:4}}>利益率</div>
+                      <div style={{fontSize:22,fontWeight:700,color: profit >= 0 ? '#16a34a' : '#dc2626'}}>{profitRate}%</div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:11,color:'#999',marginTop:6}}>仕入れ ¥{formatMoney(selectedItem.purchasePrice)} / 手数料 ¥{Math.round(Number(form.salePrice) * form.feeRate).toLocaleString()} / 送料 ¥{Number(form.shipping).toLocaleString()}</div>
+                </div>
+              );
+            })()}
 
             <button className="btn-primary" style={{width:'100%'}} onClick={handleSave}>
               💾 売上を記録する
