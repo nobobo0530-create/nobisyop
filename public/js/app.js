@@ -3,8 +3,8 @@
 // ============================================================
 const CONFIG = {
   ANTHROPIC_API_URL: 'https://api.anthropic.com/v1/messages',
-  MODEL: 'claude-haiku-4-5',            // 速度優先（Claude 4.5 Haiku）
-  MODEL_HEAVY: 'claude-opus-4-5',       // 高精度が必要な場合用（現在未使用）
+  MODEL: 'claude-haiku-4-5-20251001',   // 速度優先（Claude Haiku 4.5）
+  MODEL_HEAVY: 'claude-opus-4-6',       // 高精度が必要な場合用（現在未使用）
   PRICE_SPLIT_DIVISOR: 100,
   PLATFORM_FEES: {
     'メルカリ': 0.10,
@@ -672,6 +672,11 @@ const HomeTab = () => {
   const totalProfit = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const inventoryCount = data.inventory.filter(i => i.status !== 'sold').length;
 
+  // ── 先月の利益 ──
+  const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
+  const lastMonthProfit = data.sales.filter(s => s.saleDate?.startsWith(lastMonth)).reduce((a, s) => a + (s.profit || 0), 0);
+
   const monthlyGoal = userProfile?.monthlyGoal || 100000;
   const rewardPercent = userProfile?.rewardPercent || 10;
   const milestones = userProfile?.milestones || [];
@@ -933,6 +938,11 @@ const HomeTab = () => {
             <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:totalProfit>=0?'#16a34a':'#E84040'}}>
               ¥{formatMoney(totalProfit)}
             </div>
+            {lastMonthProfit > 0 && (
+              <div style={{fontSize:10,color:'#bbb',marginTop:4}}>
+                先月 ¥{formatMoney(lastMonthProfit)}
+              </div>
+            )}
           </div>
           <div style={C.card}>
             <div style={{fontSize:11,color:'#999',marginBottom:6,fontWeight:600}}>在庫数</div>
