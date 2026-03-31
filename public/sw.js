@@ -1,15 +1,14 @@
-// v7: サーバープロキシ構造に変更・全キャッシュ再構築
-const CACHE_NAME = 'nobushop-v7';
+// v8: index.html / app.js をネットワークファーストに変更（即時反映）
+const CACHE_NAME = 'nobushop-v8';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
-  // app.js はバージョンクエリ付きで個別キャッシュされるためここには含めない
 ];
 
-// キャッシュしないURLのパターン
+// キャッシュしないURLのパターン（外部API等）
 const NO_CACHE_PATTERNS = [
-  '/api/',           // Vercel Serverless Functions（config など）
+  '/api/',           // Vercel Serverless Functions
   'supabase.co',     // Supabase API
   'anthropic.com',   // Claude API
   'unpkg.com',       // React CDN
@@ -18,8 +17,18 @@ const NO_CACHE_PATTERNS = [
   'cdnjs.cloudflare',// QRCode CDN
 ];
 
+// ネットワークファーストにするURLパターン（常に最新版を優先）
+const NETWORK_FIRST_PATTERNS = [
+  '/index.html',
+  '/js/app.js',
+  '/?',  // クエリ付きindex.html
+];
+
 const shouldSkipCache = (url) =>
   NO_CACHE_PATTERNS.some(pattern => url.includes(pattern));
+
+const shouldNetworkFirst = (url) =>
+  NETWORK_FIRST_PATTERNS.some(pattern => url.includes(pattern));
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -45,14 +54,35 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = event.request.url;
 
-  // キャッシュしないリクエスト（API・Supabase・CDN等）
-  // ※ iOS Safari は return だけだと fetch が "Load failed" になるため
-  //    必ず respondWith(fetch()) で明示的にネットワークへ転送する
+  // 外部API等はキャッシュせずそのままネットワークへ
   if (shouldSkipCache(url)) {
     event.respondWith(fetch(event.request));
     return;
   }
 
+  // index.html / app.js はネットワークファースト（常に最新版を取得）
+  if (shouldNetworkFirst(url)) {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response.ok && event.request.method === 'GET') {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => {
+          // ネットワーク失敗時はキャッシュにフォールバック
+          return caches.match(event.request).then(cached => {
+            if (cached) return cached;
+            return caches.match('/index.html');
+          });
+        })
+    );
+    return;
+  }
+
+  // その他（アイコン等）はキャッシュファースト
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
