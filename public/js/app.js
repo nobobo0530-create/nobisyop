@@ -825,6 +825,67 @@ const HomeTab = () => {
           </div>
         </div>
 
+        {/* ── 月次利益グラフ ── */}
+        {(() => {
+          // 直近12ヶ月分のデータを生成
+          const months = [];
+          for (let i = 11; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+            months.push({
+              key,
+              label: i === 0 ? '今月' : i === 1 ? '先月' : `${d.getMonth()+1}月`,
+              profit: monthlyProfits[key] || 0,
+              isCurrent: i === 0,
+              isLast: i === 1,
+            });
+          }
+          const maxP = Math.max(...months.map(m => Math.abs(m.profit)), 1);
+          const chartRef = React.useRef();
+          // 初回だけ右端（最新月）にスクロール
+          React.useEffect(() => {
+            if (chartRef.current) chartRef.current.scrollLeft = chartRef.current.scrollWidth;
+          }, []);
+          return (
+            <div style={{...C.card, padding:'14px 14px 12px'}}>
+              <div style={{fontSize:12,color:'#999',fontWeight:600,marginBottom:10}}>📊 月次利益</div>
+              <div ref={chartRef}
+                style={{overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:2,
+                  /* スクロールバー非表示 */
+                  scrollbarWidth:'none',msOverflowStyle:'none'}}>
+                <div style={{display:'flex',alignItems:'flex-end',gap:6,minWidth:'max-content',paddingRight:2}}>
+                  {months.map(m => {
+                    const barH = Math.max(4, Math.round(Math.abs(m.profit) / maxP * 72));
+                    const isNeg = m.profit < 0;
+                    const barColor = m.isCurrent ? '#E84040' : m.isLast ? '#fca5a5' : '#d1d5db';
+                    return (
+                      <div key={m.key} style={{display:'flex',flexDirection:'column',alignItems:'center',width:52,flexShrink:0}}>
+                        {/* 利益額 */}
+                        <div style={{fontSize:9,fontWeight:m.isCurrent||m.isLast?700:400,
+                          color:m.isCurrent?'#E84040':m.isLast?'#f87171':'#999',
+                          marginBottom:3,textAlign:'center',lineHeight:1.2,minHeight:20,display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
+                          {m.profit !== 0 ? (isNeg?'-':'+')+formatMoney(Math.abs(m.profit)) : '−'}
+                        </div>
+                        {/* バー */}
+                        <div style={{width:'100%',height:72,display:'flex',flexDirection:'column',justifyContent:'flex-end',background:'#f5f5f5',borderRadius:5,overflow:'hidden'}}>
+                          <div style={{width:'100%',height:barH,background:barColor,borderRadius:'3px 3px 0 0',
+                            transition:'height 0.6s ease',opacity: m.profit===0?0.3:1}}/>
+                        </div>
+                        {/* 月ラベル */}
+                        <div style={{fontSize:10,marginTop:5,fontWeight:m.isCurrent||m.isLast?700:400,
+                          color:m.isCurrent?'#E84040':m.isLast?'#f87171':'#aaa'}}>
+                          {m.label}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{fontSize:9,color:'#ccc',textAlign:'right',marginTop:4}}>← スワイプで過去月</div>
+            </div>
+          );
+        })()}
+
         {/* ── 今月の利益 / 在庫数 ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
           <div style={C.card}>
