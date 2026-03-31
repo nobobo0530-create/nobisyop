@@ -2213,6 +2213,13 @@ const InventoryTab = () => {
     toast('✅ 出品中に変更しました');
   };
 
+  const markAsUnlisted = (item) => {
+    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'unlisted' } : i);
+    setData({ ...data, inventory: updated });
+    setSelected(null);
+    toast('✅ 未出品に戻しました');
+  };
+
   const deleteItem = (item) => {
     if (!confirm('この商品を削除しますか？')) return;
     const updated = data.inventory.filter(i => i.id !== item.id);
@@ -2361,6 +2368,12 @@ const InventoryTab = () => {
                 <button className="btn-secondary" style={{width:'100%'}}
                   onClick={() => markAsListed(selected)}>
                   📱 出品中にする
+                </button>
+              )}
+              {selected.status === 'listed' && (
+                <button className="btn-secondary" style={{width:'100%'}}
+                  onClick={() => markAsUnlisted(selected)}>
+                  📦 未出品に戻す
                 </button>
               )}
               <button onClick={() => deleteItem(selected)}
@@ -2682,6 +2695,11 @@ const SalesTab = () => {
         </div>
       )}
 
+      {/* スクショ用file input（モーダルの外に置かないとiOSで動かない） */}
+      <input ref={ssInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/*"
+        style={{position:'fixed',top:0,left:0,width:'0.1px',height:'0.1px',opacity:0,overflow:'hidden',pointerEvents:'none'}}
+        onChange={handleSsInput}/>
+
       {/* 売上登録・編集モーダル */}
       {showForm && (
         <div className="modal-overlay" onClick={closeForm}>
@@ -2711,7 +2729,6 @@ const SalesTab = () => {
             })()}
 
             {/* スクショから自動読み込み */}
-            <input ref={ssInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handleSsInput}/>
             <button style={{width:'100%',marginBottom:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:12,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer',color:'#0369a1',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}
               onClick={() => ssInputRef.current?.click()} disabled={ssReading}>
               {ssReading ? <><span className="spinner"/><span>読み取り中...</span></> : '📸 メルカリのスクショから自動入力'}
@@ -2721,12 +2738,10 @@ const SalesTab = () => {
               <label className="field-label">商品選択</label>
               <select className="input-field" value={form.inventoryId} onChange={e => setF('inventoryId', e.target.value)}>
                 <option value="">商品を選択...</option>
-                {soldItems.map(i => (
-                  <option key={i.id} value={i.id}>{i.brand} {i.productName}</option>
-                ))}
-                {data.inventory.filter(i => i.status === 'listed').map(i => (
-                  <option key={i.id} value={i.id}>{i.brand} {i.productName}（出品中）</option>
-                ))}
+                {data.inventory.filter(i => i.userId === currentUser).map(i => {
+                  const statusLabels = { unlisted:'未出品', listed:'出品中', sold:'売却済' };
+                  return <option key={i.id} value={i.id}>{i.brand} {i.productName}（{statusLabels[i.status]||i.status}）</option>;
+                })}
               </select>
             </div>
 
