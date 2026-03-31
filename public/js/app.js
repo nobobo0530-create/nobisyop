@@ -388,6 +388,9 @@ const getInitialData = () => ({
       '万代': '',
       'エコリング': '',
     },
+    // ヤフオクストア一覧（ストアごとに許可証番号が異なるため別管理）
+    // { id, storeName, license, companyName }
+    yahooStores: [],
   },
 });
 
@@ -854,6 +857,8 @@ const PurchaseTab = () => {
   const [showDesc, setShowDesc] = React.useState(false);
   const [purchaseType, setPurchaseType] = React.useState('store'); // 'store' | 'online'
   const [purchaseStoreIsCustom, setPurchaseStoreIsCustom] = React.useState(false); // 仕入れ先「その他」モード
+  const [purchaseIsYahoo, setPurchaseIsYahoo] = React.useState(false);             // ヤフオクストアモード
+  const [yahooSubStoreIsCustom, setYahooSubStoreIsCustom] = React.useState(false); // ヤフオク手入力モード
   const [tagReading, setTagReading] = React.useState(false);
   const [tagReadResult, setTagReadResult] = React.useState(null);
   const [seoCategoryInput, setSeoCategoryInput] = React.useState('');
@@ -920,8 +925,18 @@ const PurchaseTab = () => {
       showOptionalFee:   (editingItem.purchaseCost?.optionalFeeTaxIn > 0) || false,
     });
     setPurchaseType(editingItem.purchaseType || 'store');
-    const isKnownStore = CONFIG.PURCHASE_STORES.includes(editingItem.purchaseStore);
-    setPurchaseStoreIsCustom(!isKnownStore && !!editingItem.purchaseStore);
+    // ヤフオクストア判定
+    const isYahoo = editingItem.purchaseStoreType === 'yahoo';
+    setPurchaseIsYahoo(isYahoo);
+    if (isYahoo) {
+      const yahooStores = data.settings?.yahooStores || [];
+      const knownYahoo = yahooStores.find(s => s.storeName === editingItem.purchaseStore);
+      setYahooSubStoreIsCustom(!knownYahoo && !!editingItem.purchaseStore);
+      setPurchaseStoreIsCustom(false);
+    } else {
+      const isKnownStore = CONFIG.PURCHASE_STORES.filter(s => s !== 'ヤフオクストア').includes(editingItem.purchaseStore);
+      setPurchaseStoreIsCustom(!isKnownStore && !!editingItem.purchaseStore);
+    }
     // 保存済み説明文を復元
     if (editingItem.descriptionText) {
       setGeneratedDesc(editingItem.descriptionText);
@@ -1259,6 +1274,7 @@ const PurchaseTab = () => {
     });
     setStep(1); setPhotos([]); setAiResult(null); setGeneratedDesc(''); setShowDesc(false);
     setAiTypeDetection(null); setPurchaseTypeSource('manual'); setPurchaseStoreIsCustom(false);
+    setPurchaseIsYahoo(false); setYahooSubStoreIsCustom(false);
     setSeoCategoryInput(''); setEditingItem(null);
     setForm({
       productName: '', brand: '', category: '', color: '',
@@ -1309,6 +1325,7 @@ const PurchaseTab = () => {
         purchaseCost,
         purchaseType,
         purchaseTypeSource,
+        purchaseStoreType: purchaseIsYahoo ? 'yahoo' : 'normal',
         aiTypeDetection: aiTypeDetection || editingItem.aiTypeDetection || null,
         listPrice: Number(form.listPrice) || 0,
         photos: photoRefs,
@@ -1332,6 +1349,7 @@ const PurchaseTab = () => {
       purchaseCost,
       purchaseType,
       purchaseTypeSource,
+      purchaseStoreType: purchaseIsYahoo ? 'yahoo' : 'normal',
       aiTypeDetection: aiTypeDetection || null,
       listPrice: Number(form.listPrice) || 0,
       photos: photoRefs,
@@ -1655,18 +1673,27 @@ const PurchaseTab = () => {
               </div>
               <div>
                 <label className="field-label">仕入れ先</label>
+                {/* ── メイン仕入れ先選択 ── */}
                 <select className="input-field"
-                  value={purchaseStoreIsCustom ? 'その他' : (form.purchaseStore || '')}
+                  value={purchaseIsYahoo ? 'ヤフオクストア' : (purchaseStoreIsCustom ? 'その他' : (form.purchaseStore || ''))}
                   onChange={e => {
-                    if (e.target.value === 'その他') {
+                    const val = e.target.value;
+                    if (val === 'ヤフオクストア') {
+                      setPurchaseIsYahoo(true);
+                      setPurchaseStoreIsCustom(false);
+                      setYahooSubStoreIsCustom(false);
+                      setF('purchaseStore', '');
+                      setF('sellerLicense', '');
+                    } else if (val === 'その他') {
+                      setPurchaseIsYahoo(false);
                       setPurchaseStoreIsCustom(true);
                       setF('purchaseStore', '');
                       setF('sellerLicense', '');
                     } else {
+                      setPurchaseIsYahoo(false);
                       setPurchaseStoreIsCustom(false);
-                      setF('purchaseStore', e.target.value);
-                      // 設定済みの古物商許可証番号を自動入力
-                      const license = (data.settings?.storeLicenses || {})[e.target.value] || '';
+                      setF('purchaseStore', val);
+                      const license = (data.settings?.storeLicenses || {})[val] || '';
                       setF('sellerLicense', license);
                     }
                   }}>
@@ -1674,13 +1701,52 @@ const PurchaseTab = () => {
                   {CONFIG.PURCHASE_STORES.map(s => <option key={s} value={s}>{s}</option>)}
                   <option value="その他">その他（手入力）</option>
                 </select>
+
+                {/* ── 通常店舗：手入力 ── */}
                 {purchaseStoreIsCustom && (
                   <input className="input-field" style={{marginTop:6}}
                     value={form.purchaseStore}
                     onChange={e => setF('purchaseStore', e.target.value)}
                     placeholder="店舗名を入力"/>
                 )}
-                {/* 古物商許可証番号（自動入力・編集可） */}
+
+                {/* ── ヤフオクストア：サブ選択 ── */}
+                {purchaseIsYahoo && (() => {
+                  const yahooStores = data.settings?.yahooStores || [];
+                  return (
+                    <div style={{marginTop:6,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:10,padding:10}}>
+                      <div style={{fontSize:11,color:'#c2410c',fontWeight:600,marginBottom:6}}>🏪 ヤフオクストア選択</div>
+                      <select className="input-field"
+                        value={yahooSubStoreIsCustom ? '__custom__' : (form.purchaseStore || '')}
+                        onChange={e => {
+                          if (e.target.value === '__custom__') {
+                            setYahooSubStoreIsCustom(true);
+                            setF('purchaseStore', '');
+                            setF('sellerLicense', '');
+                          } else {
+                            setYahooSubStoreIsCustom(false);
+                            const found = yahooStores.find(s => s.storeName === e.target.value);
+                            setF('purchaseStore', e.target.value);
+                            setF('sellerLicense', found?.license || '');
+                          }
+                        }}>
+                        <option value="">ストアを選択...</option>
+                        {yahooStores.map(s => (
+                          <option key={s.id} value={s.storeName}>{s.storeName}{s.companyName ? ` (${s.companyName})` : ''}</option>
+                        ))}
+                        <option value="__custom__">その他（手入力）</option>
+                      </select>
+                      {yahooSubStoreIsCustom && (
+                        <input className="input-field" style={{marginTop:6}}
+                          value={form.purchaseStore}
+                          onChange={e => setF('purchaseStore', e.target.value)}
+                          placeholder="ストア名を入力"/>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* ── 古物商許可証番号（自動入力・編集可） ── */}
                 {(form.purchaseStore || purchaseStoreIsCustom) && (
                   <div style={{marginTop:6}}>
                     <div style={{fontSize:11,color:'#999',marginBottom:3}}>古物商許可証番号（任意）</div>
@@ -2979,13 +3045,17 @@ const OtherTab = () => {
         {activeSection === 'settings' && (
           <div>
 
-            {/* ── 仕入先 古物商許可証番号管理 ── */}
+            {/* ── 仕入先 古物商許可証番号管理（通常店舗） ── */}
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🏪 仕入先 古物商番号管理</div>
               <div style={{fontSize:12,color:'#999',marginBottom:12}}>店を選んだとき自動で許可証番号が入力されます</div>
               {(() => {
                 const licenses = settings.storeLicenses || {};
-                const storeNames = [...new Set([...CONFIG.PURCHASE_STORES, ...Object.keys(licenses)])];
+                // ヤフオクストアは別管理なので除外
+                const storeNames = [...new Set([
+                  ...CONFIG.PURCHASE_STORES.filter(s => s !== 'ヤフオクストア'),
+                  ...Object.keys(licenses).filter(s => s !== 'ヤフオクストア'),
+                ])];
                 return storeNames.map(store => (
                   <div key={store} style={{marginBottom:10}}>
                     <label className="field-label">{store}</label>
@@ -2999,6 +3069,63 @@ const OtherTab = () => {
                   </div>
                 ));
               })()}
+            </div>
+
+            {/* ── ヤフオクストア一覧管理 ── */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🟠 ヤフオクストア管理</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:12}}>ストアごとに古物商番号が違うため別管理します</div>
+              {(settings.yahooStores || []).map((store, i) => (
+                <div key={store.id} style={{background:'#f9f9f9',borderRadius:10,padding:10,marginBottom:10}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                    <div style={{fontSize:12,fontWeight:600,color:'#555'}}>ストア {i+1}</div>
+                    <button onClick={() => {
+                      const updated = (settings.yahooStores||[]).filter((_,j) => j !== i);
+                      setSetting('yahooStores', updated);
+                    }} style={{background:'none',border:'none',color:'#dc2626',fontSize:16,cursor:'pointer',padding:'0 4px'}}>×</button>
+                  </div>
+                  <div style={{marginBottom:6}}>
+                    <label className="field-label">ストア名</label>
+                    <input className="input-field" style={{fontSize:13}}
+                      value={store.storeName}
+                      onChange={e => {
+                        const updated = [...(settings.yahooStores||[])];
+                        updated[i] = { ...updated[i], storeName: e.target.value };
+                        setSetting('yahooStores', updated);
+                      }}
+                      placeholder="例: ブランドオフ 楽天市場店"/>
+                  </div>
+                  <div style={{marginBottom:6}}>
+                    <label className="field-label">古物商許可証番号</label>
+                    <input className="input-field" style={{fontSize:13}}
+                      value={store.license}
+                      onChange={e => {
+                        const updated = [...(settings.yahooStores||[])];
+                        updated[i] = { ...updated[i], license: e.target.value };
+                        setSetting('yahooStores', updated);
+                      }}
+                      placeholder="例: 東京都公安委員会 第123456789号"/>
+                  </div>
+                  <div>
+                    <label className="field-label">法人名（任意）</label>
+                    <input className="input-field" style={{fontSize:13}}
+                      value={store.companyName || ''}
+                      onChange={e => {
+                        const updated = [...(settings.yahooStores||[])];
+                        updated[i] = { ...updated[i], companyName: e.target.value };
+                        setSetting('yahooStores', updated);
+                      }}
+                      placeholder="例: 株式会社○○"/>
+                  </div>
+                </div>
+              ))}
+              <button className="btn-secondary" style={{width:'100%',fontSize:13}}
+                onClick={() => {
+                  const newStore = { id: Date.now().toString(), storeName: '', license: '', companyName: '' };
+                  setSetting('yahooStores', [...(settings.yahooStores||[]), newStore]);
+                }}>
+                ＋ ヤフオクストアを追加
+              </button>
             </div>
 
             <div className="card" style={{padding:16,marginBottom:12}}>
