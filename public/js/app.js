@@ -2339,15 +2339,28 @@ const InventoryTab = () => {
       </div>
 
       {/* フィルター */}
-      <div style={{display:'flex',gap:8,padding:'12px 16px',background:'white',borderBottom:'1px solid #e5e5e5',overflowX:'auto'}}>
-        {[['all','全て'],['unlisted','未出品'],['listed','出品中'],['sold','売却済']].map(([v,l]) => (
-          <button key={v} onClick={() => setFilter(v)}
-            style={{flexShrink:0,padding:'6px 14px',borderRadius:20,border:'none',cursor:'pointer',fontWeight:600,fontSize:13,
-              background: filter === v ? 'var(--color-primary)' : '#f0f0f0',
-              color: filter === v ? 'white' : '#666'}}>
-            {l} ({v === 'all' ? data.inventory.length : data.inventory.filter(i => i.status === v).length})
-          </button>
-        ))}
+      <div style={{display:'flex',gap:8,padding:'10px 16px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+        {[['all','すべて','#6b7280'],['unlisted','未出品','#6b7280'],['listed','出品中','#1e40af'],['sold','売却済','#5b21b6']].map(([v,l,c]) => {
+          const cnt = v === 'all' ? data.inventory.length : data.inventory.filter(i => i.status === v).length;
+          const active = filter === v;
+          return (
+            <button key={v} onClick={() => setFilter(v)}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
+                background: active ? 'var(--color-primary)' : '#f3f4f6',
+                color: active ? 'white' : '#666',
+                boxShadow: active ? '0 2px 8px rgba(232,64,64,0.25)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              {l}
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#e5e7eb',
+                color: active ? 'white' : '#888',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {cnt}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <div style={{padding:'12px 16px'}}>
@@ -2358,17 +2371,29 @@ const InventoryTab = () => {
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {filtered.map(item => (
-              <div key={item.id} className="card" style={{padding:14,display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}
+              <div key={item.id} className="card" style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}
                 onClick={() => setSelected(item)}>
-                <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={70} fallback="📦" />
+                <div style={{position:'relative',flexShrink:0}}>
+                  <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
+                  <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
+                    style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
+                    {statusLabel[item.status] || '未出品'}
+                  </span>
+                </div>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:'#999',marginBottom:2}}>{item.brand}</div>
-                  <div style={{fontWeight:600,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.productName}</div>
-                  <div style={{display:'flex',gap:6,marginTop:5,alignItems:'center'}}>
+                  <div style={{fontSize:11,color:'#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}</div>
+                  <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:6}}>{item.productName}</div>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
                     {conditionTag(item.condition)}
-                    <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}>{statusLabel[item.status] || '未出品'}</span>
                   </div>
-                  <div style={{fontSize:12,color:'#666',marginTop:4}}>仕入れ ¥{formatMoney(item.purchasePrice)}</div>
+                </div>
+                <div style={{textAlign:'right',flexShrink:0}}>
+                  <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
+                  <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
+                  {item.listPrice > 0 && (
+                    <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
+                  )}
+                  <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>
                 </div>
               </div>
             ))}
@@ -2380,9 +2405,10 @@ const InventoryTab = () => {
       {selected && (
         <div className="modal-overlay" onClick={() => setSelected(null)}>
           <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+            <div className="modal-handle"/>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-              <div style={{fontWeight:700,fontSize:17}}>商品詳細</div>
-              <button onClick={() => setSelected(null)} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+              <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>商品詳細</div>
+              <button onClick={() => setSelected(null)} style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
             </div>
 
             {/* 写真スライド（IndexedDBから取得） */}
@@ -2707,39 +2733,41 @@ const SalesTab = () => {
         {/* 月次サマリー */}
         {months.length > 0 && (
           <>
-            <div style={{fontWeight:700,fontSize:15,marginBottom:10,color:'#333'}}>月次サマリー</div>
+            <div className="section-title">月次サマリー</div>
             {months.map(m => {
               const mData = salesByMonth[m];
               const mProfitRate = mData.revenue > 0 ? Math.round(mData.profit / mData.revenue * 100) : 0;
               const platformEntries = Object.entries(mData.platforms).sort((a,b) => b[1]-a[1]);
+              const isGood = mData.profit >= 0;
               return (
-                <div key={m} className="card" style={{padding:16,marginBottom:10}}>
-                  <div style={{fontWeight:700,fontSize:15,marginBottom:10,color:'#333'}}>{m.replace('-','年')}月</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginBottom:8}}>
-                    <div>
-                      <div style={{fontSize:11,color:'#999'}}>売上</div>
-                      <div style={{fontWeight:700,fontSize:14}}>¥{formatMoney(mData.revenue)}</div>
-                    </div>
-                    <div>
-                      <div style={{fontSize:11,color:'#999'}}>純利益</div>
-                      <div style={{fontWeight:700,fontSize:14,color: mData.profit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(mData.profit)}</div>
-                    </div>
-                    <div>
-                      <div style={{fontSize:11,color:'#999'}}>利益率</div>
-                      <div style={{fontWeight:700,fontSize:14,color: mProfitRate >= 0 ? '#16a34a' : '#dc2626'}}>{mProfitRate}%</div>
-                    </div>
-                    <div>
-                      <div style={{fontSize:11,color:'#999'}}>件数</div>
-                      <div style={{fontWeight:700,fontSize:14}}>{mData.count}件</div>
+                <div key={m} className="card" style={{marginBottom:10,overflow:'hidden'}}>
+                  {/* ヘッダー帯 */}
+                  <div style={{background: isGood ? 'linear-gradient(135deg,#16a34a,#22c55e)' : 'linear-gradient(135deg,#dc2626,#ef4444)',
+                    padding:'12px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div style={{fontWeight:800,fontSize:15,color:'white',letterSpacing:'-0.02em'}}>{m.replace('-','年')}月</div>
+                    <div style={{color:'rgba(255,255,255,0.9)',fontSize:13,fontWeight:700}}>
+                      利益率 {mProfitRate}% · {mData.count}件
                     </div>
                   </div>
-                  {platformEntries.length > 0 && (
-                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                      {platformEntries.map(([p,cnt]) => (
-                        <span key={p} style={{fontSize:11,background:'#f3f4f6',color:'#374151',borderRadius:20,padding:'2px 8px',fontWeight:600}}>{p} {cnt}件</span>
-                      ))}
+                  <div style={{padding:'12px 16px'}}>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:10}}>
+                      <div>
+                        <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>売上</div>
+                        <div style={{fontWeight:800,fontSize:20,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(mData.revenue)}</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>純利益</div>
+                        <div style={{fontWeight:800,fontSize:20,color: isGood ? '#16a34a' : '#dc2626',letterSpacing:'-0.02em'}}>¥{formatMoney(mData.profit)}</div>
+                      </div>
                     </div>
-                  )}
+                    {platformEntries.length > 0 && (
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {platformEntries.map(([p,cnt]) => (
+                          <span key={p} style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'3px 10px',fontWeight:700}}>{p} {cnt}件</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -2749,24 +2777,35 @@ const SalesTab = () => {
         {/* 売上一覧 */}
         {data.sales.length > 0 && (
           <>
-            <div style={{fontWeight:700,fontSize:15,margin:'16px 0 10px',color:'#333'}}>売上履歴</div>
+            <div className="section-title">売上履歴</div>
             {[...data.sales].reverse().map(s => {
               const item = data.inventory.find(i => i.id === s.inventoryId);
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
+              const isProfit = (s.profit || 0) >= 0;
               return (
-                <div key={s.id} className="card" style={{padding:14,marginBottom:8,display:'flex',gap:10,alignItems:'center',cursor:'pointer'}}
+                <div key={s.id} className="card" style={{padding:'12px 14px',marginBottom:8,display:'flex',gap:12,alignItems:'center',cursor:'pointer'}}
                   onClick={() => openEdit(s)}>
-                  <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={50} fallback="💰" />
+                  <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={52} fallback="💰" />
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item?.brand} {item?.productName || '商品'}</div>
-                    <div style={{fontSize:12,color:'#999',marginTop:2}}>{s.saleDate} · <span style={{fontWeight:600,color:'#555'}}>{s.platform}</span></div>
-                    <div style={{fontSize:13,marginTop:3,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                      <span style={{fontWeight:700}}>¥{formatMoney(s.salePrice)}</span>
-                      <span style={{color: s.profit >= 0 ? '#16a34a' : '#dc2626',fontWeight:600}}>利益 ¥{formatMoney(s.profit)}</span>
-                      <span style={{fontSize:11,color: sProfitRate >= 0 ? '#16a34a' : '#dc2626',background: sProfitRate >= 0 ? '#f0fdf4' : '#fef2f2',borderRadius:10,padding:'1px 6px',fontWeight:600}}>{sProfitRate}%</span>
+                    <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:3}}>
+                      {item?.brand && <span style={{color:'#aaa',fontWeight:700,fontSize:11,marginRight:5,textTransform:'uppercase'}}>{item.brand}</span>}
+                      {item?.productName || '商品'}
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
+                      <span style={{fontSize:11,color:'#bbb'}}>{s.saleDate}</span>
                     </div>
                   </div>
-                  <div style={{fontSize:11,color:'#bbb',flexShrink:0}}>✏️</div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <div style={{fontWeight:800,fontSize:15,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(s.salePrice)}</div>
+                    <div style={{
+                      fontSize:12,fontWeight:700,marginTop:2,
+                      color: isProfit ? '#16a34a' : '#dc2626',
+                      background: isProfit ? '#f0fdf4' : '#fef2f2',
+                      borderRadius:99, padding:'2px 8px', display:'inline-block'}}>
+                      {isProfit ? '+' : ''}¥{formatMoney(s.profit)} ({sProfitRate}%)
+                    </div>
+                  </div>
                 </div>
               );
             })}
@@ -3530,15 +3569,22 @@ const OtherTab = () => {
       </div>
 
       {/* サブナビ */}
-      <div style={{display:'flex',background:'white',borderBottom:'1px solid #e5e5e5'}}>
-        {sections.map(s => (
-          <button key={s.id} onClick={() => setActiveSection(s.id)}
-            style={{flex:1,padding:'12px 4px',border:'none',background:'none',cursor:'pointer',
-              fontWeight:600,fontSize:13,borderBottom:`2px solid ${activeSection === s.id ? 'var(--color-primary)' : 'transparent'}`,
-              color: activeSection === s.id ? 'var(--color-primary)' : '#666'}}>
-            {s.icon} {s.label}
-          </button>
-        ))}
+      <div style={{display:'flex',gap:8,padding:'10px 14px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+        {sections.map(s => {
+          const active = activeSection === s.id;
+          return (
+            <button key={s.id} onClick={() => setActiveSection(s.id)}
+              style={{flexShrink:0,padding:'8px 14px',border:'none',cursor:'pointer',borderRadius:12,
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
+                background: active ? 'var(--color-primary)' : '#f3f4f6',
+                color: active ? 'white' : '#777',
+                boxShadow: active ? '0 2px 8px rgba(232,64,64,0.25)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              <span style={{fontSize:15}}>{s.icon}</span>
+              <span>{s.label}</span>
+            </button>
+          );
+        })}
       </div>
 
       <div style={{padding:'12px 16px'}}>
@@ -4112,12 +4158,46 @@ const App = () => {
     })();
   }, []);
 
+  const NAV_ICONS = {
+    home: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+        <polyline points="9 22 9 12 15 12 15 22"/>
+      </svg>
+    ),
+    purchase: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+        <line x1="12" y1="22.08" x2="12" y2="12"/>
+      </svg>
+    ),
+    inventory: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2"/>
+        <line x1="8" y1="21" x2="16" y2="21"/>
+        <line x1="12" y1="17" x2="12" y2="21"/>
+      </svg>
+    ),
+    sales: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+        <polyline points="16 7 22 7 22 13"/>
+      </svg>
+    ),
+    other: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+      </svg>
+    ),
+  };
   const tabs = [
-    { id: 'home', label: 'ホーム', icon: '🏠' },
-    { id: 'purchase', label: '仕入れ', icon: '📦' },
-    { id: 'inventory', label: '在庫', icon: '📋' },
-    { id: 'sales', label: '売上', icon: '💰' },
-    { id: 'other', label: 'その他', icon: '⚙️' },
+    { id: 'home',      label: 'ホーム' },
+    { id: 'purchase',  label: '仕入れ' },
+    { id: 'inventory', label: '在庫'   },
+    { id: 'sales',     label: '売上'   },
+    { id: 'other',     label: 'その他' },
   ];
 
   // APIキー未設定時のバナー
@@ -4165,16 +4245,17 @@ const App = () => {
           )}
 
           {/* ユーザー切り替え */}
-          <div style={{display:'flex',background:'white',borderBottom:'1px solid #eee',padding:'6px 12px',gap:8,alignItems:'center'}}>
-            <span style={{fontSize:11,color:'#888',marginRight:4}}>ユーザー：</span>
+          <div style={{display:'flex',background:'white',borderBottom:'1px solid #f0f0f0',padding:'6px 14px',gap:6,alignItems:'center'}}>
+            <span style={{fontSize:11,color:'#ccc',marginRight:2,fontWeight:700,letterSpacing:'0.04em'}}>USER</span>
             {['self','girlfriend'].map(u => {
               const profile = (fullData.userProfiles || getInitialData().userProfiles)[u];
               return (
                 <button key={u} onClick={() => switchUser(u)}
                   style={{padding:'5px 14px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
                     background: currentUser===u ? 'var(--color-primary)' : '#f3f4f6',
-                    color: currentUser===u ? 'white' : '#555',
-                    transition:'all 0.2s'}}>
+                    color: currentUser===u ? 'white' : '#888',
+                    boxShadow: currentUser===u ? '0 2px 8px rgba(232,64,64,0.25)' : 'none',
+                    transition:'all 0.2s', letterSpacing:'0.01em'}}>
                   {profile?.name || u}
                 </button>
               );
@@ -4203,7 +4284,8 @@ const App = () => {
             {tabs.map(t => (
               <div key={t.id} className={`bottom-nav-item ${tab === t.id ? 'active' : ''}`}
                 onClick={() => setTab(t.id)}>
-                <div className="nav-icon">{t.icon}</div>
+                {tab === t.id && <div className="nav-icon-bg"/>}
+                <div className="nav-icon">{NAV_ICONS[t.id]}</div>
                 <div className="nav-label">{t.label}</div>
               </div>
             ))}

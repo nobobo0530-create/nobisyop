@@ -27,14 +27,15 @@
       --color-primary: #E84040;
       --color-primary-dark: #c73333;
       --color-primary-light: #ff6b6b;
-      --safe-area-inset-top: env(safe-area-inset-top);
-      --safe-area-inset-bottom: env(safe-area-inset-bottom);
+      --bg: #f0f2f5;
+      --card-radius: 18px;
+      --card-shadow: 0 1px 4px rgba(0,0,0,0.05), 0 4px 16px rgba(0,0,0,0.07);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #f5f5f5;
+      background: var(--bg);
       overflow-x: hidden;
       -webkit-font-smoothing: antialiased;
     }
@@ -43,89 +44,124 @@
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
     .tap-highlight-none { -webkit-tap-highlight-color: transparent; }
     input, textarea, select { font-size: 16px !important; }
-    .slide-up { animation: slideUp 0.25s ease-out; }
+
+    .slide-up { animation: slideUp 0.3s cubic-bezier(0.16,1,0.3,1); }
     @keyframes slideUp {
-      from { transform: translateY(20px); opacity: 0; }
+      from { transform: translateY(28px); opacity: 0; }
       to   { transform: translateY(0); opacity: 1; }
     }
     .fade-in { animation: fadeIn 0.2s ease-out; }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
+    /* ── ボタン ── */
     .btn-primary {
       background: var(--color-primary); color: white; border: none;
-      border-radius: 12px; padding: 14px 24px; font-size: 16px; font-weight: 600;
-      cursor: pointer; min-height: 44px; transition: background 0.15s, transform 0.1s;
+      border-radius: 14px; padding: 15px 24px; font-size: 16px; font-weight: 700;
+      cursor: pointer; min-height: 50px;
+      transition: transform 0.12s, background 0.15s, box-shadow 0.15s;
       display: flex; align-items: center; justify-content: center; gap: 8px;
+      box-shadow: 0 4px 16px rgba(232,64,64,0.28);
+      letter-spacing: 0.01em;
+      -webkit-tap-highlight-color: transparent;
     }
-    .btn-primary:active { transform: scale(0.97); background: var(--color-primary-dark); }
+    .btn-primary:active { transform: scale(0.96); background: var(--color-primary-dark); box-shadow: none; }
     .btn-secondary {
       background: white; color: var(--color-primary);
-      border: 2px solid var(--color-primary); border-radius: 12px;
-      padding: 12px 20px; font-size: 15px; font-weight: 600;
-      cursor: pointer; min-height: 44px; transition: all 0.15s;
+      border: 2px solid var(--color-primary); border-radius: 14px;
+      padding: 13px 20px; font-size: 15px; font-weight: 700;
+      cursor: pointer; min-height: 50px; transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
     }
-    .btn-secondary:active { background: #fff0f0; }
+    .btn-secondary:active { background: #fff0f0; transform: scale(0.97); }
 
+    /* ── カード ── */
     .card {
-      background: white; border-radius: 16px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08); overflow: hidden;
+      background: white; border-radius: var(--card-radius);
+      box-shadow: var(--card-shadow); overflow: hidden;
     }
-    .input-field {
-      width: 100%; border: 1.5px solid #e0e0e0; border-radius: 10px;
-      padding: 12px 14px; font-size: 16px; transition: border-color 0.15s;
-      background: white; outline: none;
-    }
-    .input-field:focus { border-color: var(--color-primary); }
-    .input-field.highlight { border-color: #f59e0b; background: #fffbeb; }
-    label.field-label { font-size: 13px; font-weight: 600; color: #666; margin-bottom: 5px; display: block; }
 
+    /* ── 入力 ── */
+    .input-field {
+      width: 100%; border: 1.5px solid #e8e8e8; border-radius: 12px;
+      padding: 13px 14px; font-size: 16px; transition: all 0.15s;
+      background: #fafafa; outline: none; color: #1a1a1a;
+    }
+    .input-field:focus {
+      border-color: var(--color-primary); background: white;
+      box-shadow: 0 0 0 3px rgba(232,64,64,0.1);
+    }
+    .input-field.highlight { border-color: #f59e0b; background: #fffbeb; }
+    label.field-label {
+      font-size: 11px; font-weight: 700; color: #aaa;
+      margin-bottom: 6px; display: block;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+
+    /* ── ボトムナビ ── */
     .bottom-nav {
       position: fixed; bottom: 0; left: 0; right: 0;
-      background: white; border-top: 1px solid #e5e5e5;
+      background: rgba(255,255,255,0.96);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      box-shadow: 0 -1px 0 rgba(0,0,0,0.06), 0 -8px 24px rgba(0,0,0,0.05);
       display: flex; padding-bottom: env(safe-area-inset-bottom); z-index: 100;
     }
     .bottom-nav-item {
       flex: 1; display: flex; flex-direction: column; align-items: center;
-      padding: 8px 4px; cursor: pointer; min-height: 56px; transition: color 0.15s;
-      -webkit-tap-highlight-color: transparent;
+      padding: 10px 4px 6px; cursor: pointer; min-height: 56px;
+      transition: color 0.15s, transform 0.1s;
+      -webkit-tap-highlight-color: transparent; position: relative;
     }
-    .bottom-nav-item .nav-icon { font-size: 22px; margin-bottom: 2px; }
-    .bottom-nav-item .nav-label { font-size: 10px; font-weight: 600; }
+    .bottom-nav-item:active { transform: scale(0.9); }
+    .bottom-nav-item .nav-icon { width: 24px; height: 24px; margin-bottom: 3px; }
+    .bottom-nav-item .nav-label { font-size: 10px; font-weight: 700; letter-spacing: 0.02em; }
     .bottom-nav-item.active { color: var(--color-primary); }
-    .bottom-nav-item:not(.active) { color: #999; }
+    .bottom-nav-item:not(.active) { color: #c0c0c0; }
+    .bottom-nav-item.active .nav-icon-bg {
+      position: absolute; top: 4px;
+      width: 40px; height: 32px;
+      background: rgba(232,64,64,0.1); border-radius: 10px;
+    }
 
+    /* ── ヘッダー ── */
     .main-content {
       padding-top: env(safe-area-inset-top);
       padding-bottom: calc(64px + env(safe-area-inset-bottom));
     }
-    /* ホームタブ以外のヘッダー: 引き続き活気あるカラー */
     .header {
       background: var(--color-primary); color: white;
-      padding: 16px 16px 12px;
-      padding-top: calc(16px + env(safe-area-inset-top));
+      padding: 14px 16px 12px;
+      padding-top: calc(14px + env(safe-area-inset-top));
     }
-    .header h1 { margin: 0; font-size: 20px; font-weight: 700; }
+    .header h1 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
 
+    /* ── モーダル ── */
     .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      position: fixed; inset: 0; background: rgba(0,0,0,0.4);
       z-index: 200; display: flex; align-items: flex-end;
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
     }
     .modal-content {
-      background: white; border-radius: 20px 20px 0 0;
-      width: 100%; max-height: 90vh; overflow-y: auto;
-      padding: 20px;
+      background: white; border-radius: 24px 24px 0 0;
+      width: 100%; max-height: 92vh; overflow-y: auto;
+      padding: 8px 20px 20px;
       padding-bottom: calc(20px + env(safe-area-inset-bottom));
     }
+    .modal-handle {
+      width: 40px; height: 4px; background: #e0e0e0;
+      border-radius: 2px; margin: 0 auto 16px;
+    }
 
-    .tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-    .tag-s { background: #d1fae5; color: #065f46; }
-    .tag-a { background: #dbeafe; color: #1e3a5f; }
-    .tag-b { background: #fef3c7; color: #92400e; }
+    /* ── タグ ── */
+    .tag { display: inline-block; padding: 3px 9px; border-radius: 7px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+    .tag-s { background: #dcfce7; color: #166534; }
+    .tag-a { background: #dbeafe; color: #1e40af; }
+    .tag-b { background: #fef9c3; color: #854d0e; }
     .tag-c { background: #fee2e2; color: #991b1b; }
-    .tag-active { background: #d1fae5; color: #065f46; }
-    .tag-sold { background: #e0e7ff; color: #3730a3; }
+    .tag-active { background: #dbeafe; color: #1e40af; }
+    .tag-sold { background: #ede9fe; color: #5b21b6; }
     .tag-unlisted { background: #f3f4f6; color: #6b7280; }
 
+    /* ── スピナー ── */
     .spinner {
       width: 20px; height: 20px;
       border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
@@ -133,46 +169,58 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ── 写真グリッド ── */
     .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .photo-item {
-      aspect-ratio: 1; border-radius: 10px; overflow: hidden;
+      aspect-ratio: 1; border-radius: 12px; overflow: hidden;
       position: relative; background: #f0f0f0; cursor: pointer;
     }
     .photo-item img { width: 100%; height: 100%; object-fit: cover; }
     .photo-add {
-      border: 2px dashed #ccc; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 4px; color: #999;
+      border: 2px dashed #ddd; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 4px; color: #bbb;
     }
 
+    /* ── KPIカード ── */
     .kpi-card {
-      background: white; border-radius: 14px; padding: 16px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      background: white; border-radius: 16px; padding: 16px;
+      box-shadow: var(--card-shadow);
     }
-    .kpi-label { font-size: 12px; color: #999; font-weight: 500; margin-bottom: 6px; }
-    .kpi-value { font-size: 24px; font-weight: 700; color: #1a1a1a; }
-    .kpi-unit { font-size: 14px; color: #666; }
+    .kpi-label { font-size: 11px; color: #aaa; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .kpi-value { font-size: 26px; font-weight: 800; color: #111; letter-spacing: -0.03em; }
+    .kpi-unit { font-size: 14px; color: #888; font-weight: 500; }
 
     textarea.input-field { resize: vertical; min-height: 120px; }
-    .step-indicator { display: flex; gap: 8px; padding: 0 16px 12px; }
-    .step { flex: 1; height: 4px; border-radius: 2px; background: #e0e0e0; transition: background 0.3s; }
-    .step.active { background: var(--color-primary); }
-    .step.done { background: var(--color-primary-dark); }
 
+    /* ── ステップインジケーター ── */
+    .step-indicator { display: flex; gap: 6px; padding: 0 16px 12px; }
+    .step { flex: 1; height: 3px; border-radius: 2px; background: #eee; transition: background 0.3s; }
+    .step.active { background: var(--color-primary); }
+    .step.done { background: #f9a0a0; }
+
+    /* ── トースト ── */
     .toast {
-      position: fixed; bottom: calc(70px + env(safe-area-inset-bottom));
+      position: fixed; bottom: calc(76px + env(safe-area-inset-bottom));
       left: 50%; transform: translateX(-50%);
-      background: #1a1a1a; color: white;
-      padding: 10px 20px; border-radius: 24px;
+      background: #111; color: white;
+      padding: 11px 22px; border-radius: 99px;
       font-size: 14px; font-weight: 600; z-index: 9999;
-      animation: toastIn 0.2s ease-out, toastOut 0.2s ease-in 2s forwards;
-      white-space: nowrap;
+      animation: toastIn 0.25s cubic-bezier(0.16,1,0.3,1), toastOut 0.2s ease-in 2.3s forwards;
+      white-space: nowrap; box-shadow: 0 4px 20px rgba(0,0,0,0.25);
     }
-    @keyframes toastIn { from { opacity:0; transform:translateX(-50%) translateY(10px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
+    @keyframes toastIn { from { opacity:0; transform:translateX(-50%) translateY(14px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
     @keyframes toastOut { from { opacity: 1; } to { opacity: 0; } }
+
+    /* ── セクションタイトル ── */
+    .section-title {
+      font-size: 13px; font-weight: 700; color: #aaa;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      padding: 16px 16px 8px;
+    }
   </style>
 </head>
 <body>
   <div id="root"></div>
-  <script src="/js/app.js?v=20260402a" type="text/babel"></script>
+  <script src="/js/app.js?v=20260402b" type="text/babel"></script>
 </body>
 </html>
