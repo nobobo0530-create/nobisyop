@@ -1057,10 +1057,19 @@ const PurchaseTab = () => {
         imageDataList.push({ mimeType: 'image/jpeg', data: b64 });
       }
       if (imageDataList.length === 0) throw new Error('画像の取得に失敗しました');
-      const text = await analyzeImagesWithClaude(imageDataList, apiKey, PRODUCT_ANALYSIS_PROMPT, 512);
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const text = await analyzeImagesWithClaude(imageDataList, apiKey, PRODUCT_ANALYSIS_PROMPT, 1500);
+      // マークダウンコードブロック・余分なテキストを除去してJSONを抽出
+      const stripped = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
+      const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('JSON解析失敗');
-      const result = JSON.parse(jsonMatch[0]);
+      let result;
+      try {
+        result = JSON.parse(jsonMatch[0]);
+      } catch(parseErr) {
+        // JSON末尾が切れた場合: 最後の完全なフィールドまで補完して再試行
+        const partial = jsonMatch[0].replace(/,\s*"[^"]*"\s*:\s*[^,}\]]*$/, '').replace(/,\s*$/, '') + '}';
+        try { result = JSON.parse(partial); } catch { throw new Error('JSON解析失敗（レスポンスが不完全です）'); }
+      }
       setAiResult(result);
       setForm(prev => ({
         ...prev,
