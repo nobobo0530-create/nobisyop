@@ -562,10 +562,11 @@ const AppContext = React.createContext(null);
 // ホームタブ
 // ============================================================
 const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile } = React.useContext(AppContext);
+  const { data, setTab, currentUser, userProfile, setUserProfile } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
+  // ── 月次データ ──
   const monthlySales = data.sales.filter(s => s.saleDate?.startsWith(currentMonth));
   const totalProfit = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const inventoryCount = data.inventory.filter(i => i.status !== 'sold').length;
@@ -578,12 +579,35 @@ const HomeTab = () => {
   const remaining = Math.max(0, monthlyGoal - totalProfit);
   const rewardBudget = Math.round(totalProfit * rewardPercent / 100);
 
-  // 今いける旅行先を計算
+  // ── 週次データ ──
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  // 今週の月曜日を求める（日=0→-6, 月=1→0, ...）
+  const dow = now.getDay(); // 0=日
+  const diffToMon = dow === 0 ? -6 : 1 - dow;
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() + diffToMon);
+  weekStart.setHours(0, 0, 0, 0);
+  const weekStartStr = weekStart.toISOString().slice(0, 10);
+  // 今週の日曜日
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+  const weekEndStr = weekEnd.toISOString().slice(0, 10);
+
+  const weeklySales = data.sales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
+  const weeklyProfit = weeklySales.reduce((a, s) => a + (s.profit || 0), 0);
+
+  // 1週間あたりの目標（月目標 ÷ 月の日数 × 7）
+  const weeklyTarget = Math.ceil(monthlyGoal * 7 / daysInMonth);
+  const weeklyRemaining = Math.max(0, weeklyTarget - weeklyProfit);
+  const weeklyPct = weeklyTarget > 0 ? Math.min(100, Math.round(weeklyProfit / weeklyTarget * 100)) : 0;
+  const weeklyAchieved = weeklyProfit >= weeklyTarget;
+
+  // ── 旅行ゲーム ──
   const currentSpot = [...TRAVEL_SPOTS].reverse().find(s => totalProfit >= s.min) || TRAVEL_SPOTS[0];
   const nextSpot = TRAVEL_SPOTS.find(s => s.min > totalProfit);
   const toNextSpot = nextSpot ? nextSpot.min - totalProfit : 0;
 
-  // マイルストーン: 月利targetAmount以上を何回達成したか自動計算
+  // ── マイルストーン ──
   const getSalesByMonth = () => {
     const byMonth = {};
     data.sales.forEach(s => {
@@ -598,6 +622,17 @@ const HomeTab = () => {
     return Object.values(monthlyProfits).filter(p => p >= milestone.targetAmount).length;
   };
   const nextMilestone = milestones.find(m => getAchievedCount(m) < (m.targetCount || 1));
+
+  // ── 目標編集モーダル ──
+  const [editingGoal, setEditingGoal] = React.useState(false);
+  const [goalInput, setGoalInput] = React.useState('');
+
+  const openGoalEdit = () => { setGoalInput(String(monthlyGoal)); setEditingGoal(true); };
+  const saveGoal = () => {
+    const v = Number(goalInput);
+    if (v > 0) setUserProfile({ monthlyGoal: v });
+    setEditingGoal(false);
+  };
 
   const C = {
     card:    { background:'white', borderRadius:16, padding:16, boxShadow:'0 2px 8px rgba(0,0,0,0.08)' },
@@ -626,26 +661,70 @@ const HomeTab = () => {
 
       <div style={{padding:'14px 16px',display:'flex',flexDirection:'column',gap:10}}>
 
-        {/* ── 目標進捗 ── */}
+        {/* ── 今月の目標進捗 ── */}
         <div style={C.card}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-            <div style={{fontSize:12,color:'#999',fontWeight:600}}>今月の目標</div>
-            <div style={{fontSize:12,color:'#E84040',fontWeight:700}}>{progressPct}%</div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+            <div style={{fontSize:12,color:'#999',fontWeight:600}}>今月の目標月利</div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{fontSize:12,color:'#E84040',fontWeight:700}}>{progressPct}%</div>
+              <button onClick={openGoalEdit}
+                style={{fontSize:11,color:'#E84040',background:'#fff0f0',border:'1px solid #fca5a5',borderRadius:6,padding:'2px 8px',cursor:'pointer',fontWeight:600}}>
+                変更
+              </button>
+            </div>
           </div>
-          <div style={{fontSize:30,fontWeight:800,letterSpacing:'-1px',color: remaining===0?'#16a34a':'#1a1a1a',marginBottom:4}}>
-            {remaining === 0 ? '達成 🎉' : `¥${formatMoney(remaining)}`}
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:4}}>
+            <div style={{fontSize:28,fontWeight:800,letterSpacing:'-1px',color: remaining===0?'#16a34a':'#1a1a1a'}}>
+              {remaining === 0 ? '達成 🎉' : `¥${formatMoney(remaining)}`}
+            </div>
+            <div style={{fontSize:11,color:'#999',textAlign:'right',lineHeight:1.6}}>
+              <div>目標 <span style={{color:'#333',fontWeight:600}}>¥{formatMoney(monthlyGoal)}</span></div>
+              <div>利益 <span style={{color:'#16a34a',fontWeight:600}}>¥{formatMoney(totalProfit)}</span></div>
+            </div>
           </div>
-          <div style={{fontSize:11,color:'#999',marginBottom:10}}>
-            目標 ¥{formatMoney(monthlyGoal)}　利益 ¥{formatMoney(totalProfit)}
-          </div>
-          {/* 進捗バー */}
-          <div style={{background:'#f0f0f0',borderRadius:99,height:7,overflow:'hidden'}}>
+          <div style={{background:'#f0f0f0',borderRadius:99,height:7,overflow:'hidden',marginTop:4}}>
             <div style={{
               height:'100%', borderRadius:99,
               background: progressPct>=100 ? '#16a34a' : '#E84040',
               width:`${progressPct}%`,
               transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)',
             }}/>
+          </div>
+        </div>
+
+        {/* ── 今週の進捗 ── */}
+        <div style={{...C.card, border: weeklyAchieved ? '1px solid #bbf7d0' : '1px solid #f0f0f0'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <div style={{fontSize:12,color:'#999',fontWeight:600}}>今週の進捗</div>
+            {weeklyAchieved
+              ? <span style={{fontSize:11,background:'#d1fae5',color:'#065f46',borderRadius:20,padding:'2px 8px',fontWeight:700}}>✅ 達成！</span>
+              : <span style={{fontSize:11,background:'#fff0f0',color:'#dc2626',borderRadius:20,padding:'2px 8px',fontWeight:700}}>あと ¥{formatMoney(weeklyRemaining)}</span>
+            }
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}}>
+            <div style={{textAlign:'center'}}>
+              <div style={{fontSize:10,color:'#999',marginBottom:4}}>今週の目標</div>
+              <div style={{fontSize:16,fontWeight:700,color:'#333'}}>¥{formatMoney(weeklyTarget)}</div>
+            </div>
+            <div style={{textAlign:'center',borderLeft:'1px solid #f0f0f0',borderRight:'1px solid #f0f0f0'}}>
+              <div style={{fontSize:10,color:'#999',marginBottom:4}}>今週の利益</div>
+              <div style={{fontSize:16,fontWeight:700,color: weeklyProfit>=weeklyTarget?'#16a34a':'#E84040'}}>¥{formatMoney(weeklyProfit)}</div>
+            </div>
+            <div style={{textAlign:'center'}}>
+              <div style={{fontSize:10,color:'#999',marginBottom:4}}>達成率</div>
+              <div style={{fontSize:16,fontWeight:700,color: weeklyAchieved?'#16a34a':'#333'}}>{weeklyPct}%</div>
+            </div>
+          </div>
+          <div style={{background:'#f0f0f0',borderRadius:99,height:6,overflow:'hidden'}}>
+            <div style={{
+              height:'100%', borderRadius:99,
+              background: weeklyAchieved ? '#16a34a' : '#E84040',
+              width:`${weeklyPct}%`,
+              transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)',
+            }}/>
+          </div>
+          <div style={{fontSize:10,color:'#bbb',marginTop:6,textAlign:'right'}}>
+            {weekStartStr} 〜 {weekEndStr}
           </div>
         </div>
 
@@ -701,6 +780,26 @@ const HomeTab = () => {
         </button>
 
       </div>
+
+      {/* ── 目標編集モーダル ── */}
+      {editingGoal && (
+        <div className="modal-overlay" onClick={() => setEditingGoal(false)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+            <div style={{fontWeight:700,fontSize:17,marginBottom:16}}>🎯 目標月利を設定</div>
+            <label className="field-label">目標月利（円）</label>
+            <input type="number" className="input-field" style={{marginBottom:6}}
+              value={goalInput} onChange={e => setGoalInput(e.target.value)}
+              placeholder="100000" autoFocus/>
+            <div style={{fontSize:11,color:'#999',marginBottom:16}}>
+              週あたりの目標：¥{formatMoney(Math.ceil(Number(goalInput||0) * 7 / daysInMonth))}
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <button className="btn-secondary" onClick={() => setEditingGoal(false)}>キャンセル</button>
+              <button className="btn-primary" onClick={saveGoal}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
