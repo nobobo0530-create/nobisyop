@@ -2379,6 +2379,18 @@ const InventoryTab = () => {
                   📦 未出品に戻す
                 </button>
               )}
+              {selected.status === 'sold' && (
+                <button className="btn-secondary" style={{width:'100%'}}
+                  onClick={() => {
+                    if (!window.confirm('売却済みを取り消して「出品中」に戻しますか？')) return;
+                    const updated = data.inventory.map(i => i.id === selected.id ? { ...i, status: 'listed' } : i);
+                    setData({ ...data, inventory: updated });
+                    setSelected(null);
+                    toast('↩️ 出品中に戻しました');
+                  }}>
+                  ↩️ 売却済みを取り消す
+                </button>
+              )}
               <button onClick={() => deleteItem(selected)}
                 style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #fecaca',background:'#fef2f2',color:'#dc2626',fontWeight:600,cursor:'pointer',minHeight:44}}>
                 🗑️ 削除
