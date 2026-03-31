@@ -617,7 +617,7 @@ const HomeTab = () => {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
           <div>
             <div style={{fontSize:22,fontWeight:800,letterSpacing:'-0.5px',color:'#f0f0f0'}}>SalesLog</div>
-            <div style={{fontSize:11,color:'#555',marginTop:1,letterSpacing:'0.5px'}}>SALES MANAGEMENT</div>
+            <div style={{fontSize:11,color:'#555',marginTop:1,letterSpacing:'0.5px'}}>売上管理アプリ</div>
           </div>
           <div style={{textAlign:'right'}}>
             <div style={{fontSize:12,color:'#555'}}>{now.getFullYear()}年{now.getMonth()+1}月</div>
@@ -630,7 +630,7 @@ const HomeTab = () => {
         {/* ── 目標進捗 ── */}
         <div style={C.card}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-            <div style={{fontSize:11,color:'#555',letterSpacing:'0.5px',fontWeight:600}}>MONTHLY GOAL</div>
+            <div style={{fontSize:11,color:'#555',letterSpacing:'0.5px',fontWeight:600}}>今月の目標</div>
             <div style={{fontSize:11,color:'#555'}}>{progressPct}%</div>
           </div>
           <div style={{fontSize:30,fontWeight:800,letterSpacing:'-1px',color: remaining===0?'#4ade80':'#f0f0f0',marginBottom:4}}>
@@ -655,13 +655,13 @@ const HomeTab = () => {
         {/* ── 今月の利益 / 在庫数 ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
           <div style={C.card}>
-            <div style={{fontSize:10,color:'#555',letterSpacing:'0.5px',marginBottom:6,fontWeight:600}}>PROFIT</div>
+            <div style={{fontSize:10,color:'#555',letterSpacing:'0.5px',marginBottom:6,fontWeight:600}}>今月の利益</div>
             <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:totalProfit>=0?'#4ade80':'#f87171'}}>
               ¥{formatMoney(totalProfit)}
             </div>
           </div>
           <div style={C.card}>
-            <div style={{fontSize:10,color:'#555',letterSpacing:'0.5px',marginBottom:6,fontWeight:600}}>STOCK</div>
+            <div style={{fontSize:10,color:'#555',letterSpacing:'0.5px',marginBottom:6,fontWeight:600}}>在庫数</div>
             <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:'#f0f0f0'}}>
               {inventoryCount}<span style={{fontSize:13,color:'#555',marginLeft:2}}>件</span>
             </div>
@@ -670,7 +670,7 @@ const HomeTab = () => {
 
         {/* ── ご褒美 ── */}
         <div style={{...C.card,background:'linear-gradient(135deg,#1a1208,#1e1506)',borderColor:'rgba(251,191,36,0.2)'}}>
-          <div style={{fontSize:10,color:'#a16207',letterSpacing:'0.5px',fontWeight:600,marginBottom:6}}>REWARD BUDGET</div>
+          <div style={{fontSize:10,color:'#a16207',letterSpacing:'0.5px',fontWeight:600,marginBottom:6}}>ご褒美予算</div>
           <div style={{fontSize:24,fontWeight:800,color:'#fbbf24',letterSpacing:'-0.5px'}}>¥{formatMoney(rewardBudget)}</div>
           <div style={{fontSize:11,color:'#78350f',marginTop:2}}>利益の{rewardPercent}%</div>
           {nextMilestone && (
@@ -682,7 +682,7 @@ const HomeTab = () => {
 
         {/* ── 旅行ゲーム ── */}
         <div style={{...C.card,background:'linear-gradient(135deg,#0a0f1e,#0d1529)',borderColor:'rgba(99,102,241,0.2)'}}>
-          <div style={{fontSize:10,color:'#4338ca',letterSpacing:'0.5px',fontWeight:600,marginBottom:10}}>NEXT TRIP</div>
+          <div style={{fontSize:10,color:'#4338ca',letterSpacing:'0.5px',fontWeight:600,marginBottom:10}}>次の旅行</div>
           <div style={{display:'flex',alignItems:'center',gap:14}}>
             <div style={{fontSize:40,lineHeight:1}}>{currentSpot.emoji}</div>
             <div style={{flex:1}}>
