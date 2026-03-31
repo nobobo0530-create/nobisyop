@@ -402,7 +402,11 @@ const getInitialData = () => ({
 // ユーティリティ
 // ============================================================
 const formatMoney = (n) => n?.toLocaleString('ja-JP') ?? '0';
-const today = () => new Date().toISOString().split('T')[0];
+// UTC変換せずローカル日付を返す（JST環境で朝9時前にUTC日付がズレる問題を防ぐ）
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
 
 const generateMgmtNo = (purchaseDate, listDate, purchasePrice, divisor = 100) => {
   const pd = purchaseDate.replace(/-/g, '').slice(2); // YYMMDD
@@ -693,11 +697,13 @@ const HomeTab = () => {
   const weekStart = new Date(now);
   weekStart.setDate(now.getDate() + diffToMon);
   weekStart.setHours(0, 0, 0, 0);
-  const weekStartStr = weekStart.toISOString().slice(0, 10);
+  // toISOStringはUTCになるためローカル日付を使う（JSTでズレ防止）
+  const toLocalStr = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const weekStartStr = toLocalStr(weekStart);
   // 今週の日曜日
   const weekEnd = new Date(weekStart);
   weekEnd.setDate(weekStart.getDate() + 6);
-  const weekEndStr = weekEnd.toISOString().slice(0, 10);
+  const weekEndStr = toLocalStr(weekEnd);
 
   const weeklySales = data.sales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
   const weeklyProfit = weeklySales.reduce((a, s) => a + (s.profit || 0), 0);
@@ -1235,13 +1241,31 @@ const PurchaseTab = () => {
       // 全枚を400px/0.6で送信（4枚×400px ≈ 1枚×800px と同サイズ。タグ・サイズ写真も読める）
       const imageDataList = [];
       for (const photo of photos) {
-        const blob = await getPhoto(photo.id);
-        if (!blob) continue;
-        const compressed = await compressImage(new File([blob], 'photo.jpg', {type:'image/jpeg'}), 400, 0.6);
-        const b64 = await blobToBase64(compressed);
-        imageDataList.push({ mimeType: 'image/jpeg', data: b64 });
+        try {
+          // まずIndexedDBからフルサイズ取得を試みる
+          let blob = await getPhoto(photo.id);
+
+          // IndexedDBにない場合（別端末同期・キャッシュ消去後）はthumbDataUrlで代替
+          if (!blob && photo.thumbDataUrl) {
+            const res = await fetch(photo.thumbDataUrl);
+            blob = await res.blob();
+          }
+
+          // さらにpreviewUrlでも試みる（新規追加直後のObject URL）
+          if (!blob && photo.previewUrl) {
+            const res = await fetch(photo.previewUrl);
+            blob = await res.blob();
+          }
+
+          if (!blob) continue;
+          const compressed = await compressImage(new File([blob], 'photo.jpg', {type: blob.type || 'image/jpeg'}), 400, 0.6);
+          const b64 = await blobToBase64(compressed);
+          imageDataList.push({ mimeType: 'image/jpeg', data: b64 });
+        } catch (imgErr) {
+          console.warn(`写真${photo.id}の取得失敗:`, imgErr.message);
+        }
       }
-      if (imageDataList.length === 0) throw new Error('画像の取得に失敗しました');
+      if (imageDataList.length === 0) throw new Error(`画像の取得に失敗しました（${photos.length}枚中0枚。写真を一度削除して追加し直してください）`);
       const text = await analyzeImagesWithClaude(imageDataList, apiKey, PRODUCT_ANALYSIS_PROMPT, 1500);
       // マークダウンコードブロック・余分なテキストを除去してJSONを抽出
       const stripped = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
