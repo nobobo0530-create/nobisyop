@@ -2758,9 +2758,9 @@ const OtherTab = () => {
       'No',
       // ── 仕入れ（入れ）──
       '仕入年月日','区分','品目','品名（特徴）','数量','仕入代価(円)',
-      '確認区分','仕入先','決済方法',
+      '仕入先','古物商許可証番号','決済方法',
       // ── 売却（払出し）──
-      '売却年月日','売却区分','売却代価(円)','販路/売却先','備考',
+      '売却年月日','売却区分','売却代価(円)','販路/売却先','販路会社名',
     ];
     // 全在庫を仕入日順に並べ、売却情報があれば横に付与
     const rows = [...data.inventory]
@@ -2782,7 +2782,7 @@ const OtherTab = () => {
           i+1,
           item.purchaseDate||'', '仕入れ', item.category||'', `${item.brand||''} ${item.productName||''}`.trim(),
           1, item.purchasePrice||0,
-          confirmType, item.purchaseStore||'', item.paymentMethod||'現金',
+          item.purchaseStore||'', license, item.paymentMethod||'現金',
           sale ? (sale.saleDate||'') : '',
           sale ? '売却' : '',
           sale ? (sale.salePrice||0) : '',
@@ -3023,7 +3023,7 @@ const OtherTab = () => {
                           <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
                         </tr>
                         <tr style={{background:'#f8f8f8'}}>
-                          {['仕入年月日','品目','品名（特徴）','仕入単価','確認区分','売却年月日','売却単価','販路'].map(h=>(
+                          {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路'].map(h=>(
                             <th key={h} style={thStyle}>{h}</th>
                           ))}
                         </tr>
@@ -3035,9 +3035,10 @@ const OtherTab = () => {
                             <td style={tdStyle()}>{item.category||'−'}</td>
                             <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
                             <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                            <td style={tdStyle({color:'#777',fontSize:10})}>{(() => {
+                            <td style={tdStyle({color:'#555',fontSize:11,maxWidth:70,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||'−'}</td>
+                            <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>{(() => {
                               const lic = item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '';
-                              return lic ? '許可証確認' : (item.purchaseStore ? '目視確認' : '−');
+                              return lic || '未設定';
                             })()}</td>
                             <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
                             <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
