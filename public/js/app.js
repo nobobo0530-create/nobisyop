@@ -1064,6 +1064,13 @@ const PurchaseTab = () => {
     };
   }, []);
 
+  // iOS: バックグラウンド移行時に画像入れ替え選択状態をリセット
+  React.useEffect(() => {
+    const reset = () => { if (document.hidden) setSwapIdx(null); };
+    document.addEventListener('visibilitychange', reset);
+    return () => document.removeEventListener('visibilitychange', reset);
+  }, []);
+
   // ---- 編集モード: editingItemがセットされたらフォームを復元 ----
   React.useEffect(() => {
     if (!editingItem) return;
@@ -4215,6 +4222,22 @@ const App = () => {
         console.error('Migration error:', e);
       }
     })();
+  }, []);
+
+  // iOS: バックグラウンド復帰時のタッチフリーズ解除
+  React.useEffect(() => {
+    const fix = () => {
+      if (!document.hidden) {
+        document.body.style.pointerEvents = 'none';
+        requestAnimationFrame(() => { document.body.style.pointerEvents = ''; });
+      }
+    };
+    document.addEventListener('visibilitychange', fix);
+    window.addEventListener('focus', fix);
+    return () => {
+      document.removeEventListener('visibilitychange', fix);
+      window.removeEventListener('focus', fix);
+    };
   }, []);
 
   const NAV_ICONS = {
