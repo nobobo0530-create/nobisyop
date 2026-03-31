@@ -379,6 +379,15 @@ const getInitialData = () => ({
     platformFees: { ...CONFIG.PLATFORM_FEES },
     descriptionTemplate: CONFIG.DESCRIPTION_TEMPLATE,
     hashtags: '#のびSHOPメンズ一覧',
+    // 仕入先ごとの古物商許可証番号（店名→許可証番号）
+    storeLicenses: {
+      'セカンドストリート': '',
+      'オフハウス': '',
+      '萬屋': '',
+      '万SAI堂': '',
+      '万代': '',
+      'エコリング': '',
+    },
   },
 });
 
@@ -827,6 +836,7 @@ const PurchaseTab = () => {
     sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '', // サイズ分割
     sizeConfidence: 'medium', material: '',
     purchaseDate: today(), purchaseStore: '',
+    sellerLicense: '',      // 仕入先の古物商許可証番号
     paymentMethod: '現金', listDate: today(), listPrice: '',
     estimatedPriceRange: '', notes: '',
     englishTitle: '',       // 英語タイトル（メルカリ用）
@@ -892,6 +902,7 @@ const PurchaseTab = () => {
       material:           editingItem.material           || '',
       purchaseDate:       editingItem.purchaseDate       || today(),
       purchaseStore:      editingItem.purchaseStore      || '',
+      sellerLicense:      editingItem.sellerLicense      || '',
       paymentMethod:      editingItem.paymentMethod      || '現金',
       listDate:           editingItem.listDate           || today(),
       listPrice:          editingItem.listPrice != null  ? String(editingItem.listPrice) : '',
@@ -1254,7 +1265,7 @@ const PurchaseTab = () => {
       brandReading: '', categoryKeywords: '', colorDisplay: '',
       condition: 'A', conditionDetail: '',
       sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '', sizeConfidence: 'medium', material: '',
-      purchaseDate: today(), purchaseStore: '',
+      purchaseDate: today(), purchaseStore: '', sellerLicense: '',
       paymentMethod: '現金', listDate: today(), listPrice: '',
       estimatedPriceRange: '', notes: '',
       englishTitle: '', descriptionText: '',
@@ -1650,9 +1661,13 @@ const PurchaseTab = () => {
                     if (e.target.value === 'その他') {
                       setPurchaseStoreIsCustom(true);
                       setF('purchaseStore', '');
+                      setF('sellerLicense', '');
                     } else {
                       setPurchaseStoreIsCustom(false);
                       setF('purchaseStore', e.target.value);
+                      // 設定済みの古物商許可証番号を自動入力
+                      const license = (data.settings?.storeLicenses || {})[e.target.value] || '';
+                      setF('sellerLicense', license);
                     }
                   }}>
                   <option value="">選択してください</option>
@@ -1664,6 +1679,16 @@ const PurchaseTab = () => {
                     value={form.purchaseStore}
                     onChange={e => setF('purchaseStore', e.target.value)}
                     placeholder="店舗名を入力"/>
+                )}
+                {/* 古物商許可証番号（自動入力・編集可） */}
+                {(form.purchaseStore || purchaseStoreIsCustom) && (
+                  <div style={{marginTop:6}}>
+                    <div style={{fontSize:11,color:'#999',marginBottom:3}}>古物商許可証番号（任意）</div>
+                    <input className="input-field" style={{fontSize:13}}
+                      value={form.sellerLicense}
+                      onChange={e => setF('sellerLicense', e.target.value)}
+                      placeholder="例: 青森県公安委員会 第○○号"/>
+                  </div>
                 )}
               </div>
             </div>
@@ -2667,8 +2692,15 @@ const OtherTab = () => {
       .sort((a,b) => (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1)
       .map((item, i) => {
         const sale = data.sales.find(s => s.inventoryId === item.id);
-        // 確認区分: リサイクルショップ仕入れは「目視確認」、古物商経由は「古物商許可証」
-        const confirmType = item.purchaseStore ? '目視確認' : '古物商許可証';
+        // 確認区分: 許可証番号があれば「古物商許可証 ○○号」、なければ「目視確認」
+        const license = item.sellerLicense || (data.settings?.storeLicenses || {})[item.purchaseStore] || '';
+        const confirmType = license
+          ? `古物商許可証（${license}）`
+          : (item.purchaseStore ? '目視確認' : '古物商許可証確認');
+        // 販路の相手方情報
+        const platformBuyer = sale?.platform
+          ? { メルカリ: 'メルカリ株式会社', ラクマ: '楽天グループ株式会社', ヤフオク: 'ヤフー株式会社' }[sale.platform] || sale.platform
+          : '';
         return [
           i+1,
           item.purchaseDate||'', '仕入れ', item.category||'', `${item.brand||''} ${item.productName||''}`.trim(),
@@ -2678,7 +2710,7 @@ const OtherTab = () => {
           sale ? '売却' : '',
           sale ? (sale.salePrice||0) : '',
           sale ? (sale.platform||'') : '',
-          '',
+          platformBuyer,
         ];
       });
     return [headers, ...rows];
@@ -2946,6 +2978,29 @@ const OtherTab = () => {
         {/* 設定 */}
         {activeSection === 'settings' && (
           <div>
+
+            {/* ── 仕入先 古物商許可証番号管理 ── */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🏪 仕入先 古物商番号管理</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:12}}>店を選んだとき自動で許可証番号が入力されます</div>
+              {(() => {
+                const licenses = settings.storeLicenses || {};
+                const storeNames = [...new Set([...CONFIG.PURCHASE_STORES, ...Object.keys(licenses)])];
+                return storeNames.map(store => (
+                  <div key={store} style={{marginBottom:10}}>
+                    <label className="field-label">{store}</label>
+                    <input className="input-field" style={{fontSize:13}}
+                      value={licenses[store] || ''}
+                      onChange={e => {
+                        const updated = { ...licenses, [store]: e.target.value };
+                        setSetting('storeLicenses', updated);
+                      }}
+                      placeholder="例: 青森県公安委員会 第041100001号"/>
+                  </div>
+                ));
+              })()}
+            </div>
+
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>🎯 目標・ご褒美設定</div>
               <div style={{marginBottom:10}}>
