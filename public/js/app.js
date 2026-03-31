@@ -825,9 +825,12 @@ const HomeTab = () => {
           </div>
         </div>
 
-        {/* ── 月次利益グラフ ── */}
+        {/* ── 月次利益折れ線グラフ ── */}
         {(() => {
-          // 直近12ヶ月分のデータを生成
+          const COL_W = 52, CH = 70, PAD_T = 22, PAD_B = 6;
+          // ドット色：利益額のしきい値で変化
+          const dotColor = p => p >= 1000000 ? '#16a34a' : p >= 500000 ? '#f59e0b' : '#E84040';
+          // 直近12ヶ月
           const months = [];
           for (let i = 11; i >= 0; i--) {
             const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -837,51 +840,82 @@ const HomeTab = () => {
               label: i === 0 ? '今月' : i === 1 ? '先月' : `${d.getMonth()+1}月`,
               profit: monthlyProfits[key] || 0,
               isCurrent: i === 0,
-              isLast: i === 1,
             });
           }
-          const maxP = Math.max(...months.map(m => Math.abs(m.profit)), 1);
+          const maxP = Math.max(...months.map(m => m.profit), 1);
+          const minP = Math.min(...months.map(m => m.profit), 0);
+          const range = Math.max(maxP - minP, 1);
+          const getY = p => PAD_T + (CH - PAD_T - PAD_B) * (1 - (p - minP) / range);
+          const getX = i => i * COL_W + COL_W / 2;
+          const totalW = months.length * COL_W;
           const chartRef = React.useRef();
-          // 初回だけ右端（最新月）にスクロール
           React.useEffect(() => {
             if (chartRef.current) chartRef.current.scrollLeft = chartRef.current.scrollWidth;
           }, []);
+          // 折れ線パス
+          const linePath = months.map((m, i) => `${i === 0 ? 'M' : 'L'}${getX(i)},${getY(m.profit)}`).join(' ');
+          // グラデーション塗りつぶしパス
+          const fillPath = linePath + ` L${getX(months.length-1)},${CH} L${getX(0)},${CH} Z`;
           return (
-            <div style={{...C.card, padding:'14px 14px 12px'}}>
-              <div style={{fontSize:12,color:'#999',fontWeight:600,marginBottom:10}}>📊 月次利益</div>
-              <div ref={chartRef}
-                style={{overflowX:'auto',WebkitOverflowScrolling:'touch',paddingBottom:2,
-                  /* スクロールバー非表示 */
-                  scrollbarWidth:'none',msOverflowStyle:'none'}}>
-                <div style={{display:'flex',alignItems:'flex-end',gap:6,minWidth:'max-content',paddingRight:2}}>
-                  {months.map(m => {
-                    const barH = Math.max(4, Math.round(Math.abs(m.profit) / maxP * 72));
-                    const isNeg = m.profit < 0;
-                    const barColor = m.isCurrent ? '#E84040' : m.isLast ? '#fca5a5' : '#d1d5db';
-                    return (
-                      <div key={m.key} style={{display:'flex',flexDirection:'column',alignItems:'center',width:52,flexShrink:0}}>
-                        {/* 利益額 */}
-                        <div style={{fontSize:9,fontWeight:m.isCurrent||m.isLast?700:400,
-                          color:m.isCurrent?'#E84040':m.isLast?'#f87171':'#999',
-                          marginBottom:3,textAlign:'center',lineHeight:1.2,minHeight:20,display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
-                          {m.profit !== 0 ? (isNeg?'-':'+')+formatMoney(Math.abs(m.profit)) : '−'}
-                        </div>
-                        {/* バー */}
-                        <div style={{width:'100%',height:72,display:'flex',flexDirection:'column',justifyContent:'flex-end',background:'#f5f5f5',borderRadius:5,overflow:'hidden'}}>
-                          <div style={{width:'100%',height:barH,background:barColor,borderRadius:'3px 3px 0 0',
-                            transition:'height 0.6s ease',opacity: m.profit===0?0.3:1}}/>
-                        </div>
-                        {/* 月ラベル */}
-                        <div style={{fontSize:10,marginTop:5,fontWeight:m.isCurrent||m.isLast?700:400,
-                          color:m.isCurrent?'#E84040':m.isLast?'#f87171':'#aaa'}}>
-                          {m.label}
-                        </div>
-                      </div>
-                    );
-                  })}
+            <div style={{...C.card, padding:'14px 14px 10px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                <div style={{fontSize:12,color:'#999',fontWeight:600}}>📈 月次利益</div>
+                {/* 凡例 */}
+                <div style={{display:'flex',gap:8,fontSize:9,color:'#999'}}>
+                  <span><span style={{color:'#16a34a',fontWeight:700}}>●</span> 100万+</span>
+                  <span><span style={{color:'#f59e0b',fontWeight:700}}>●</span> 50万+</span>
+                  <span><span style={{color:'#E84040',fontWeight:700}}>●</span> 〜50万</span>
                 </div>
               </div>
-              <div style={{fontSize:9,color:'#ccc',textAlign:'right',marginTop:4}}>← スワイプで過去月</div>
+              <div ref={chartRef}
+                style={{overflowX:'auto',WebkitOverflowScrolling:'touch',
+                  scrollbarWidth:'none',msOverflowStyle:'none'}}>
+                <div style={{minWidth:totalW,position:'relative'}}>
+                  {/* SVG折れ線 */}
+                  <svg width={totalW} height={CH} style={{display:'block',overflow:'visible'}}>
+                    {/* ゼロライン */}
+                    {minP < 0 && (
+                      <line x1={0} y1={getY(0)} x2={totalW} y2={getY(0)}
+                        stroke="#e5e5e5" strokeWidth={1} strokeDasharray="3,3"/>
+                    )}
+                    {/* 塗りつぶし */}
+                    <path d={fillPath} fill="#E84040" fillOpacity={0.06}/>
+                    {/* 折れ線 */}
+                    <path d={linePath} fill="none" stroke="#e0e0e0" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"/>
+                    {/* ドット＋利益額ラベル */}
+                    {months.map((m, i) => {
+                      const x = getX(i), y = getY(m.profit);
+                      const color = m.isCurrent ? '#E84040' : dotColor(m.profit);
+                      const labelY = y > PAD_T + 10 ? y - 8 : y + 16;
+                      return (
+                        <g key={m.key}>
+                          {/* 利益額 */}
+                          {m.profit !== 0 && (
+                            <text x={x} y={labelY} textAnchor="middle"
+                              fontSize={8} fontWeight={m.isCurrent ? 700 : 400} fill={color}>
+                              {m.profit >= 10000 ? `${Math.round(m.profit/10000)}万` : formatMoney(m.profit)}
+                            </text>
+                          )}
+                          {/* ドット */}
+                          {m.isCurrent && <circle cx={x} cy={y} r={7} fill={color} fillOpacity={0.15}/>}
+                          <circle cx={x} cy={y} r={m.isCurrent ? 4.5 : 3.5}
+                            fill={color} stroke="white" strokeWidth={1.5}/>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                  {/* 月ラベル */}
+                  <div style={{display:'flex'}}>
+                    {months.map(m => (
+                      <div key={m.key} style={{width:COL_W,flexShrink:0,textAlign:'center',
+                        fontSize:10,color:m.isCurrent?'#E84040':'#bbb',
+                        fontWeight:m.isCurrent?700:400,marginTop:3}}>
+                        {m.label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           );
         })()}
