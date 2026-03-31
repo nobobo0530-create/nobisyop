@@ -1084,7 +1084,12 @@ const PurchaseTab = () => {
           ? result.category_keywords.split(/[\s　]+/).filter(Boolean).slice(0, 10)
           : [],
         colorDisplay: result.color_display || '',
-        modelNumber: result.model_number || result.model_name || prev.modelNumber,
+        modelNumber: (() => {
+          const num = result.model_number || '';
+          const name = result.model_name || '';
+          if (num && name) return `${num} / ${name}`;
+          return num || name || prev.modelNumber || '';
+        })(),
         gender: result.gender || prev.gender,
         condition: result.condition || 'A',
         conditionDetail: result.condition_detail || '',
@@ -1553,6 +1558,26 @@ const PurchaseTab = () => {
                   コピー
                 </button>
               </div>
+            </div>
+
+            {/* 型番・モデル名 */}
+            <div style={{marginBottom:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
+                <label className="field-label" style={{margin:0}}>型番・モデル名</label>
+                {form.modelNumber && (
+                  <button onClick={() => copyToClipboard(form.modelNumber).then(ok => toast(ok ? '📋 コピーしました' : 'コピー失敗'))}
+                    style={{fontSize:11,color:'#E84040',background:'#fff0f0',border:'1px solid #fca5a5',borderRadius:6,padding:'2px 8px',cursor:'pointer',fontWeight:600}}>
+                    コピー
+                  </button>
+                )}
+              </div>
+              <input className="input-field"
+                value={form.modelNumber}
+                onChange={e => setF('modelNumber', e.target.value)}
+                placeholder="AI解析で自動入力（例: M51258 / Musette Salsa）"/>
+              {form.modelNumber && (
+                <div style={{fontSize:11,color:'#16a34a',marginTop:3}}>✅ 型番・モデル名取得済み</div>
+              )}
             </div>
 
             {/* カテゴリー */}
