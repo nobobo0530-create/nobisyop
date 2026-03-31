@@ -613,6 +613,18 @@ const RECEIPT_ANALYSIS_PROMPT = `レシートの写真を分析して以下のJS
   "items": [{"name": "商品名", "price": 価格}]
 }`;
 
+const MERCARI_SS_PROMPT = `メルカリの取引画面のスクリーンショットを読み取ってください。JSONのみで回答（説明不要）：
+{
+  "product_name": "商品名（全文）",
+  "sale_price": 商品代金（数値のみ、¥や,不要）,
+  "platform_fee": 販売手数料（数値のみ）,
+  "shipping": 配送料（数値のみ）,
+  "sale_date": "売却日・購入日時（YYYY-MM-DD形式。画面の購入日時から変換）",
+  "product_id": "商品ID（例: m46193847261。画面下部に表示）",
+  "platform": "メルカリ"
+}
+読み取れない値はnullにしてください。`;
+
 // ============================================================
 // Toast
 // ============================================================
@@ -2370,9 +2382,65 @@ const SalesTab = () => {
   const { data, setData, currentUser, setEditingItem, setTab } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
-  const [editingSale, setEditingSale] = React.useState(null); // 編集中の売上レコード
-  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today() };
+  const [editingSale, setEditingSale] = React.useState(null);
+  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), platformId: '' };
   const [form, setForm] = React.useState(emptyForm);
+  const [ssReading, setSsReading] = React.useState(false);
+  const [ssCandidate, setSsCandidate] = React.useState(null); // {item, extracted}
+  const ssInputRef = React.useRef();
+  const apiKey = data.settings?.apiKey || '';
+
+  // 商品名マッチング（AI読み取り結果 vs 在庫リスト）
+  const findBestMatch = (aiName, items) => {
+    const norm = s => (s || '').toLowerCase()
+      .replace(/[・\-\/\s　（）()【】「」]+/g, ' ')
+      .replace(/\(推定\)/g, '').trim();
+    const tokens = s => norm(s).split(' ').filter(t => t.length >= 2);
+    const aiTokens = tokens(aiName);
+    if (aiTokens.length === 0) return null;
+    let best = null, bestScore = 0;
+    for (const item of items) {
+      const str = `${item.brand||''} ${item.productName||''} ${item.modelNumber||''}`;
+      const itemTokens = tokens(str);
+      let hit = 0;
+      for (const t of aiTokens) {
+        if (itemTokens.some(it => it.includes(t) || t.includes(it))) hit++;
+      }
+      const score = hit / aiTokens.length;
+      if (score > bestScore) { bestScore = score; best = item; }
+    }
+    return bestScore >= 0.25 ? best : null;
+  };
+
+  // スクショ読み込み処理
+  const handleSsInput = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; }
+    setSsReading(true);
+    try {
+      const blob = await compressImage(file, 1200, 0.9);
+      const b64 = await blobToBase64(blob);
+      const text = await analyzeImagesWithClaude([{mimeType:'image/jpeg', data:b64}], apiKey, MERCARI_SS_PROMPT, 400);
+      const stripped = text.replace(/```(?:json)?\s*/gi,'').replace(/```/g,'');
+      const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('読み取り失敗');
+      const result = JSON.parse(jsonMatch[0]);
+      if (!result.product_name) throw new Error('商品名を読み取れませんでした');
+      const userItems = data.inventory.filter(i => i.userId === currentUser);
+      const matched = findBestMatch(result.product_name, userItems);
+      if (!matched) {
+        toast('❌ 登録済みの商品から一致するものが見つかりませんでした');
+        return;
+      }
+      setSsCandidate({ item: matched, extracted: result });
+    } catch(err) {
+      toast('❌ ' + err.message);
+    } finally {
+      setSsReading(false);
+    }
+  };
 
   const soldItems = data.inventory.filter(i => i.status === 'sold');
   const unrecordedSold = soldItems.filter(i => !data.sales.find(s => s.inventoryId === i.id));
@@ -2400,6 +2468,7 @@ const SalesTab = () => {
       feeRate: sale.feeRate ?? 0.10,
       shipping: String(sale.shipping ?? CONFIG.ESTIMATED_SHIPPING),
       saleDate: sale.saleDate || today(),
+      platformId: sale.platformId || '',
     });
     setShowForm(true);
   };
@@ -2423,6 +2492,7 @@ const SalesTab = () => {
         salePrice: Number(form.salePrice),
         shipping: Number(form.shipping),
         profit,
+        platformId: form.platformId || '',
         updatedAt: new Date().toISOString(),
       };
       setData({ ...data, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
@@ -2436,6 +2506,7 @@ const SalesTab = () => {
         salePrice: Number(form.salePrice),
         shipping: Number(form.shipping),
         profit,
+        platformId: form.platformId || '',
         createdAt: new Date().toISOString(),
       };
       setData({ ...data, sales: [...data.sales, newSale] });
@@ -2553,6 +2624,64 @@ const SalesTab = () => {
         )}
       </div>
 
+      {/* スクショ確認モーダル */}
+      {ssCandidate && (
+        <div className="modal-overlay" onClick={() => setSsCandidate(null)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+            <div style={{fontWeight:700,fontSize:16,marginBottom:14}}>📸 この商品でいいですか？</div>
+
+            {/* マッチした商品 */}
+            <div style={{background:'#f8f8f8',borderRadius:10,padding:'10px 12px',marginBottom:14,display:'flex',alignItems:'center',gap:10}}>
+              <ItemThumbnail thumbId={ssCandidate.item.photos?.[0]?.thumbId} thumbDataUrl={ssCandidate.item.photos?.[0]?.thumbDataUrl} size={50} fallback="📦"/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ssCandidate.item.brand} {ssCandidate.item.productName}</div>
+                <div style={{fontSize:11,color:'#999',marginTop:2}}>仕入れ ¥{formatMoney(ssCandidate.item.purchasePrice)}</div>
+              </div>
+            </div>
+
+            {/* 読み取り結果 */}
+            <div style={{marginBottom:16}}>
+              {[
+                ['販売価格', ssCandidate.extracted.sale_price != null ? `¥${formatMoney(ssCandidate.extracted.sale_price)}` : null],
+                ['販売手数料', ssCandidate.extracted.platform_fee != null ? `¥${formatMoney(ssCandidate.extracted.platform_fee)}` : null],
+                ['配送料', ssCandidate.extracted.shipping != null ? `¥${formatMoney(ssCandidate.extracted.shipping)}` : null],
+                ['売却日', ssCandidate.extracted.sale_date],
+                ['商品ID', ssCandidate.extracted.product_id],
+              ].map(([k, v]) => v && (
+                <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid #f0f0f0',fontSize:14}}>
+                  <span style={{color:'#666'}}>{k}</span>
+                  <span style={{fontWeight:600}}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+              <button style={{background:'#f0f0f0',border:'none',borderRadius:10,padding:'12px',fontWeight:600,cursor:'pointer',fontSize:14}}
+                onClick={() => setSsCandidate(null)}>キャンセル</button>
+              <button className="btn-primary" onClick={() => {
+                const ex = ssCandidate.extracted;
+                const platform = ex.platform || 'メルカリ';
+                const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+                const feeRate = (ex.sale_price && ex.platform_fee)
+                  ? Math.round(ex.platform_fee / ex.sale_price * 1000) / 1000
+                  : (fees[platform] ?? 0.10);
+                setForm({
+                  inventoryId: ssCandidate.item.id,
+                  platform,
+                  salePrice: String(ex.sale_price || ''),
+                  feeRate,
+                  shipping: String(ex.shipping != null ? ex.shipping : CONFIG.ESTIMATED_SHIPPING),
+                  saleDate: ex.sale_date || today(),
+                  platformId: ex.product_id || '',
+                });
+                setSsCandidate(null);
+                setShowForm(true);
+              }}>OK・入力する</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 売上登録・編集モーダル */}
       {showForm && (
         <div className="modal-overlay" onClick={closeForm}>
@@ -2580,6 +2709,13 @@ const SalesTab = () => {
                 </div>
               );
             })()}
+
+            {/* スクショから自動読み込み */}
+            <input ref={ssInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handleSsInput}/>
+            <button style={{width:'100%',marginBottom:14,background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:12,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer',color:'#0369a1',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}
+              onClick={() => ssInputRef.current?.click()} disabled={ssReading}>
+              {ssReading ? <><span className="spinner"/><span>読み取り中...</span></> : '📸 メルカリのスクショから自動入力'}
+            </button>
 
             <div style={{marginBottom:12}}>
               <label className="field-label">商品選択</label>
@@ -2629,10 +2765,17 @@ const SalesTab = () => {
               </div>
             </div>
 
-            <div style={{marginBottom:12}}>
-              <label className="field-label">販売日</label>
-              <input type="date" className="input-field" value={form.saleDate}
-                onChange={e => setF('saleDate', e.target.value)}/>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+              <div>
+                <label className="field-label">販売日</label>
+                <input type="date" className="input-field" value={form.saleDate}
+                  onChange={e => setF('saleDate', e.target.value)}/>
+              </div>
+              <div>
+                <label className="field-label">商品ID</label>
+                <input type="text" className="input-field" value={form.platformId}
+                  onChange={e => setF('platformId', e.target.value)} placeholder="m46193847261" style={{fontSize:12}}/>
+              </div>
             </div>
 
             {form.salePrice && selectedItem && (() => {
