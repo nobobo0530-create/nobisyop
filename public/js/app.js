@@ -2279,44 +2279,87 @@ const OtherTab = () => {
     e.target.value = '';
   };
 
-  // CSVエクスポート
-  const exportCSV = () => {
-    const headers = ['No','管理番号','ブランド','品名','売上','手数料率','手数料','送料','販売日','出品日','曜日','月','販路','仕入日','仕入先','仕入単価','純利益','利益率','販売済','在庫金額','古物品目','仕入先住所','確認方法'];
-    const rows = data.sales.map((s, i) => {
-      const item = data.inventory.find(inv => inv.id === s.inventoryId) || {};
-      const fee = Math.round(s.salePrice * s.feeRate);
-      const profitRate = s.salePrice ? ((s.profit / s.salePrice) * 100).toFixed(1) : '';
-      const saleDay = s.saleDate ? ['日','月','火','水','木','金','土'][new Date(s.saleDate).getDay()] : '';
-      const month = s.saleDate ? s.saleDate.slice(5,7) : '';
-      return [
-        i + 1, item.mgmtNo || '', item.brand || '', item.productName || '',
-        s.salePrice || 0, (s.feeRate * 100).toFixed(1), fee, s.shipping || 0,
-        s.saleDate || '', item.listDate || '', saleDay, month, s.platform || '',
-        item.purchaseDate || '', item.purchaseStore || '', item.purchasePrice || 0,
-        s.profit || 0, profitRate, '済', '', item.category || '', '', '目視確認',
-      ];
-    });
-    const csv = [headers, ...rows].map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+  // ── CSVダウンロードヘルパー ──────────────────────────────
+  const downloadCsvBlob = (rows, filename) => {
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `nobushop_${today()}.csv`; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
-    toast('📥 CSVをダウンロードしました');
+  };
+
+  // ── 売上管理表CSV ────────────────────────────────────────
+  const buildSalesRows = () => {
+    const headers = ['No','管理番号','ブランド','品名','販売日','曜日','月','販路','売上(円)','手数料率(%)','手数料(円)','送料(円)','仕入単価(円)','純利益(円)','利益率(%)','仕入日','仕入先','古物品目'];
+    const rows = [...data.sales]
+      .sort((a,b) => (a.saleDate||'') > (b.saleDate||'') ? 1 : -1)
+      .map((s, i) => {
+        const item = data.inventory.find(inv => inv.id === s.inventoryId) || {};
+        const fee = Math.round((s.salePrice||0) * (s.feeRate||0));
+        const profitRate = s.salePrice ? ((s.profit||0) / s.salePrice * 100).toFixed(1) : '0.0';
+        const saleDay = s.saleDate ? ['日','月','火','水','木','金','土'][new Date(s.saleDate).getDay()] : '';
+        const month = s.saleDate ? s.saleDate.slice(0,7) : '';
+        return [
+          i+1, item.mgmtNo||'', item.brand||'', item.productName||'',
+          s.saleDate||'', saleDay, month, s.platform||'',
+          s.salePrice||0, ((s.feeRate||0)*100).toFixed(1), fee, s.shipping||0,
+          item.purchasePrice||0, s.profit||0, profitRate,
+          item.purchaseDate||'', item.purchaseStore||'', item.category||'',
+        ];
+      });
+    return [headers, ...rows];
+  };
+
+  const exportCSV = () => {
+    downloadCsvBlob(buildSalesRows(), `売上管理表_${today()}.csv`);
+    toast('📥 売上管理表をダウンロードしました');
+  };
+
+  // ── 古物台帳CSV（仕入れ＋売却を時系列で1本に）──────────────
+  const buildKobotsuRows = () => {
+    const headers = ['No','取引日','区分','管理番号','ブランド','品名','古物品目','数量','金額(円)','販路/決済','仕入先/売却先','確認方法','備考'];
+    // 仕入れ行
+    const purchaseRows = data.inventory.map(item => ({
+      date: item.purchaseDate || '',
+      row: [
+        '', item.purchaseDate||'', '仕入れ', item.mgmtNo||'',
+        item.brand||'', item.productName||'', item.category||'',
+        1, item.purchasePrice||0, item.paymentMethod||'現金',
+        item.purchaseStore||'', '目視確認', '',
+      ],
+    }));
+    // 売却行
+    const saleRows = data.sales.map(s => {
+      const item = data.inventory.find(i => i.id === s.inventoryId) || {};
+      return {
+        date: s.saleDate || '',
+        row: [
+          '', s.saleDate||'', '売却', item.mgmtNo||'',
+          item.brand||'', item.productName||'', item.category||'',
+          1, s.salePrice||0, s.platform||'',
+          s.platform||'', '−', '',
+        ],
+      };
+    });
+    // 日付順にマージ・連番付与
+    const merged = [...purchaseRows, ...saleRows]
+      .sort((a,b) => a.date > b.date ? 1 : -1)
+      .map((entry, i) => { entry.row[0] = i+1; return entry.row; });
+    return [headers, ...merged];
   };
 
   const exportKobotsuCSV = () => {
-    const headers = ['No','管理番号','ブランド','品名','仕入日','仕入先','仕入単価','決済方法','古物品目','仕入先住所','確認方法'];
-    const rows = data.inventory.map((item, i) => [
-      i + 1, item.mgmtNo || '', item.brand || '', item.productName || '',
-      item.purchaseDate || '', item.purchaseStore || '', item.purchasePrice || 0,
-      item.paymentMethod || '', item.category || '', '', '目視確認',
-    ]);
-    const csv = [headers, ...rows].map(r => r.map(v => `"${v}"`).join(',')).join('\n');
-    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `kobotsu_${today()}.csv`; a.click();
-    URL.revokeObjectURL(url);
-    toast('📥 古物台帳CSVをダウンロードしました');
+    downloadCsvBlob(buildKobotsuRows(), `古物台帳_${today()}.csv`);
+    toast('📥 古物台帳をダウンロードしました');
+  };
+
+  // ── まとめてDL（両方同時）───────────────────────────────
+  const exportAll = () => {
+    downloadCsvBlob(buildSalesRows(),   `売上管理表_${today()}.csv`);
+    setTimeout(() => {
+      downloadCsvBlob(buildKobotsuRows(), `古物台帳_${today()}.csv`);
+      toast('📥 売上管理表 + 古物台帳 をダウンロードしました');
+    }, 300);
   };
 
   const downloadBackup = () => {
@@ -2439,24 +2482,112 @@ const OtherTab = () => {
         )}
 
         {/* エクスポート */}
-        {activeSection === 'export' && (
-          <div>
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>売上管理表CSVエクスポート</div>
-              <div style={{fontSize:13,color:'#666',marginBottom:12}}>売上記録 {data.sales.length}件をExcel形式でエクスポート</div>
-              <button className="btn-primary" style={{width:'100%'}} onClick={exportCSV}>
-                📥 CSVダウンロード
+        {activeSection === 'export' && (() => {
+          const salesPreview = data.sales.length === 0 ? [] : [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
+          const kobotsuPreview = (() => {
+            const purchase = data.inventory.map(item => ({ date: item.purchaseDate||'', type:'仕入れ', name:`${item.brand||''} ${item.productName||''}`.trim(), amount: item.purchasePrice||0, partner: item.purchaseStore||'' }));
+            const sale = data.sales.map(s => {
+              const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
+              return { date: s.saleDate||'', type:'売却', name:`${item.brand||''} ${item.productName||''}`.trim(), amount: s.salePrice||0, partner: s.platform||'' };
+            });
+            return [...purchase,...sale].sort((a,b)=>a.date>b.date?1:-1);
+          })();
+          return (
+            <div>
+              {/* まとめてDLボタン */}
+              <button className="btn-primary" style={{width:'100%',marginBottom:16,fontSize:15}} onClick={exportAll}>
+                📦 売上管理表 ＋ 古物台帳　まとめてDL
               </button>
+
+              {/* 売上管理表カード */}
+              <div className="card" style={{padding:16,marginBottom:12}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:15}}>📊 売上管理表</div>
+                    <div style={{fontSize:12,color:'#999',marginTop:2}}>売上 {data.sales.length}件</div>
+                  </div>
+                  <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportCSV}>CSVのみ</button>
+                </div>
+                {salesPreview.length === 0 ? (
+                  <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>売上記録がありません</div>
+                ) : (
+                  <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+                    <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',minWidth:380}}>
+                      <thead>
+                        <tr style={{background:'#f8f8f8'}}>
+                          {['販売日','ブランド・品名','販路','売上','利益','利益率'].map(h=>(
+                            <th key={h} style={{padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {salesPreview.slice(0,8).map(s => {
+                          const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
+                          const rate = s.salePrice>0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
+                          return (
+                            <tr key={s.id} style={{borderBottom:'1px solid #f3f3f3'}}>
+                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',color:'#555'}}>{s.saleDate}</td>
+                              <td style={{padding:'6px 7px',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.brand} {item.productName}</td>
+                              <td style={{padding:'6px 7px',whiteSpace:'nowrap'}}>{s.platform}</td>
+                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700}}>¥{formatMoney(s.salePrice)}</td>
+                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700,color:s.profit>=0?'#16a34a':'#dc2626'}}>¥{formatMoney(s.profit)}</td>
+                              <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'}}>{rate}%</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {salesPreview.length > 8 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {salesPreview.length-8}件（CSVには全件含まれます）</div>}
+                  </div>
+                )}
+              </div>
+
+              {/* 古物台帳カード */}
+              <div className="card" style={{padding:16,marginBottom:12}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:15}}>📜 古物台帳</div>
+                    <div style={{fontSize:12,color:'#999',marginTop:2}}>仕入れ {data.inventory.length}件 ＋ 売却 {data.sales.length}件</div>
+                  </div>
+                  <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportKobotsuCSV}>CSVのみ</button>
+                </div>
+                <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',borderRadius:8,padding:'7px 10px',marginBottom:10}}>
+                  📌 仕入れ・売却を時系列でまとめて記録（古物営業法対応）
+                </div>
+                {kobotsuPreview.length === 0 ? (
+                  <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>データがありません</div>
+                ) : (
+                  <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+                    <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',minWidth:360}}>
+                      <thead>
+                        <tr style={{background:'#f8f8f8'}}>
+                          {['取引日','区分','品名','金額','取引先'].map(h=>(
+                            <th key={h} style={{padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {kobotsuPreview.slice(0,10).map((row,i) => (
+                          <tr key={i} style={{borderBottom:'1px solid #f3f3f3',background: row.type==='売却' ? '#f9fafb' : 'white'}}>
+                            <td style={{padding:'6px 7px',whiteSpace:'nowrap',color:'#555'}}>{row.date}</td>
+                            <td style={{padding:'6px 7px',whiteSpace:'nowrap'}}>
+                              <span style={{fontSize:11,fontWeight:700,padding:'1px 7px',borderRadius:10,background:row.type==='仕入れ'?'#dbeafe':'#d1fae5',color:row.type==='仕入れ'?'#1e3a5f':'#065f46'}}>{row.type}</span>
+                            </td>
+                            <td style={{padding:'6px 7px',maxWidth:130,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{row.name||'−'}</td>
+                            <td style={{padding:'6px 7px',whiteSpace:'nowrap',fontWeight:700}}>¥{formatMoney(row.amount)}</td>
+                            <td style={{padding:'6px 7px',whiteSpace:'nowrap',color:'#555'}}>{row.partner}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {kobotsuPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {kobotsuPreview.length-10}件（CSVには全件含まれます）</div>}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="card" style={{padding:16}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>古物台帳用エクスポート</div>
-              <div style={{fontSize:13,color:'#666',marginBottom:12}}>仕入れ記録 {data.inventory.length}件を古物台帳形式でエクスポート</div>
-              <button className="btn-secondary" style={{width:'100%'}} onClick={exportKobotsuCSV}>
-                📜 古物台帳CSVダウンロード
-              </button>
-            </div>
-          </div>
-        )}
+          );
+        })()}
+
 
         {/* 設定 */}
         {activeSection === 'settings' && (
