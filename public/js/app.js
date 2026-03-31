@@ -613,15 +613,18 @@ const RECEIPT_ANALYSIS_PROMPT = `レシートの写真を分析して以下のJS
   "items": [{"name": "商品名", "price": 価格}]
 }`;
 
-const MERCARI_SS_PROMPT = `メルカリの取引画面のスクリーンショットを読み取ってください。JSONのみで回答（説明不要）：
+const SS_ANALYSIS_PROMPT = `フリマ・オークションアプリの取引画面スクリーンショットから情報を読み取ってください。
+メルカリ・ヤフオク・ラクマに対応。JSONのみで回答（説明不要）：
 {
-  "product_name": "商品名（全文）",
+  "product_name": "商品名（全文、できるだけ長く）",
+  "brand": "ブランド名（例: LOUIS VUITTON, Gucci, Nike）",
+  "model_number": "型番・品番（例: M51258、読み取れた場合のみ）",
   "sale_price": 商品代金（数値のみ、¥や,不要）,
-  "platform_fee": 販売手数料（数値のみ）,
+  "platform_fee": 販売手数料（数値のみ。メルカリ=「販売手数料」、ヤフオク=「落札システム利用料」、ラクマ=「販売手数料」）,
   "shipping": 配送料（数値のみ）,
-  "sale_date": "売却日・購入日時（YYYY-MM-DD形式。画面の購入日時から変換）",
-  "product_id": "商品ID（例: m46193847261。画面下部に表示）",
-  "platform": "メルカリ"
+  "sale_date": "取引日（YYYY-MM-DD形式。「購入日時」「落札日」「取引日」から変換）",
+  "product_id": "商品ID（メルカリ=m始まり、ヤフオクオークションID、ラクマ=商品ID）",
+  "platform": "プラットフォーム名（メルカリ/ヤフオク/ラクマ/その他）"
 }
 読み取れない値はnullにしてください。`;
 
@@ -2403,26 +2406,47 @@ const SalesTab = () => {
   const ssInputRef = React.useRef();
   const apiKey = data.settings?.apiKey || '';
 
-  // 商品名マッチング（AI読み取り結果 vs 在庫リスト）
-  const findBestMatch = (aiName, items) => {
+  // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
+  const findTopMatches = (extracted, items, topN = 3) => {
     const norm = s => (s || '').toLowerCase()
-      .replace(/[・\-\/\s　（）()【】「」]+/g, ' ')
-      .replace(/\(推定\)/g, '').trim();
-    const tokens = s => norm(s).split(' ').filter(t => t.length >= 2);
-    const aiTokens = tokens(aiName);
-    if (aiTokens.length === 0) return null;
-    let best = null, bestScore = 0;
-    for (const item of items) {
-      const str = `${item.brand||''} ${item.productName||''} ${item.modelNumber||''}`;
-      const itemTokens = tokens(str);
+      .replace(/[\(（]推定[\)）]/g, '')
+      .replace(/[・\-\/\s　（）()【】「」]+/g, ' ').trim();
+    const tokens = s => norm(s).split(/\s+/).filter(t => t.length >= 2);
+    // AI読み取り結果を1つの検索文字列にまとめる
+    const searchStr = [extracted.product_name, extracted.brand, extracted.model_number].filter(Boolean).join(' ');
+    const searchTokens = tokens(searchStr);
+    if (searchTokens.length === 0) return [];
+    const scored = items.map(item => {
+      const itemStr = [item.brand, item.productName, item.modelNumber, item.brandReading].filter(Boolean).join(' ');
+      const itemTokens = tokens(itemStr);
       let hit = 0;
-      for (const t of aiTokens) {
+      for (const t of searchTokens) {
         if (itemTokens.some(it => it.includes(t) || t.includes(it))) hit++;
       }
-      const score = hit / aiTokens.length;
-      if (score > bestScore) { bestScore = score; best = item; }
-    }
-    return bestScore >= 0.25 ? best : null;
+      let score = hit / searchTokens.length;
+      // ブランド一致ボーナス
+      if (extracted.brand && item.brand) {
+        const aBrand = norm(extracted.brand);
+        const iBrand = norm(item.brand);
+        if (iBrand.includes(aBrand) || aBrand.includes(iBrand)) score += 0.4;
+      }
+      // 型番一致ボーナス
+      if (extracted.model_number && item.modelNumber) {
+        if (norm(item.modelNumber).includes(norm(extracted.model_number))) score += 0.5;
+      }
+      // 価格近似ボーナス（出品予定価格との比較）
+      if (extracted.sale_price && item.listPrice) {
+        const diff = Math.abs(extracted.sale_price - item.listPrice) / Math.max(item.listPrice, 1);
+        if (diff < 0.05) score += 0.3;
+        else if (diff < 0.2) score += 0.1;
+      }
+      return { item, score };
+    });
+    return scored
+      .filter(s => s.score >= 0.15)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topN)
+      .map(s => s.item);
   };
 
   // スクショ読み込み処理
@@ -2435,19 +2459,19 @@ const SalesTab = () => {
     try {
       const blob = await compressImage(file, 1200, 0.9);
       const b64 = await blobToBase64(blob);
-      const text = await analyzeImagesWithClaude([{mimeType:'image/jpeg', data:b64}], apiKey, MERCARI_SS_PROMPT, 400);
+      const text = await analyzeImagesWithClaude([{mimeType:'image/jpeg', data:b64}], apiKey, SS_ANALYSIS_PROMPT, 500);
       const stripped = text.replace(/```(?:json)?\s*/gi,'').replace(/```/g,'');
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('読み取り失敗');
       const result = JSON.parse(jsonMatch[0]);
       if (!result.product_name) throw new Error('商品名を読み取れませんでした');
-      const userItems = data.inventory.filter(i => i.userId === currentUser);
-      const matched = findBestMatch(result.product_name, userItems);
-      if (!matched) {
+      // data.inventory はすでに currentUser でフィルター済み
+      const candidates = findTopMatches(result, data.inventory);
+      if (candidates.length === 0) {
         toast('❌ 登録済みの商品から一致するものが見つかりませんでした');
         return;
       }
-      setSsCandidate({ item: matched, extracted: result });
+      setSsCandidate({ candidates, extracted: result });
     } catch(err) {
       toast('❌ ' + err.message);
     } finally {
@@ -2637,60 +2661,64 @@ const SalesTab = () => {
         )}
       </div>
 
-      {/* スクショ確認モーダル */}
+      {/* スクショ確認モーダル（複数候補対応） */}
       {ssCandidate && (
         <div className="modal-overlay" onClick={() => setSsCandidate(null)}>
           <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
-            <div style={{fontWeight:700,fontSize:16,marginBottom:14}}>📸 この商品でいいですか？</div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+              <div style={{fontWeight:700,fontSize:16}}>📸 スクショ読み取り結果</div>
+              <button onClick={() => setSsCandidate(null)} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+            </div>
 
-            {/* マッチした商品 */}
-            <div style={{background:'#f8f8f8',borderRadius:10,padding:'10px 12px',marginBottom:14,display:'flex',alignItems:'center',gap:10}}>
-              <ItemThumbnail thumbId={ssCandidate.item.photos?.[0]?.thumbId} thumbDataUrl={ssCandidate.item.photos?.[0]?.thumbDataUrl} size={50} fallback="📦"/>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ssCandidate.item.brand} {ssCandidate.item.productName}</div>
-                <div style={{fontSize:11,color:'#999',marginTop:2}}>仕入れ ¥{formatMoney(ssCandidate.item.purchasePrice)}</div>
+            {/* 読み取り結果サマリー */}
+            <div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:'10px 12px',marginBottom:14,fontSize:13}}>
+              <div style={{fontWeight:600,marginBottom:4,color:'#0369a1'}}>{ssCandidate.extracted.platform || 'フリマ'} · {ssCandidate.extracted.product_name}</div>
+              <div style={{color:'#555',display:'flex',gap:12,flexWrap:'wrap'}}>
+                {ssCandidate.extracted.sale_price && <span>¥{formatMoney(ssCandidate.extracted.sale_price)}</span>}
+                {ssCandidate.extracted.sale_date && <span>📅 {ssCandidate.extracted.sale_date}</span>}
+                {ssCandidate.extracted.product_id && <span>ID: {ssCandidate.extracted.product_id}</span>}
               </div>
             </div>
 
-            {/* 読み取り結果 */}
-            <div style={{marginBottom:16}}>
-              {[
-                ['販売価格', ssCandidate.extracted.sale_price != null ? `¥${formatMoney(ssCandidate.extracted.sale_price)}` : null],
-                ['販売手数料', ssCandidate.extracted.platform_fee != null ? `¥${formatMoney(ssCandidate.extracted.platform_fee)}` : null],
-                ['配送料', ssCandidate.extracted.shipping != null ? `¥${formatMoney(ssCandidate.extracted.shipping)}` : null],
-                ['売却日', ssCandidate.extracted.sale_date],
-                ['商品ID', ssCandidate.extracted.product_id],
-              ].map(([k, v]) => v && (
-                <div key={k} style={{display:'flex',justifyContent:'space-between',padding:'7px 0',borderBottom:'1px solid #f0f0f0',fontSize:14}}>
-                  <span style={{color:'#666'}}>{k}</span>
-                  <span style={{fontWeight:600}}>{v}</span>
-                </div>
+            {/* 候補一覧（タップで選択） */}
+            <div style={{fontSize:13,color:'#666',marginBottom:8}}>
+              {ssCandidate.candidates.length === 1 ? 'この商品でいいですか？' : `候補が${ssCandidate.candidates.length}件見つかりました。タップして選択してください。`}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
+              {ssCandidate.candidates.map(item => (
+                <button key={item.id}
+                  style={{background:'#f8f8f8',border:'2px solid #e5e5e5',borderRadius:12,padding:'10px 12px',display:'flex',alignItems:'center',gap:10,cursor:'pointer',textAlign:'left',width:'100%'}}
+                  onClick={() => {
+                    const ex = ssCandidate.extracted;
+                    const platform = ex.platform || 'メルカリ';
+                    const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+                    const feeRate = (ex.sale_price && ex.platform_fee)
+                      ? Math.round(ex.platform_fee / ex.sale_price * 1000) / 1000
+                      : (fees[platform] ?? 0.10);
+                    setForm({
+                      inventoryId: item.id,
+                      platform,
+                      salePrice: String(ex.sale_price || ''),
+                      feeRate,
+                      shipping: String(ex.shipping != null ? ex.shipping : CONFIG.ESTIMATED_SHIPPING),
+                      saleDate: ex.sale_date || today(),
+                      platformId: ex.product_id || '',
+                    });
+                    setSsCandidate(null);
+                    setShowForm(true);
+                  }}>
+                  <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={46} fallback="📦"/>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.brand} {item.productName}</div>
+                    <div style={{fontSize:11,color:'#999',marginTop:2}}>仕入れ ¥{formatMoney(item.purchasePrice)} · {item.modelNumber || '型番なし'}</div>
+                  </div>
+                  <span style={{color:'#E84040',fontWeight:700,fontSize:18}}>›</span>
+                </button>
               ))}
             </div>
 
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-              <button style={{background:'#f0f0f0',border:'none',borderRadius:10,padding:'12px',fontWeight:600,cursor:'pointer',fontSize:14}}
-                onClick={() => setSsCandidate(null)}>キャンセル</button>
-              <button className="btn-primary" onClick={() => {
-                const ex = ssCandidate.extracted;
-                const platform = ex.platform || 'メルカリ';
-                const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
-                const feeRate = (ex.sale_price && ex.platform_fee)
-                  ? Math.round(ex.platform_fee / ex.sale_price * 1000) / 1000
-                  : (fees[platform] ?? 0.10);
-                setForm({
-                  inventoryId: ssCandidate.item.id,
-                  platform,
-                  salePrice: String(ex.sale_price || ''),
-                  feeRate,
-                  shipping: String(ex.shipping != null ? ex.shipping : CONFIG.ESTIMATED_SHIPPING),
-                  saleDate: ex.sale_date || today(),
-                  platformId: ex.product_id || '',
-                });
-                setSsCandidate(null);
-                setShowForm(true);
-              }}>OK・入力する</button>
-            </div>
+            <button style={{width:'100%',background:'#f0f0f0',border:'none',borderRadius:10,padding:'11px',fontWeight:600,cursor:'pointer',fontSize:14}}
+              onClick={() => setSsCandidate(null)}>キャンセル</button>
           </div>
         </div>
       )}
@@ -2738,7 +2766,7 @@ const SalesTab = () => {
               <label className="field-label">商品選択</label>
               <select className="input-field" value={form.inventoryId} onChange={e => setF('inventoryId', e.target.value)}>
                 <option value="">商品を選択...</option>
-                {data.inventory.filter(i => i.userId === currentUser).map(i => {
+                {data.inventory.map(i => {
                   const statusLabels = { unlisted:'未出品', listed:'出品中', sold:'売却済' };
                   return <option key={i.id} value={i.id}>{i.brand} {i.productName}（{statusLabels[i.status]||i.status}）</option>;
                 })}
