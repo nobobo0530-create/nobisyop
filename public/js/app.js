@@ -2625,7 +2625,16 @@ const OtherTab = () => {
     toast('✅ 設定を保存しました');
   };
 
-  const setSetting = (key, val) => setSettings(prev => ({ ...prev, [key]: val }));
+  const setSetting = (key, val) => {
+    setSettings(prev => {
+      const updated = { ...prev, [key]: val };
+      // 古物商番号・ヤフオクストア設定は即時保存（保存ボタン不要）
+      if (key === 'storeLicenses' || key === 'yahooStores') {
+        setData({ ...data, settings: updated });
+      }
+      return updated;
+    });
+  };
   const setPlatformFee = (platform, val) => setSettings(prev => ({
     ...prev,
     platformFees: { ...prev.platformFees, [platform]: Number(val) / 100 },
@@ -2759,7 +2768,9 @@ const OtherTab = () => {
       .map((item, i) => {
         const sale = data.sales.find(s => s.inventoryId === item.id);
         // 確認区分: 許可証番号があれば「古物商許可証 ○○号」、なければ「目視確認」
-        const license = item.sellerLicense || (data.settings?.storeLicenses || {})[item.purchaseStore] || '';
+        // settings（ローカル）を優先し、未保存の変更にも対応
+        const storeLicensesMap = settings.storeLicenses || data.settings?.storeLicenses || {};
+        const license = item.sellerLicense || storeLicensesMap[item.purchaseStore] || '';
         const confirmType = license
           ? `古物商許可証（${license}）`
           : (item.purchaseStore ? '目視確認' : '古物商許可証確認');
@@ -3024,7 +3035,10 @@ const OtherTab = () => {
                             <td style={tdStyle()}>{item.category||'−'}</td>
                             <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
                             <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                            <td style={tdStyle({color:'#777',fontSize:10})}>目視確認</td>
+                            <td style={tdStyle({color:'#777',fontSize:10})}>{(() => {
+                              const lic = item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '';
+                              return lic ? '許可証確認' : (item.purchaseStore ? '目視確認' : '−');
+                            })()}</td>
                             <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
                             <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
                             <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
