@@ -600,27 +600,26 @@ const HomeTab = () => {
   const nextMilestone = milestones.find(m => getAchievedCount(m) < (m.targetCount || 1));
 
   const C = {
-    card:    { background:'#141414', border:'1px solid rgba(255,255,255,0.07)', borderRadius:16, padding:16 },
-    cardSub: { background:'#1a1a1a', borderRadius:10, padding:'8px 12px' },
+    card:    { background:'white', borderRadius:16, padding:16, boxShadow:'0 2px 8px rgba(0,0,0,0.08)' },
+    cardSub: { background:'#f5f5f5', borderRadius:10, padding:'8px 12px' },
   };
 
   return (
-    <div className="fade-in" style={{background:'#0a0a0a',minHeight:'100vh'}}>
+    <div className="fade-in" style={{background:'#f5f5f5',minHeight:'100vh'}}>
 
       {/* ── ヘッダー ── */}
       <div style={{
-        background:'#0d0d0d',
-        borderBottom:'1px solid rgba(255,255,255,0.06)',
+        background:'#E84040',
         padding:'16px 20px 14px',
         paddingTop:'calc(16px + env(safe-area-inset-top))',
       }}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
           <div>
-            <div style={{fontSize:22,fontWeight:800,letterSpacing:'-0.5px',color:'#f0f0f0'}}>SalesLog</div>
-            <div style={{fontSize:11,color:'#555',marginTop:1,letterSpacing:'0.5px'}}>売上管理アプリ</div>
+            <div style={{fontSize:22,fontWeight:800,letterSpacing:'-0.5px',color:'white'}}>SalesLog</div>
+            <div style={{fontSize:11,color:'rgba(255,255,255,0.75)',marginTop:1}}>売上管理アプリ</div>
           </div>
           <div style={{textAlign:'right'}}>
-            <div style={{fontSize:12,color:'#555'}}>{now.getFullYear()}年{now.getMonth()+1}月</div>
+            <div style={{fontSize:12,color:'rgba(255,255,255,0.8)'}}>{now.getFullYear()}年{now.getMonth()+1}月</div>
           </div>
         </div>
       </div>
@@ -630,22 +629,20 @@ const HomeTab = () => {
         {/* ── 目標進捗 ── */}
         <div style={C.card}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-            <div style={{fontSize:11,color:'#555',letterSpacing:'0.5px',fontWeight:600}}>今月の目標</div>
-            <div style={{fontSize:11,color:'#555'}}>{progressPct}%</div>
+            <div style={{fontSize:12,color:'#999',fontWeight:600}}>今月の目標</div>
+            <div style={{fontSize:12,color:'#E84040',fontWeight:700}}>{progressPct}%</div>
           </div>
-          <div style={{fontSize:30,fontWeight:800,letterSpacing:'-1px',color: remaining===0?'#4ade80':'#f0f0f0',marginBottom:4}}>
+          <div style={{fontSize:30,fontWeight:800,letterSpacing:'-1px',color: remaining===0?'#16a34a':'#1a1a1a',marginBottom:4}}>
             {remaining === 0 ? '達成 🎉' : `¥${formatMoney(remaining)}`}
           </div>
-          <div style={{fontSize:11,color:'#555',marginBottom:10}}>
+          <div style={{fontSize:11,color:'#999',marginBottom:10}}>
             目標 ¥{formatMoney(monthlyGoal)}　利益 ¥{formatMoney(totalProfit)}
           </div>
           {/* 進捗バー */}
-          <div style={{background:'#1e1e1e',borderRadius:99,height:6,overflow:'hidden'}}>
+          <div style={{background:'#f0f0f0',borderRadius:99,height:7,overflow:'hidden'}}>
             <div style={{
               height:'100%', borderRadius:99,
-              background: progressPct>=100
-                ? 'linear-gradient(90deg,#4ade80,#22c55e)'
-                : 'linear-gradient(90deg,#6366f1,#818cf8)',
+              background: progressPct>=100 ? '#16a34a' : '#E84040',
               width:`${progressPct}%`,
               transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)',
             }}/>
@@ -655,43 +652,43 @@ const HomeTab = () => {
         {/* ── 今月の利益 / 在庫数 ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
           <div style={C.card}>
-            <div style={{fontSize:10,color:'#555',letterSpacing:'0.5px',marginBottom:6,fontWeight:600}}>今月の利益</div>
-            <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:totalProfit>=0?'#4ade80':'#f87171'}}>
+            <div style={{fontSize:11,color:'#999',marginBottom:6,fontWeight:600}}>今月の利益</div>
+            <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:totalProfit>=0?'#16a34a':'#E84040'}}>
               ¥{formatMoney(totalProfit)}
             </div>
           </div>
           <div style={C.card}>
-            <div style={{fontSize:10,color:'#555',letterSpacing:'0.5px',marginBottom:6,fontWeight:600}}>在庫数</div>
-            <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:'#f0f0f0'}}>
-              {inventoryCount}<span style={{fontSize:13,color:'#555',marginLeft:2}}>件</span>
+            <div style={{fontSize:11,color:'#999',marginBottom:6,fontWeight:600}}>在庫数</div>
+            <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:'#1a1a1a'}}>
+              {inventoryCount}<span style={{fontSize:13,color:'#999',marginLeft:2}}>件</span>
             </div>
           </div>
         </div>
 
         {/* ── ご褒美 ── */}
-        <div style={{...C.card,background:'linear-gradient(135deg,#1a1208,#1e1506)',borderColor:'rgba(251,191,36,0.2)'}}>
-          <div style={{fontSize:10,color:'#a16207',letterSpacing:'0.5px',fontWeight:600,marginBottom:6}}>ご褒美予算</div>
-          <div style={{fontSize:24,fontWeight:800,color:'#fbbf24',letterSpacing:'-0.5px'}}>¥{formatMoney(rewardBudget)}</div>
-          <div style={{fontSize:11,color:'#78350f',marginTop:2}}>利益の{rewardPercent}%</div>
+        <div style={{...C.card,background:'#fffbeb',border:'1px solid #fde68a'}}>
+          <div style={{fontSize:11,color:'#b45309',fontWeight:600,marginBottom:6}}>🎁 ご褒美予算</div>
+          <div style={{fontSize:24,fontWeight:800,color:'#d97706',letterSpacing:'-0.5px'}}>¥{formatMoney(rewardBudget)}</div>
+          <div style={{fontSize:11,color:'#92400e',marginTop:2}}>利益の{rewardPercent}%</div>
           {nextMilestone && (
-            <div style={{...C.cardSub,marginTop:8,background:'rgba(251,191,36,0.08)',fontSize:11,color:'#d97706'}}>
+            <div style={{background:'#fef3c7',borderRadius:8,padding:'7px 10px',marginTop:8,fontSize:11,color:'#b45309'}}>
               🏆 {nextMilestone.label}まで あと{(nextMilestone.targetCount||1)-getAchievedCount(nextMilestone)}回
             </div>
           )}
         </div>
 
         {/* ── 旅行ゲーム ── */}
-        <div style={{...C.card,background:'linear-gradient(135deg,#0a0f1e,#0d1529)',borderColor:'rgba(99,102,241,0.2)'}}>
-          <div style={{fontSize:10,color:'#4338ca',letterSpacing:'0.5px',fontWeight:600,marginBottom:10}}>次の旅行</div>
+        <div style={{...C.card,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+          <div style={{fontSize:11,color:'#2563eb',fontWeight:600,marginBottom:10}}>✈️ 次の旅行</div>
           <div style={{display:'flex',alignItems:'center',gap:14}}>
             <div style={{fontSize:40,lineHeight:1}}>{currentSpot.emoji}</div>
             <div style={{flex:1}}>
-              <div style={{fontSize:18,fontWeight:800,color:'#e0e7ff',letterSpacing:'-0.3px'}}>{currentSpot.name}</div>
-              <div style={{fontSize:11,color:'#4f46e5',marginTop:3}}>{currentSpot.desc}</div>
+              <div style={{fontSize:18,fontWeight:800,color:'#1e3a5f',letterSpacing:'-0.3px'}}>{currentSpot.name}</div>
+              <div style={{fontSize:11,color:'#3b82f6',marginTop:3}}>{currentSpot.desc}</div>
             </div>
           </div>
           {nextSpot && (
-            <div style={{...C.cardSub,marginTop:10,background:'rgba(99,102,241,0.1)',fontSize:11,color:'#6366f1'}}>
+            <div style={{background:'#dbeafe',borderRadius:8,padding:'7px 10px',marginTop:10,fontSize:11,color:'#1d4ed8'}}>
               {nextSpot.emoji} 次: {nextSpot.name}まで ¥{formatMoney(toNextSpot)}
             </div>
           )}
