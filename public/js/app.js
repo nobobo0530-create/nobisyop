@@ -826,11 +826,12 @@ const PurchaseTab = () => {
           loaded.push({
             id: ref.id,
             thumbId: ref.thumbId,
-            previewUrl: fullBlob ? blobToURL(fullBlob) : null,
-            thumbUrl:   thumbBlob ? blobToURL(thumbBlob) : null,
+            previewUrl: fullBlob ? blobToURL(fullBlob) : (ref.thumbDataUrl || null),
+            thumbUrl:   thumbBlob ? blobToURL(thumbBlob) : (ref.thumbDataUrl || null),
+            thumbDataUrl: ref.thumbDataUrl || null,
           });
         } catch(e) {
-          loaded.push({ id: ref.id, thumbId: ref.thumbId, previewUrl: null, thumbUrl: null });
+          loaded.push({ id: ref.id, thumbId: ref.thumbId, previewUrl: ref.thumbDataUrl||null, thumbUrl: ref.thumbDataUrl||null, thumbDataUrl: ref.thumbDataUrl||null });
         }
       }
       setPhotos(loaded);
@@ -858,8 +859,11 @@ const PurchaseTab = () => {
         await savePhoto(thumbId, thumbBlob);
         const previewUrl = blobToURL(fullBlob);
         const thumbUrl = blobToURL(thumbBlob);
+        // サムネイルをbase64でも保存 → Supabase同期後も表示できる
+        const thumbB64 = await blobToBase64(thumbBlob);
+        const thumbDataUrl = `data:image/jpeg;base64,${thumbB64}`;
         setPhotos(prev => prev.length < 5
-          ? [...prev, { id: photoId, thumbId, previewUrl, thumbUrl }]
+          ? [...prev, { id: photoId, thumbId, previewUrl, thumbUrl, thumbDataUrl }]
           : prev
         );
       } catch (e) {
@@ -1166,8 +1170,8 @@ const PurchaseTab = () => {
   const handleSave = () => {
     if (!form.productName) { toast('商品名を入力してください'); return; }
     if (!totalPurchaseTaxIn) { toast('仕入れ価格を入力してください'); return; }
-    // photos配列はIDのみ保存（localStorageのサイズを節約）
-    const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId }));
+    // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
+    const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
     // 税込・税抜内訳を保存
     const purchaseCost = {
       totalTaxIn: totalPurchaseTaxIn,
@@ -1812,9 +1816,11 @@ const PurchaseTab = () => {
 // ============================================================
 // サムネイル表示コンポーネント（IndexedDB対応）
 // ============================================================
-const ItemThumbnail = ({ thumbId, size = 70, fallback = '📦' }) => {
-  const [url, setUrl] = React.useState(null);
+const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) => {
+  const [url, setUrl] = React.useState(thumbDataUrl || null);
   React.useEffect(() => {
+    // base64が既にあればIndexedDBにアクセスしない
+    if (thumbDataUrl) { setUrl(thumbDataUrl); return; }
     if (!thumbId) return;
     let objectUrl = null;
     (async () => {
@@ -1829,7 +1835,7 @@ const ItemThumbnail = ({ thumbId, size = 70, fallback = '📦' }) => {
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [thumbId]);
+  }, [thumbId, thumbDataUrl]);
 
   if (url) {
     return <img src={url} alt="" style={{width:size,height:size,borderRadius:10,objectFit:'cover',flexShrink:0}}/>;
@@ -1839,7 +1845,7 @@ const ItemThumbnail = ({ thumbId, size = 70, fallback = '📦' }) => {
 
 // 詳細モーダル用の写真スライド（フル画像をIndexedDBから取得）
 const PhotoSlide = ({ photoRef }) => {
-  const [url, setUrl] = React.useState(null);
+  const [url, setUrl] = React.useState(photoRef?.thumbDataUrl || null);
   React.useEffect(() => {
     if (!photoRef?.id) return;
     let objectUrl = null;
@@ -1849,8 +1855,13 @@ const PhotoSlide = ({ photoRef }) => {
         if (blob) {
           objectUrl = blobToURL(blob);
           setUrl(objectUrl);
+        } else if (photoRef.thumbDataUrl) {
+          // IndexedDBになければbase64サムネイルで代替
+          setUrl(photoRef.thumbDataUrl);
         }
-      } catch(e) { /* ignore */ }
+      } catch(e) {
+        if (photoRef.thumbDataUrl) setUrl(photoRef.thumbDataUrl);
+      }
     })();
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -1928,7 +1939,7 @@ const InventoryTab = () => {
             {filtered.map(item => (
               <div key={item.id} className="card" style={{padding:14,display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}
                 onClick={() => setSelected(item)}>
-                <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} size={70} fallback="📦" />
+                <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={70} fallback="📦" />
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:12,color:'#999',marginBottom:2}}>{item.brand}</div>
                   <div style={{fontWeight:600,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.productName}</div>
@@ -2184,7 +2195,7 @@ const SalesTab = () => {
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               return (
                 <div key={s.id} className="card" style={{padding:14,marginBottom:8,display:'flex',gap:10,alignItems:'center'}}>
-                  <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} size={50} fallback="💰" />
+                  <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={50} fallback="💰" />
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item?.brand} {item?.productName || '商品'}</div>
                     <div style={{fontSize:12,color:'#999',marginTop:2}}>{s.saleDate} · <span style={{fontWeight:600,color:'#555'}}>{s.platform}</span></div>
