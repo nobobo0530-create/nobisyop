@@ -391,6 +391,8 @@ const getInitialData = () => ({
     // ヤフオクストア一覧（ストアごとに許可証番号が異なるため別管理）
     // { id, storeName, license, companyName }
     yahooStores: [],
+    // Google Sheets連携
+    gasUrl: '',
   },
 });
 
@@ -3331,6 +3333,65 @@ const OtherTab = () => {
         {/* エクスポート */}
         {activeSection === 'export' && (() => {
           const salesPreview = [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
+          // ── Google Sheets 同期 ──
+          const GAS_SCRIPT = `function doPost(e) {
+  try {
+    var payload = JSON.parse(e.postData.contents);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('売上管理表') || ss.insertSheet('売上管理表');
+    sheet.clearContents();
+    if (payload.rows && payload.rows.length > 0) {
+      sheet.getRange(1,1,payload.rows.length,payload.rows[0].length).setValues(payload.rows);
+      var h = sheet.getRange(1,1,1,payload.rows[0].length);
+      h.setBackground('#E84040'); h.setFontColor('#FFFFFF'); h.setFontWeight('bold');
+      sheet.autoResizeColumns(1, payload.rows[0].length);
+    }
+    return ContentService.createTextOutput(JSON.stringify({success:true,count:payload.rows.length-1}))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({success:false,error:err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+function doGet(e) {
+  return ContentService.createTextOutput('SalesLog Sheets Sync OK').setMimeType(ContentService.MimeType.TEXT);
+}`;
+          const [gasUrlInput, setGasUrlInput] = React.useState(settings.gasUrl || '');
+          const [syncing, setSyncing] = React.useState(false);
+          const [showSetup, setShowSetup] = React.useState(false);
+          const handleSheetsSync = async () => {
+            const url = gasUrlInput.trim();
+            if (!url) { toast('⚠️ GAS URLを入力してください'); return; }
+            setSyncing(true);
+            try {
+              // ヘッダー行
+              const headers = ['売却日','ブランド','商品名','カテゴリー','プラットフォーム','販売価格','手数料','送料','純利益','仕入れ価格','仕入れ日','仕入れ先','商品ID','管理番号'];
+              const rows = [headers];
+              data.sales.forEach(s => {
+                const item = data.inventory.find(i => i.id === s.inventoryId) || {};
+                const fee = Math.round((s.salePrice||0) * (s.feeRate||0));
+                rows.push([
+                  s.saleDate||'', item.brand||'', item.productName||'', item.category||'',
+                  s.platform||'', s.salePrice||0, fee, s.shipping||0, s.profit||0,
+                  item.purchasePrice||0, item.purchaseDate||'', item.purchaseStore||'',
+                  s.platformId||'', item.mgmtNo||'',
+                ]);
+              });
+              await fetch(url, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'text/plain' },
+                body: JSON.stringify({ rows }),
+              });
+              // GAS URLを設定に保存
+              setSetting('gasUrl', url);
+              toast(`📊 ${data.sales.length}件をGoogleスプレットシートに送信しました。シートを確認してください。`);
+            } catch(err) {
+              toast('❌ 送信失敗: ' + err.message);
+            } finally {
+              setSyncing(false);
+            }
+          };
           // 古物台帳プレビュー: 在庫を仕入日順・1商品1行
           const kobotsuPreview = [...data.inventory]
             .sort((a,b)=>(a.purchaseDate||'')>(b.purchaseDate||'')?1:-1)
@@ -3342,6 +3403,53 @@ const OtherTab = () => {
           const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
           return (
             <div>
+              {/* ── Google Sheets連携カード ── */}
+              <div className="card" style={{padding:16,marginBottom:12,border:'1px solid #d1fae5'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                  <span style={{fontSize:20}}>📗</span>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:15}}>Googleスプレットシート連携</div>
+                    <div style={{fontSize:11,color:'#999',marginTop:1}}>ワンタップで売上データをシートに同期</div>
+                  </div>
+                </div>
+                {/* GAS URL入力 */}
+                <input className="input-field" style={{marginBottom:8,fontSize:12}}
+                  value={gasUrlInput} onChange={e => setGasUrlInput(e.target.value)}
+                  placeholder="https://script.google.com/macros/s/..."/>
+                <button className="btn-primary" style={{width:'100%',background:'#16a34a',marginBottom:10}}
+                  onClick={handleSheetsSync} disabled={syncing}>
+                  {syncing ? <><span className="spinner"/> 送信中...</> : `📊 シートに同期する（${data.sales.length}件）`}
+                </button>
+                {/* セットアップ手順 */}
+                <button style={{width:'100%',background:'none',border:'1px solid #d1d5db',borderRadius:10,padding:'8px',fontSize:12,color:'#555',cursor:'pointer',fontWeight:600}}
+                  onClick={() => setShowSetup(v => !v)}>
+                  {showSetup ? '▲ セットアップ手順を閉じる' : '▼ 初回セットアップ手順を見る'}
+                </button>
+                {showSetup && (
+                  <div style={{marginTop:10,fontSize:12,color:'#444',lineHeight:1.8}}>
+                    <div style={{fontWeight:700,marginBottom:6,color:'#16a34a'}}>📋 手順（5分で完了）</div>
+                    <div style={{background:'#f8f8f8',borderRadius:8,padding:'10px 12px',marginBottom:10}}>
+                      <div><b>①</b> <a href="https://sheets.google.com" target="_blank" style={{color:'#2563eb'}}>Googleスプレットシート</a>を新規作成</div>
+                      <div><b>②</b> メニュー「拡張機能」→「Apps Script」を開く</div>
+                      <div><b>③</b> 既存のコードを全部消して、下のコードをペースト</div>
+                      <div><b>④</b> 「デプロイ」→「新しいデプロイ」→「ウェブアプリ」</div>
+                      <div><b>⑤</b> 「次のユーザーとして実行：自分」「アクセスできるユーザー：全員」→「デプロイ」</div>
+                      <div><b>⑥</b> 表示されたURLをコピーして上の欄に貼り付け</div>
+                    </div>
+                    <div style={{fontWeight:700,marginBottom:6}}>GASスクリプト（コピーしてペースト）</div>
+                    <div style={{position:'relative'}}>
+                      <pre style={{background:'#1e1e2e',color:'#cdd6f4',borderRadius:8,padding:'10px 12px',fontSize:10,overflowX:'auto',lineHeight:1.6,margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all'}}>
+                        {GAS_SCRIPT}
+                      </pre>
+                      <button style={{position:'absolute',top:6,right:6,background:'#E84040',color:'white',border:'none',borderRadius:6,padding:'4px 10px',fontSize:11,fontWeight:700,cursor:'pointer'}}
+                        onClick={() => copyToClipboard(GAS_SCRIPT).then(ok => toast(ok ? '📋 コピーしました' : 'コピー失敗'))}>
+                        コピー
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* まとめてDL */}
               <button className="btn-primary" style={{width:'100%',marginBottom:16,fontSize:15}} onClick={exportAll}>
                 📦 売上管理表 ＋ 古物台帳　まとめてDL
