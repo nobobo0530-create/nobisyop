@@ -3387,7 +3387,9 @@ const SalesTab = () => {
                   const rate  = s.salePrice > 0 ? Math.round((s.profit||0) / s.salePrice * 100) : 0;
                   return (
                     <div key={s.id} style={{display:'flex',alignItems:'center',gap:11,
-                      padding:'10px 0',borderBottom:'1px solid #f3f4f6'}}>
+                      padding:'10px 0',borderBottom:'1px solid #f3f4f6',cursor:'pointer',
+                      WebkitTapHighlightColor:'rgba(0,0,0,0.04)'}}
+                      onClick={() => { setMonthDetail(null); openEdit(s); }}>
                       {/* サムネイル */}
                       <div style={{flexShrink:0}}>
                         <ItemThumbnail
@@ -3418,6 +3420,8 @@ const SalesTab = () => {
                           {isPos?'+':''}¥{formatMoney(s.profit)} ({rate}%)
                         </div>
                       </div>
+                      {/* 編集アイコン */}
+                      <div style={{flexShrink:0,color:'#d1d5db',fontSize:15,paddingLeft:2}}>✏️</div>
                     </div>
                   );
                 })}
