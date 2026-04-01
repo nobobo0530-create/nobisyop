@@ -1084,6 +1084,7 @@ const PurchaseTab = () => {
   const { data, setData, editingItem, setEditingItem, currentUser } = React.useContext(AppContext);
   const toast = useToast();
   const [step, setStep] = React.useState(1); // 1:写真, 2:AI解析, 3:入力
+  const [registrationMode, setRegistrationMode] = React.useState('unlisted'); // 'unlisted'|'listed'
   // photos: [{ id, thumbId, previewUrl, thumbUrl }]
   const [photos, setPhotos] = React.useState([]);
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -1576,6 +1577,7 @@ const PurchaseTab = () => {
     });
     setStep(1); setPhotos([]); setAiResult(null); setGeneratedDesc(''); setShowDesc(false);
     setAiTypeDetection(null); setPurchaseTypeSource('manual'); setPurchaseStoreIsCustom(false);
+    setRegistrationMode('unlisted');
     setPurchaseIsYahoo(false); setYahooSubStoreIsCustom(false);
     setSeoCategoryInput(''); setEditingItem(null);
     setForm({
@@ -1679,6 +1681,30 @@ const PurchaseTab = () => {
           </button>
         )}
       </div>
+
+      {/* 登録モード選択（新規登録・Step1のみ表示）*/}
+      {!editingItem && step === 1 && (
+        <div style={{padding:'12px 16px 0'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            <button onClick={() => setRegistrationMode('unlisted')}
+              style={{padding:'12px 8px',borderRadius:14,border: registrationMode==='unlisted' ? '2px solid #E84040' : '2px solid #e5e5e5',
+                background: registrationMode==='unlisted' ? '#fff0f0' : 'white',
+                cursor:'pointer',textAlign:'center',touchAction:'manipulation'}}>
+              <div style={{fontSize:22,marginBottom:4}}>📦</div>
+              <div style={{fontSize:13,fontWeight:700,color: registrationMode==='unlisted'?'#E84040':'#333'}}>未出品を登録</div>
+              <div style={{fontSize:10,color:'#999',marginTop:2}}>AI解析あり</div>
+            </button>
+            <button onClick={() => setRegistrationMode('listed')}
+              style={{padding:'12px 8px',borderRadius:14,border: registrationMode==='listed' ? '2px solid #2563eb' : '2px solid #e5e5e5',
+                background: registrationMode==='listed' ? '#eff6ff' : 'white',
+                cursor:'pointer',textAlign:'center',touchAction:'manipulation'}}>
+              <div style={{fontSize:22,marginBottom:4}}>✅</div>
+              <div style={{fontSize:13,fontWeight:700,color: registrationMode==='listed'?'#2563eb':'#333'}}>出品済みを登録</div>
+              <div style={{fontSize:10,color:'#999',marginTop:2}}>AI解析なし・簡易入力</div>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ステップインジケーター */}
       <div className="step-indicator" style={{paddingTop:12}}>
@@ -1795,9 +1821,13 @@ const PurchaseTab = () => {
             )}
 
             <div style={{display:'flex',gap:8,marginTop:4}}>
-              {photos.length > 0 && step === 1 && (
+              {photos.length > 0 && step === 1 && registrationMode === 'unlisted' && (
                 <button className="btn-primary" style={{flex:1}}
                   onClick={() => setStep(2)}>次へ → AI解析</button>
+              )}
+              {photos.length > 0 && step === 1 && registrationMode === 'listed' && (
+                <button className="btn-primary" style={{flex:1,background:'#2563eb',boxShadow:'0 4px 16px rgba(37,99,235,0.28)'}}
+                  onClick={() => setStep(3)}>次へ → 入力へ</button>
               )}
               {step === 1 && (
                 <button className="btn-secondary" style={{flex: photos.length > 0 ? '0 0 auto' : 1}}
@@ -1809,8 +1839,8 @@ const PurchaseTab = () => {
           </div>
         )}
 
-        {/* Step 2: AI解析 */}
-        {step >= 2 && (
+        {/* Step 2: AI解析（未出品モードのみ）*/}
+        {step >= 2 && registrationMode === 'unlisted' && (
           <div className="card" style={{padding:16,marginBottom:12}}>
             <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>Step 2: AI解析</div>
             {!apiKey && (
@@ -3431,10 +3461,204 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
 };
 
 // ============================================================
+// Seller Book インポーター
+// ============================================================
+const SELLER_BOOK_COL_MAP = {
+  '商品名':'productName','タイトル':'productName','品名':'productName',
+  'ブランド':'brand','カテゴリ':'category','カテゴリー':'category',
+  '仕入値':'purchasePrice','仕入金額':'purchasePrice','仕入価格':'purchasePrice',
+  '仕入れ値':'purchasePrice','仕入れ金額':'purchasePrice','仕入れ価格':'purchasePrice',
+  '販売価格':'salePrice','売上金額':'salePrice','売れた金額':'salePrice',
+  '売却金額':'salePrice','売却価格':'salePrice','出品価格':'salePrice',
+  '仕入れ日':'purchaseDate','仕入日':'purchaseDate','購入日':'purchaseDate',
+  '出品日':'listDate','売れた日':'saleDate','売却日':'saleDate','販売日':'saleDate',
+  '利益':'profit','純利益':'profit','粗利':'profit',
+  'プラットフォーム':'platform','販売先':'platform','販売チャネル':'platform','フリマ':'platform',
+  'ステータス':'status','状態':'status',
+  '手数料':'fee','送料':'shipping','配送料':'shipping',
+  'メモ':'notes','備考':'notes',
+};
+
+const parseCSVText = (text) => {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return { headers: [], rows: [] };
+  const parseRow = (line) => {
+    const result = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') { if (inQ && line[i+1]==='"') { cur+='"'; i++; } else { inQ=!inQ; } }
+      else if (c === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
+      else { cur += c; }
+    }
+    result.push(cur.trim());
+    return result;
+  };
+  return { headers: parseRow(lines[0]), rows: lines.slice(1).map(parseRow) };
+};
+
+const SellerBookImporter = ({ data, setData, toast, currentUser }) => {
+  const [preview, setPreview]   = React.useState(null); // { headers, rows, colMap, fileName }
+  const [importing, setImporting] = React.useState(false);
+  const fileRef = React.useRef();
+
+  const cleanNum = v => Number(String(v||'').replace(/[¥,円\s]/g,'')) || 0;
+  const cleanDate = v => {
+    if (!v) return '';
+    const s = String(v).replace(/\//g,'-').replace(/\s.*/,'');
+    const m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    return m ? `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}` : '';
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const buf = await file.arrayBuffer();
+    let text;
+    try {
+      const dec = new TextDecoder('shift-jis'); text = dec.decode(buf);
+      if ((text.match(/\uFFFD/g)||[]).length > 10) text = new TextDecoder('utf-8').decode(buf);
+    } catch { text = new TextDecoder('utf-8').decode(buf); }
+    const { headers, rows } = parseCSVText(text);
+    if (!headers.length) { toast('❌ CSVを読み込めませんでした'); return; }
+    const colMap = {};
+    headers.forEach((h,i) => { const m = SELLER_BOOK_COL_MAP[h.trim()]; if (m) colMap[m]=i; });
+    setPreview({ headers, rows, colMap, fileName: file.name });
+    e.target.value = '';
+  };
+
+  const handleImport = () => {
+    if (!preview) return;
+    setImporting(true);
+    try {
+      const { rows, colMap } = preview;
+      const uid = currentUser || 'self';
+      const newInv  = [...(data.inventory||[])];
+      const newSales = [...(data.sales||[])];
+      let cnt = 0;
+      rows.forEach((row, ri) => {
+        const get = f => colMap[f]!=null ? (row[colMap[f]]||'') : '';
+        const name = get('productName'); if (!name) return;
+        const purchasePrice = cleanNum(get('purchasePrice'));
+        const salePrice     = cleanNum(get('salePrice'));
+        const purchaseDate  = cleanDate(get('purchaseDate')) || today();
+        const saleDate      = cleanDate(get('saleDate'));
+        const listDate      = cleanDate(get('listDate'));
+        const platform      = get('platform') || 'メルカリ';
+        const statusRaw     = get('status');
+        let status = 'unlisted';
+        if (saleDate || /売|sold|完了/i.test(statusRaw)) status = 'sold';
+        else if (listDate || /出品中|listed/i.test(statusRaw)) status = 'listed';
+        const itemId = `sb_${Date.now()}_${ri}_${Math.random().toString(36).slice(2,5)}`;
+        newInv.push({
+          id: itemId, userId: uid,
+          productName: name,
+          brand: get('brand'), category: get('category'),
+          purchasePrice, listPrice: salePrice,
+          purchaseDate, listDate, status, photos: [],
+          createdAt: new Date().toISOString(),
+        });
+        if (status === 'sold' && saleDate) {
+          const fee  = platform==='メルカリ'?0.10:platform==='ヤフオク'?0.088:0.10;
+          const ship = cleanNum(get('shipping')) || CONFIG.ESTIMATED_SHIPPING;
+          const profitRaw = cleanNum(get('profit'));
+          const profit = profitRaw || calcProfit(salePrice, purchasePrice, fee, ship);
+          newSales.push({
+            id: `sbs_${Date.now()}_${ri}_${Math.random().toString(36).slice(2,5)}`,
+            inventoryId: itemId, userId: uid,
+            platform, salePrice, feeRate: fee, shipping: ship, profit, saleDate,
+          });
+        }
+        cnt++;
+      });
+      setData({ ...data, inventory: newInv, sales: newSales });
+      toast(`✅ ${cnt}件をインポートしました（在庫${newInv.length-data.inventory.length}件・売上${newSales.length-data.sales.length}件）`);
+      setPreview(null);
+    } catch(e) {
+      toast(`❌ インポートエラー: ${e.message}`);
+    } finally { setImporting(false); }
+  };
+
+  const mappedFields = preview ? Object.keys(preview.colMap) : [];
+  const unmappedHeaders = preview ? preview.headers.filter(h => !SELLER_BOOK_COL_MAP[h.trim()]) : [];
+
+  return (
+    <div>
+      <div className="card" style={{padding:16,marginBottom:12}}>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📥 Seller Book データインポート</div>
+        <div style={{fontSize:12,color:'#666',marginBottom:12,lineHeight:1.6}}>
+          Seller BookのCSVエクスポートファイルを読み込んで、仕入れ・売上データを一括登録します。<br/>
+          <span style={{color:'#E84040',fontWeight:600}}>※ インポート前に必ずバックアップを取ってください</span>
+        </div>
+        <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{display:'none'}}/>
+        <button className="btn-primary" style={{width:'100%'}} onClick={() => fileRef.current?.click()}>
+          📂 CSVファイルを選択
+        </button>
+        <div style={{fontSize:11,color:'#999',marginTop:8,lineHeight:1.6}}>
+          対応形式: UTF-8 / Shift-JIS CSV<br/>
+          Seller Bookアプリ → 設定 → データエクスポート → CSVでエクスポート
+        </div>
+      </div>
+
+      {preview && (
+        <div className="card" style={{padding:16,marginBottom:12}}>
+          <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>📋 読み込み確認</div>
+          <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+            ファイル: <span style={{fontWeight:600}}>{preview.fileName}</span>
+            　{preview.rows.length}件
+          </div>
+
+          {/* マッピング状況 */}
+          <div style={{background:'#f8f8f8',borderRadius:10,padding:10,marginBottom:10}}>
+            <div style={{fontSize:11,fontWeight:700,marginBottom:6,color:'#555'}}>認識したカラム</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+              {mappedFields.map(f => (
+                <span key={f} style={{background:'#d1fae5',color:'#065f46',fontSize:10,borderRadius:20,padding:'2px 8px',fontWeight:600}}>
+                  ✓ {f}
+                </span>
+              ))}
+              {unmappedHeaders.slice(0,6).map(h => (
+                <span key={h} style={{background:'#f3f4f6',color:'#999',fontSize:10,borderRadius:20,padding:'2px 8px'}}>
+                  {h}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* データプレビュー（先頭3件）*/}
+          <div style={{fontSize:11,fontWeight:700,marginBottom:6,color:'#555'}}>データプレビュー（先頭3件）</div>
+          <div style={{overflowX:'auto'}}>
+            {preview.rows.slice(0,3).map((row, i) => {
+              const get = f => preview.colMap[f]!=null ? (row[preview.colMap[f]]||'−') : '−';
+              return (
+                <div key={i} style={{background:'#fafafa',borderRadius:8,padding:'8px 10px',marginBottom:6,fontSize:11}}>
+                  <div style={{fontWeight:700,marginBottom:2}}>{get('productName')}</div>
+                  <div style={{color:'#666'}}>
+                    仕入: ¥{get('purchasePrice')} 　売上: ¥{get('salePrice')}
+                    {get('saleDate')!=='−' && <span> 　売却日: {get('saleDate')}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{display:'flex',gap:8,marginTop:12}}>
+            <button className="btn-primary" style={{flex:1}} onClick={handleImport} disabled={importing}>
+              {importing ? <><span className="spinner"/><span>インポート中...</span></> : `✅ ${preview.rows.length}件をインポート`}
+            </button>
+            <button className="btn-secondary" style={{flex:'0 0 auto'}} onClick={() => setPreview(null)}>
+              キャンセル
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
-  const { data, setData, dbStatus, dbError, userProfile, setUserProfile } = React.useContext(AppContext);
+  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser } = React.useContext(AppContext);
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
@@ -3717,6 +3941,7 @@ const OtherTab = () => {
     { id: 'qr', label: 'QR', icon: '📱' },
     { id: 'receipts', label: 'レシート', icon: '🧾' },
     { id: 'export', label: 'エクスポート', icon: '📊' },
+    { id: 'import', label: 'インポート', icon: '📥' },
     { id: 'settings', label: '設定', icon: '⚙️' },
     { id: 'db', label: 'DB', icon: '🗄️' },
   ];
@@ -3800,6 +4025,10 @@ const OtherTab = () => {
               ))
             )}
           </div>
+        )}
+
+        {activeSection === 'import' && (
+          <SellerBookImporter data={data} setData={setData} toast={toast} currentUser={currentUser} />
         )}
 
         {/* エクスポート */}
