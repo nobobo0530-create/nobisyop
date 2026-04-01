@@ -2496,6 +2496,7 @@ const InventoryTab = () => {
   const toast = useToast();
   const [filter, setFilter] = React.useState('unlisted');
   const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
+  const [search, setSearch] = React.useState('');
   const [selected, setSelected] = React.useState(null);
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
@@ -2518,8 +2519,14 @@ const InventoryTab = () => {
   };
 
   const filtered = data.inventory.filter(item => {
-    if (filter === 'all') return true;
-    return item.status === filter;
+    if (filter !== 'all' && item.status !== filter) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      return (item.productName||'').toLowerCase().includes(q) ||
+             (item.brand||'').toLowerCase().includes(q) ||
+             (item.memo||'').toLowerCase().includes(q);
+    }
+    return true;
   });
 
   // 並び替え
@@ -2619,10 +2626,39 @@ const InventoryTab = () => {
         )}
       </div>
 
+      {/* 検索バー */}
+      <div style={{padding:'10px 16px',background:'white',borderBottom:'1px solid #f0f0f0'}}>
+        <div style={{position:'relative',display:'flex',alignItems:'center'}}>
+          <span style={{position:'absolute',left:10,fontSize:15,color:'#aaa',pointerEvents:'none'}}>🔍</span>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="商品名・ブランド名で検索..."
+            style={{width:'100%',padding:'9px 36px 9px 34px',borderRadius:10,border:'1.5px solid #e5e7eb',
+              fontSize:14,outline:'none',background:'#f9fafb',boxSizing:'border-box',
+              WebkitAppearance:'none'}}
+          />
+          {search && (
+            <button onClick={() => setSearch('')}
+              style={{position:'absolute',right:8,background:'none',border:'none',cursor:'pointer',
+                fontSize:16,color:'#aaa',padding:'2px 4px',lineHeight:1}}>×</button>
+          )}
+        </div>
+      </div>
+
       {/* フィルター */}
       <div style={{display:'flex',gap:8,padding:'10px 16px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
         {[['unlisted','未出品','#6b7280'],['listed','出品中','#1e40af'],['sold','売却済','#5b21b6'],['all','すべて','#6b7280']].map(([v,l,c]) => {
-          const cnt = v === 'all' ? data.inventory.length : data.inventory.filter(i => i.status === v).length;
+          const base = v === 'all' ? data.inventory : data.inventory.filter(i => i.status === v);
+          const cnt = search.trim()
+            ? base.filter(i => {
+                const q = search.trim().toLowerCase();
+                return (i.productName||'').toLowerCase().includes(q) ||
+                       (i.brand||'').toLowerCase().includes(q) ||
+                       (i.memo||'').toLowerCase().includes(q);
+              }).length
+            : base.length;
           const active = filter === v;
           return (
             <button key={v} onClick={() => { setFilter(v); setCheckedIds(new Set()); }}
