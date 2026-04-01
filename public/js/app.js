@@ -723,8 +723,13 @@ const HomeTab = () => {
   // ── 孤立売上を除外（在庫に紐づかない売上は集計しない）──
   const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
   const validSales = (data.sales||[]).filter(s => !s.inventoryId || _invIdSet.has(s.inventoryId));
-  // 集計用：売上金額がある売却済み商品のみ（salePrice=0のインポートデータを除外）
-  const summarySales = validSales.filter(s => (s.salePrice || 0) > 0);
+  // 実効仕入れ値（売上レコード or 在庫から取得）
+  const getEffectivePP = (s) => {
+    if ((s.purchasePrice||0) > 0) return s.purchasePrice;
+    return (data.inventory||[]).find(i => i.id === s.inventoryId)?.purchasePrice || 0;
+  };
+  // 集計用：販売価格＋仕入れ値の両方が揃っているものだけ（未入力データを除外）
+  const summarySales = validSales.filter(s => (s.salePrice||0) > 0 && getEffectivePP(s) > 0);
 
   // ── 月次データ（選択月ベース）──
   const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(selectedMonth));
@@ -3003,7 +3008,7 @@ const SalesTab = () => {
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
   const [monthDetail, setMonthDetail] = React.useState(null); // 月次詳細モーダル用 "YYYY-MM"
-  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '' };
+  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '', purchasePrice: '' };
   const [form, setForm] = React.useState(emptyForm);
   const [ssReading, setSsReading] = React.useState(false);
   const [ssCandidate, setSsCandidate] = React.useState(null); // {item, extracted}
@@ -3339,6 +3344,8 @@ const SalesTab = () => {
       saleDate: sale.saleDate || today(),
       listDate: sale.listDate || item?.listDate || '',
       platformId: sale.platformId || '',
+      purchasePrice: sale.purchasePrice != null ? String(sale.purchasePrice)
+        : (item?.purchasePrice != null ? String(item.purchasePrice) : ''),
     });
     setShowForm(true);
   };
@@ -3346,8 +3353,10 @@ const SalesTab = () => {
   const closeForm = () => { setShowForm(false); setEditingSale(null); setForm(emptyForm); };
 
   const selectedItem = data.inventory.find(i => i.id === form.inventoryId);
+  // フォームに仕入れ値が入力されていればそちらを優先
+  const effectivePurchasePrice = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
   const profit = selectedItem
-    ? Math.round(Number(form.salePrice) * (1 - form.feeRate) - Number(form.shipping) - selectedItem.purchasePrice)
+    ? Math.round(Number(form.salePrice) * (1 - form.feeRate) - Number(form.shipping) - effectivePurchasePrice)
     : 0;
   // 回転日数（出品日→売却日）
   const calcTurnoverDays = (listDate, saleDate) => {
@@ -3362,6 +3371,12 @@ const SalesTab = () => {
 
     const listDate  = form.listDate || selectedItem?.listDate || '';
     const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
+    const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
+
+    // 在庫の仕入れ値も更新（フォームで明示入力された場合）
+    const updatedInventory = (form.purchasePrice !== '' && selectedItem)
+      ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, purchasePrice: Number(form.purchasePrice) } : i)
+      : data.inventory;
 
     if (editingSale) {
       // ── 編集 ──
@@ -3370,13 +3385,14 @@ const SalesTab = () => {
         ...form,
         salePrice: Number(form.salePrice),
         shipping: Number(form.shipping),
+        purchasePrice: purchasePriceVal,
         profit,
         listDate,
         turnoverDays,
         platformId: form.platformId || '',
         updatedAt: new Date().toISOString(),
       };
-      setData({ ...data, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
+      setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
       toast('✅ 売上を更新しました');
     } else {
       // ── 新規 ──
@@ -3386,13 +3402,14 @@ const SalesTab = () => {
         userId: currentUser,
         salePrice: Number(form.salePrice),
         shipping: Number(form.shipping),
+        purchasePrice: purchasePriceVal,
         profit,
         listDate,
         turnoverDays,
         platformId: form.platformId || '',
         createdAt: new Date().toISOString(),
       };
-      setData({ ...data, sales: [...data.sales, newSale] });
+      setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
       toast('✅ 売上を記録しました');
     }
     closeForm();
@@ -3408,8 +3425,15 @@ const SalesTab = () => {
   // 孤立売上を除外（在庫に紐づかない売上は集計しない）
   const _salesInvIdSet = new Set((data.inventory||[]).map(i => i.id));
   const validSales = (data.sales||[]).filter(s => !s.inventoryId || _salesInvIdSet.has(s.inventoryId));
-  // 集計用：売上金額がある売却のみ（salePrice=0のインポートデータを除外）
-  const summarySales = validSales.filter(s => (s.salePrice || 0) > 0);
+  // 実効仕入れ値（売上レコード or 在庫から取得）
+  const getSalePP = (s) => {
+    if ((s.purchasePrice||0) > 0) return s.purchasePrice;
+    return (data.inventory||[]).find(i => i.id === s.inventoryId)?.purchasePrice || 0;
+  };
+  // 集計用：販売価格＋仕入れ値が両方揃っているものだけ
+  const summarySales = validSales.filter(s => (s.salePrice||0) > 0 && getSalePP(s) > 0);
+  // 未完了チェック（バッジ表示用）
+  const isSaleIncomplete = (s) => !(s.salePrice > 0) || !(getSalePP(s) > 0);
 
   // 月次サマリー（集計用のみ使用）
   const salesByMonth = {};
@@ -3564,8 +3588,10 @@ const SalesTab = () => {
               const item = data.inventory.find(i => i.id === s.inventoryId);
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               const isProfit = (s.profit || 0) >= 0;
+              const incomplete = isSaleIncomplete(s);
               return (
-                <div key={s.id} className="card" style={{padding:'12px 14px',marginBottom:8,display:'flex',gap:12,alignItems:'center',cursor:'pointer'}}
+                <div key={s.id} className="card" style={{padding:'12px 14px',marginBottom:8,display:'flex',gap:12,alignItems:'center',cursor:'pointer',
+                  borderLeft: incomplete ? '3px solid #f59e0b' : 'none'}}
                   onClick={() => openEdit(s)}>
                   <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={52} fallback="💰" />
                   <div style={{flex:1,minWidth:0}}>
@@ -3573,20 +3599,30 @@ const SalesTab = () => {
                       {item?.brand && <span style={{color:'#aaa',fontWeight:700,fontSize:11,marginRight:5,textTransform:'uppercase'}}>{item.brand}</span>}
                       {item?.productName || '商品'}
                     </div>
-                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
                       <span style={{fontSize:11,color:'#bbb'}}>{s.saleDate}</span>
+                      {incomplete && (
+                        <span style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
+                          padding:'1px 7px',fontWeight:700,border:'1px solid #fed7aa'}}>
+                          ⚠ 仕入れ値未入力
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
                     <div style={{fontWeight:800,fontSize:15,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(s.salePrice)}</div>
-                    <div style={{
-                      fontSize:12,fontWeight:700,marginTop:2,
-                      color: isProfit ? '#16a34a' : '#dc2626',
-                      background: isProfit ? '#f0fdf4' : '#fef2f2',
-                      borderRadius:99, padding:'2px 8px', display:'inline-block'}}>
-                      {isProfit ? '+' : ''}¥{formatMoney(s.profit)} ({sProfitRate}%)
-                    </div>
+                    {incomplete ? (
+                      <div style={{fontSize:11,color:'#f59e0b',fontWeight:700,marginTop:2}}>集計対象外</div>
+                    ) : (
+                      <div style={{
+                        fontSize:12,fontWeight:700,marginTop:2,
+                        color: isProfit ? '#16a34a' : '#dc2626',
+                        background: isProfit ? '#f0fdf4' : '#fef2f2',
+                        borderRadius:99, padding:'2px 8px', display:'inline-block'}}>
+                        {isProfit ? '+' : ''}¥{formatMoney(s.profit)} ({sProfitRate}%)
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -3599,11 +3635,14 @@ const SalesTab = () => {
       {monthDetail && (() => {
         const [y, mo] = monthDetail.split('-');
         const label = `${y}年${parseInt(mo)}月`;
-        const mdSales = summarySales
+        // 一覧はすべての有効売上（未完了も表示して編集できるように）
+        const mdSales = validSales
           .filter(s => s.saleDate?.startsWith(monthDetail))
           .sort((a, b) => (b.saleDate||'') > (a.saleDate||'') ? 1 : -1);
-        const mdRevenue = mdSales.reduce((s, r) => s + (r.salePrice||0), 0);
-        const mdProfit  = mdSales.reduce((s, r) => s + (r.profit||0), 0);
+        // 集計は完全データのみ
+        const mdCompleteSales = summarySales.filter(s => s.saleDate?.startsWith(monthDetail));
+        const mdRevenue = mdCompleteSales.reduce((s, r) => s + (r.salePrice||0), 0);
+        const mdProfit  = mdCompleteSales.reduce((s, r) => s + (r.profit||0), 0);
         const mdRate    = mdRevenue > 0 ? Math.round(mdProfit / mdRevenue * 100) : 0;
         return (
           <div className="modal-overlay" onClick={() => setMonthDetail(null)}>
@@ -3639,9 +3678,12 @@ const SalesTab = () => {
                   const inv = data.inventory.find(i => i.id === s.inventoryId);
                   const isPos = (s.profit||0) >= 0;
                   const rate  = s.salePrice > 0 ? Math.round((s.profit||0) / s.salePrice * 100) : 0;
+                  const mdIncomplete = isSaleIncomplete(s);
                   return (
                     <div key={s.id} style={{display:'flex',alignItems:'center',gap:11,
                       padding:'10px 0',borderBottom:'1px solid #f3f4f6',cursor:'pointer',
+                      borderLeft: mdIncomplete ? '3px solid #f59e0b' : '3px solid transparent',
+                      paddingLeft: 6,
                       WebkitTapHighlightColor:'rgba(0,0,0,0.04)'}}
                       onClick={() => { setMonthDetail(null); openEdit(s); }}>
                       {/* サムネイル */}
@@ -3662,17 +3704,27 @@ const SalesTab = () => {
                           <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,
                             padding:'2px 8px',fontWeight:700,flexShrink:0}}>{s.platform||'−'}</span>
                           <span style={{fontSize:11,color:'#bbb',flexShrink:0}}>{s.saleDate}</span>
+                          {mdIncomplete && (
+                            <span style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
+                              padding:'1px 6px',fontWeight:700,border:'1px solid #fed7aa',flexShrink:0}}>
+                              ⚠ 仕入れ値未入力
+                            </span>
+                          )}
                         </div>
                       </div>
                       {/* 金額 */}
                       <div style={{textAlign:'right',flexShrink:0}}>
                         <div style={{fontWeight:800,fontSize:14,color:'#111'}}>¥{formatMoney(s.salePrice)}</div>
-                        <div style={{fontSize:11,fontWeight:700,marginTop:3,
-                          color: isPos ? '#16a34a' : '#dc2626',
-                          background: isPos ? '#f0fdf4' : '#fef2f2',
-                          borderRadius:99,padding:'2px 7px',display:'inline-block'}}>
-                          {isPos?'+':''}¥{formatMoney(s.profit)} ({rate}%)
-                        </div>
+                        {mdIncomplete ? (
+                          <div style={{fontSize:11,color:'#f59e0b',fontWeight:700,marginTop:3}}>集計対象外</div>
+                        ) : (
+                          <div style={{fontSize:11,fontWeight:700,marginTop:3,
+                            color: isPos ? '#16a34a' : '#dc2626',
+                            background: isPos ? '#f0fdf4' : '#fef2f2',
+                            borderRadius:99,padding:'2px 7px',display:'inline-block'}}>
+                            {isPos?'+':''}¥{formatMoney(s.profit)} ({rate}%)
+                          </div>
+                        )}
                       </div>
                       {/* 編集アイコン */}
                       <div style={{flexShrink:0,color:'#d1d5db',fontSize:15,paddingLeft:2}}>✏️</div>
@@ -3993,7 +4045,7 @@ const SalesTab = () => {
               </div>
             )}
 
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
               <div>
                 <label className="field-label">販売価格 (円)</label>
                 <input type="number" className="input-field" value={form.salePrice}
@@ -4004,6 +4056,17 @@ const SalesTab = () => {
                 <input type="number" className="input-field" value={form.shipping}
                   onChange={e => setF('shipping', e.target.value)}/>
               </div>
+            </div>
+            <div style={{marginBottom:12}}>
+              <label className="field-label" style={{display:'flex',alignItems:'center',gap:5}}>
+                仕入れ値 (円)
+                {form.purchasePrice === '' || form.purchasePrice === '0' ? (
+                  <span style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,padding:'1px 7px',fontWeight:700,border:'1px solid #fed7aa'}}>未入力</span>
+                ) : null}
+              </label>
+              <input type="number" className="input-field" value={form.purchasePrice}
+                onChange={e => setF('purchasePrice', e.target.value)} placeholder="仕入れ値を入力"
+                style={{borderColor: (form.purchasePrice === '' || form.purchasePrice === '0') ? '#fed7aa' : undefined}}/>
             </div>
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
