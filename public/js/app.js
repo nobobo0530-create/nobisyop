@@ -2493,14 +2493,43 @@ const InventoryTab = () => {
   const { data, setData, setTab, setEditingItem } = React.useContext(AppContext);
   const toast = useToast();
   const [filter, setFilter] = React.useState('unlisted');
+  const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
   const [selected, setSelected] = React.useState(null);
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
 
+  // 仕入れからの経過日数
+  const daysSince = (dateStr) => {
+    if (!dateStr) return null;
+    return Math.floor((Date.now() - new Date(dateStr).getTime()) / 86400000);
+  };
+
+  // アラートレベル（未出品・出品中のみ）
+  const alertLevel = (item) => {
+    if (item.status === 'sold') return null;
+    const d = daysSince(item.purchaseDate);
+    if (d === null) return null;
+    if (d >= 60) return { level: 'danger', label: '値下げ推奨', days: d };
+    if (d >= 30) return { level: 'warn',   label: '値下げ検討', days: d };
+    return { level: 'ok', days: d };
+  };
+
   const filtered = data.inventory.filter(item => {
     if (filter === 'all') return true;
     return item.status === filter;
+  });
+
+  // 並び替え
+  const sorted = [...filtered].sort((a, b) => {
+    if (sort === 'new')    return (b.purchaseDate||'') > (a.purchaseDate||'') ? 1 : -1;
+    if (sort === 'old')    return (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1;
+    if (sort === 'profit') {
+      const pa = (a.listPrice||0) - (a.purchasePrice||0);
+      const pb = (b.listPrice||0) - (b.purchasePrice||0);
+      return pb - pa;
+    }
+    return 0;
   });
 
   const statusLabel = { unlisted: '未出品', listed: '出品中', sold: '売却済' };
@@ -2546,10 +2575,10 @@ const InventoryTab = () => {
   };
 
   const toggleAll = () => {
-    if (checkedIds.size === filtered.length) {
+    if (checkedIds.size === sorted.length) {
       setCheckedIds(new Set());
     } else {
-      setCheckedIds(new Set(filtered.map(i => i.id)));
+      setCheckedIds(new Set(sorted.map(i => i.id)));
     }
   };
 
@@ -2568,8 +2597,8 @@ const InventoryTab = () => {
     toast(`🗑️ ${cnt}件を削除しました`);
   };
 
-  const allChecked = filtered.length > 0 && checkedIds.size === filtered.length;
-  const someChecked = checkedIds.size > 0 && checkedIds.size < filtered.length;
+  const allChecked  = sorted.length > 0 && checkedIds.size === sorted.length;
+  const someChecked = checkedIds.size > 0 && checkedIds.size < sorted.length;
 
   return (
     <div className="fade-in">
@@ -2613,6 +2642,22 @@ const InventoryTab = () => {
         })}
       </div>
 
+      {/* 並び替えバー */}
+      {!bulkMode && (
+        <div style={{display:'flex',alignItems:'center',gap:6,padding:'8px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
+          <span style={{fontSize:11,color:'#aaa',fontWeight:600,flexShrink:0}}>並び替え</span>
+          {[['old','古い順'],['new','新しい順'],['profit','利益が高い順']].map(([v,l]) => (
+            <button key={v} onClick={() => setSort(v)}
+              style={{padding:'4px 10px',borderRadius:99,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,
+                background: sort===v ? '#1e293b' : '#f3f4f6',
+                color: sort===v ? 'white' : '#777',
+                WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
+              {l}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* 一括選択バー（まとめて削除モード時） */}
       {bulkMode && filtered.length > 0 && (
         <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',background:'#fff8f8',borderBottom:'2px solid #fecaca'}}>
@@ -2638,19 +2683,24 @@ const InventoryTab = () => {
       )}
 
       <div style={{padding:'12px 16px', paddingBottom: bulkMode && checkedIds.size > 0 ? 100 : 12}}>
-        {filtered.length === 0 ? (
+        {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
             {filter === 'all' ? '在庫がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
-            {filtered.map(item => {
+            {sorted.map(item => {
               const isChecked = checkedIds.has(item.id);
+              const alert = alertLevel(item);
+              const estProfit = (item.listPrice||0) - (item.purchasePrice||0);
               return (
                 <div key={item.id} className="card"
                   style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
-                    background: isChecked ? '#fef2f2' : 'white',
-                    border: isChecked ? '1.5px solid #fca5a5' : '1.5px solid transparent',
+                    background: isChecked ? '#fef2f2' : alert?.level==='danger' ? '#fff8f8' : 'white',
+                    border: isChecked ? '1.5px solid #fca5a5'
+                          : alert?.level==='danger' ? '1.5px solid #fecaca'
+                          : alert?.level==='warn'   ? '1.5px solid #fde68a'
+                          : '1.5px solid transparent',
                     transition:'all 0.15s'}}
                   onClick={bulkMode ? (e) => toggleCheck(item.id, e) : () => setSelected(item)}>
                   {bulkMode && (
@@ -2668,9 +2718,20 @@ const InventoryTab = () => {
                   </div>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:11,color:'#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}</div>
-                    <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:6}}>{item.productName}</div>
-                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:4}}>{item.productName}</div>
+                    <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       {conditionTag(item.condition)}
+                      {/* 経過日数・アラートバッジ */}
+                      {alert && (
+                        <span style={{
+                          fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                          background: alert.level==='danger' ? '#fef2f2' : alert.level==='warn' ? '#fffbeb' : '#f0fdf4',
+                          color:       alert.level==='danger' ? '#dc2626' : alert.level==='warn' ? '#d97706' : '#6b7280',
+                          border:`1px solid ${alert.level==='danger'?'#fecaca':alert.level==='warn'?'#fde68a':'#e5e7eb'}`,
+                        }}>
+                          {alert.level==='danger' ? '🔴 値下げ推奨' : alert.level==='warn' ? '🟡 値下げ検討' : ''}{alert.level==='ok'?`${alert.days}日`:` ${alert.days}日`}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
@@ -2678,6 +2739,13 @@ const InventoryTab = () => {
                     <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
                     {item.listPrice > 0 && (
                       <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
+                    )}
+                    {/* 推定利益（未出品・出品中のみ） */}
+                    {item.status !== 'sold' && estProfit !== 0 && (
+                      <div style={{fontSize:10,fontWeight:700,marginTop:2,
+                        color: estProfit > 0 ? '#16a34a' : '#dc2626'}}>
+                        {estProfit > 0 ? '+' : ''}¥{formatMoney(estProfit)}
+                      </div>
                     )}
                     {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                   </div>
@@ -3092,6 +3160,59 @@ const SalesTab = () => {
             })}
           </>
         )}
+
+        {/* 今月の利益ランキング */}
+        {(() => {
+          const now = new Date();
+          const cm = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+          const thisMonth = validSales
+            .filter(s => s.saleDate?.startsWith(cm))
+            .map(s => ({ ...s, item: data.inventory.find(i => i.id === s.inventoryId) }))
+            .sort((a,b) => (b.profit||0) - (a.profit||0));
+          if (thisMonth.length < 2) return null;
+          const top3    = thisMonth.slice(0, 3);
+          const worst3  = [...thisMonth].reverse().slice(0, 3);
+          const RankRow = ({ s, rank, isWorst }) => {
+            const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
+            const isPos = (s.profit||0) >= 0;
+            return (
+              <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 0',
+                borderBottom:'1px solid #f3f4f6'}}>
+                <div style={{width:22,height:22,borderRadius:99,display:'flex',alignItems:'center',justifyContent:'center',
+                  fontWeight:800,fontSize:12,flexShrink:0,
+                  background: rank===1 ? (isWorst?'#fef2f2':'#fef9c3') : '#f3f4f6',
+                  color: rank===1 ? (isWorst?'#dc2626':'#ca8a04') : '#888'}}>
+                  {rank}
+                </div>
+                <div style={{flex:1,minWidth:0,fontSize:12,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#333',fontWeight:600}}>
+                  {s.item?.brand && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{s.item.brand}</span>}
+                  {s.item?.productName || '商品'}
+                </div>
+                <div style={{textAlign:'right',flexShrink:0}}>
+                  <div style={{fontSize:13,fontWeight:800,color: isPos?'#16a34a':'#dc2626'}}>
+                    {isPos?'+':''}¥{formatMoney(s.profit)}
+                  </div>
+                  <div style={{fontSize:10,color:'#aaa'}}>{rate}%</div>
+                </div>
+              </div>
+            );
+          };
+          return (
+            <div style={{marginBottom:12}}>
+              <div className="section-title">今月の利益ランキング</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div className="card" style={{padding:'12px 14px'}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#ca8a04',marginBottom:8}}>🏆 トップ {top3.length}件</div>
+                  {top3.map((s,i) => <RankRow key={s.id} s={s} rank={i+1} isWorst={false}/>)}
+                </div>
+                <div className="card" style={{padding:'12px 14px'}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#dc2626',marginBottom:8}}>📉 ワースト {worst3.length}件</div>
+                  {worst3.map((s,i) => <RankRow key={s.id} s={s} rank={i+1} isWorst={true}/>)}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* 売上一覧 */}
         {validSales.length > 0 && (
