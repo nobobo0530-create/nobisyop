@@ -2850,6 +2850,30 @@ const InventoryTab = () => {
                     <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:4}}>{item.productName}</div>
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       {conditionTag(item.condition)}
+                      {/* 出品準備度バッジ（未出品のみ） */}
+                      {item.status === 'unlisted' && (() => {
+                        const done = [
+                          (item.photos||[]).length > 0,
+                          !!item.productName,
+                          (item.listPrice||0) > 0,
+                          !!item.listDate,
+                          !!item.descriptionText,
+                          !!item.englishTitle,
+                        ].filter(Boolean).length;
+                        const total = 6;
+                        if (done === total) return (
+                          <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                            background:'#f0fdf4',color:'#16a34a',border:'1px solid #bbf7d0'}}>
+                            ✅ 出品準備OK
+                          </span>
+                        );
+                        return (
+                          <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                            background:'#fafafa',color:'#9ca3af',border:'1px solid #e5e7eb'}}>
+                            準備 {done}/{total}
+                          </span>
+                        );
+                      })()}
                       {/* 経過日数・アラートバッジ */}
                       {alert && (
                         <span style={{
@@ -3001,9 +3025,86 @@ const InventoryTab = () => {
               </div>
             )}
 
-            {/* コピーボタン */}
-            {(selected.englishTitle || selected.descriptionText) && (
-              <div style={{display:'flex',gap:8,marginTop:12}}>
+            {/* 出品準備チェックリスト（未出品・出品中のみ） */}
+            {selected.status !== 'sold' && (() => {
+              const checks = [
+                { label: '写真',         ok: (selected.photos||[]).length > 0,  note: `${(selected.photos||[]).length}枚` },
+                { label: '商品名',       ok: !!selected.productName,             note: null },
+                { label: '見込み売上',   ok: (selected.listPrice||0) > 0,        note: selected.listPrice > 0 ? `¥${formatMoney(selected.listPrice)}` : null },
+                { label: '出品日',       ok: !!selected.listDate,                note: selected.listDate || null },
+                { label: '説明文',       ok: !!selected.descriptionText,         note: null },
+                { label: 'メルカリ用タイトル', ok: !!selected.englishTitle,      note: null },
+              ];
+              const doneCount = checks.filter(c => c.ok).length;
+              const allDone = doneCount === checks.length;
+              return (
+                <div style={{background: allDone ? '#f0fdf4' : '#fafafa',
+                  border: `1.5px solid ${allDone ? '#bbf7d0' : '#e5e7eb'}`,
+                  borderRadius:14,padding:'12px 14px',marginBottom:14}}>
+                  {/* ヘッダー */}
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                    <div style={{fontWeight:800,fontSize:13,color: allDone ? '#16a34a' : '#374151'}}>
+                      {allDone ? '✅ 出品準備完了！' : '🚀 出品前チェック'}
+                    </div>
+                    <div style={{fontSize:11,background: allDone ? '#dcfce7' : '#f3f4f6',
+                      color: allDone ? '#16a34a' : '#888',
+                      borderRadius:99,padding:'2px 10px',fontWeight:700}}>
+                      {doneCount}/{checks.length}
+                    </div>
+                  </div>
+                  {/* チェック項目 */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px 12px',marginBottom:12}}>
+                    {checks.map(c => (
+                      <div key={c.label} style={{display:'flex',alignItems:'center',gap:5}}>
+                        <span style={{fontSize:14,flexShrink:0}}>{c.ok ? '✅' : '⬜'}</span>
+                        <span style={{fontSize:12,color: c.ok ? '#374151' : '#9ca3af',fontWeight: c.ok ? 600 : 400}}>
+                          {c.label}
+                          {c.ok && c.note && <span style={{fontSize:10,color:'#6b7280',marginLeft:3}}>({c.note})</span>}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {/* コピーボタン */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                    <button
+                      onClick={() => {
+                        const title = selected.englishTitle || selected.productName || '';
+                        if (!title) { toast('⚠️ タイトルがありません'); return; }
+                        copyToClipboard(title).then(ok => toast(ok ? '📋 タイトルをコピーしました' : 'コピー失敗'));
+                      }}
+                      style={{padding:'10px 6px',borderRadius:10,border:'1.5px solid #e0e0e0',
+                        background: (selected.englishTitle||selected.productName) ? 'white' : '#f9fafb',
+                        fontSize:12,fontWeight:700,cursor:'pointer',color:'#333',
+                        opacity:(selected.englishTitle||selected.productName)?1:0.5,
+                        WebkitTapHighlightColor:'transparent'}}>
+                      📋 タイトルコピー
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!selected.descriptionText) { toast('⚠️ 説明文がありません。仕入れ登録から生成してください'); return; }
+                        copyToClipboard(selected.descriptionText).then(ok => toast(ok ? '📋 説明文をコピーしました' : 'コピー失敗'));
+                      }}
+                      style={{padding:'10px 6px',borderRadius:10,border:'1.5px solid #e0e0e0',
+                        background: selected.descriptionText ? 'white' : '#f9fafb',
+                        fontSize:12,fontWeight:700,cursor:'pointer',color:'#333',
+                        opacity:selected.descriptionText?1:0.5,
+                        WebkitTapHighlightColor:'transparent'}}>
+                      📋 説明文コピー
+                    </button>
+                  </div>
+                  {/* 未完了の場合ヒント */}
+                  {!allDone && (
+                    <div style={{marginTop:8,fontSize:11,color:'#9ca3af',textAlign:'center'}}>
+                      ⬜ の項目は「✏️ 編集」から入力できます
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* 売却済みのコピーボタン（既存） */}
+            {selected.status === 'sold' && (selected.englishTitle || selected.descriptionText) && (
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
                 {selected.englishTitle && (
                   <button onClick={() => copyToClipboard(selected.englishTitle).then(ok => toast(ok ? '📋 タイトルをコピーしました' : 'コピー失敗'))}
                     style={{flex:1,padding:'10px 8px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',color:'#333'}}>
