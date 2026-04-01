@@ -2370,12 +2370,12 @@ const PurchaseTab = () => {
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
-                <label className="field-label">出品予定日</label>
+                <label className="field-label">出品日</label>
                 <input type="date" className="input-field" value={form.listDate}
                   onChange={e => setF('listDate', e.target.value)}/>
               </div>
               <div>
-                <label className="field-label">出品予定価格 (円)</label>
+                <label className="field-label">見込み売上 (円)</label>
                 <input type="number" className="input-field" value={form.listPrice}
                   onChange={e => setF('listPrice', e.target.value)} placeholder="15000"/>
               </div>
@@ -2805,6 +2805,29 @@ const InventoryTab = () => {
               </div>
             )}
 
+            {/* 回転日数バナー（売却済みのみ） */}
+            {selected.status === 'sold' && (() => {
+              const sale = (data.sales||[]).find(s => s.inventoryId === selected.id);
+              const ld = sale?.listDate || selected.listDate;
+              const sd = sale?.saleDate;
+              const td = (ld && sd) ? Math.max(0, Math.floor((new Date(sd) - new Date(ld)) / 86400000)) : null;
+              if (td === null) return null;
+              return (
+                <div style={{background:'linear-gradient(135deg,#0369a1,#0284c7)',borderRadius:12,padding:'10px 16px',
+                  display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+                  <div>
+                    <div style={{fontSize:11,color:'rgba(255,255,255,0.8)',fontWeight:700}}>🔄 回転日数</div>
+                    <div style={{fontSize:10,color:'rgba(255,255,255,0.65)',marginTop:2}}>
+                      {ld} → {sd}
+                    </div>
+                  </div>
+                  <div style={{fontSize:28,fontWeight:800,color:'white'}}>
+                    {td}<span style={{fontSize:14,fontWeight:600}}>日</span>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
                 <div style={{fontSize:12,color:'#999'}}>管理番号</div>
@@ -2827,12 +2850,16 @@ const InventoryTab = () => {
                 <div style={{fontWeight:600}}>¥{formatMoney(selected.purchasePrice)}</div>
               </div>
               <div>
-                <div style={{fontSize:12,color:'#999'}}>出品予定価格</div>
+                <div style={{fontSize:12,color:'#999'}}>見込み売上</div>
                 <div style={{fontWeight:600}}>¥{formatMoney(selected.listPrice)}</div>
               </div>
               <div>
                 <div style={{fontSize:12,color:'#999'}}>仕入れ日</div>
                 <div>{selected.purchaseDate}</div>
+              </div>
+              <div>
+                <div style={{fontSize:12,color:'#999'}}>出品日</div>
+                <div>{selected.listDate || '-'}</div>
               </div>
               <div>
                 <div style={{fontSize:12,color:'#999'}}>仕入れ先</div>
@@ -2923,7 +2950,7 @@ const SalesTab = () => {
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
-  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), platformId: '' };
+  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '' };
   const [form, setForm] = React.useState(emptyForm);
   const [ssReading, setSsReading] = React.useState(false);
   const [ssCandidate, setSsCandidate] = React.useState(null); // {item, extracted}
@@ -3022,6 +3049,7 @@ const SalesTab = () => {
 
   const openEdit = (sale) => {
     setEditingSale(sale);
+    const item = data.inventory.find(i => i.id === sale.inventoryId);
     setForm({
       inventoryId: sale.inventoryId || '',
       platform: sale.platform || 'メルカリ',
@@ -3029,6 +3057,7 @@ const SalesTab = () => {
       feeRate: sale.feeRate ?? 0.10,
       shipping: String(sale.shipping ?? CONFIG.ESTIMATED_SHIPPING),
       saleDate: sale.saleDate || today(),
+      listDate: sale.listDate || item?.listDate || '',
       platformId: sale.platformId || '',
     });
     setShowForm(true);
@@ -3040,10 +3069,19 @@ const SalesTab = () => {
   const profit = selectedItem
     ? Math.round(Number(form.salePrice) * (1 - form.feeRate) - Number(form.shipping) - selectedItem.purchasePrice)
     : 0;
+  // 回転日数（出品日→売却日）
+  const calcTurnoverDays = (listDate, saleDate) => {
+    if (!listDate || !saleDate) return null;
+    const diff = new Date(saleDate).getTime() - new Date(listDate).getTime();
+    return Math.max(0, Math.floor(diff / 86400000));
+  };
 
   const handleSave = () => {
     if (!form.inventoryId) { toast('商品を選択してください'); return; }
     if (!form.salePrice) { toast('販売価格を入力してください'); return; }
+
+    const listDate  = form.listDate || selectedItem?.listDate || '';
+    const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
 
     if (editingSale) {
       // ── 編集 ──
@@ -3053,6 +3091,8 @@ const SalesTab = () => {
         salePrice: Number(form.salePrice),
         shipping: Number(form.shipping),
         profit,
+        listDate,
+        turnoverDays,
         platformId: form.platformId || '',
         updatedAt: new Date().toISOString(),
       };
@@ -3067,6 +3107,8 @@ const SalesTab = () => {
         salePrice: Number(form.salePrice),
         shipping: Number(form.shipping),
         profit,
+        listDate,
+        turnoverDays,
         platformId: form.platformId || '',
         createdAt: new Date().toISOString(),
       };
@@ -3360,7 +3402,11 @@ const SalesTab = () => {
 
             <div style={{marginBottom:12}}>
               <label className="field-label">商品選択</label>
-              <select className="input-field" value={form.inventoryId} onChange={e => setF('inventoryId', e.target.value)}>
+              <select className="input-field" value={form.inventoryId} onChange={e => {
+                const iid = e.target.value;
+                const inv = data.inventory.find(i => i.id === iid);
+                setForm(prev => ({ ...prev, inventoryId: iid, listDate: prev.listDate || inv?.listDate || '' }));
+              }}>
                 <option value="">商品を選択...</option>
                 {data.inventory.map(i => {
                   const statusLabels = { unlisted:'未出品', listed:'出品中', sold:'売却済' };
@@ -3406,14 +3452,34 @@ const SalesTab = () => {
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
-                <label className="field-label">販売日</label>
+                <label className="field-label">出品日</label>
+                <input type="date" className="input-field" value={form.listDate}
+                  onChange={e => setF('listDate', e.target.value)}/>
+              </div>
+              <div>
+                <label className="field-label">売却日</label>
                 <input type="date" className="input-field" value={form.saleDate}
                   onChange={e => setF('saleDate', e.target.value)}/>
               </div>
+            </div>
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
                 <label className="field-label">商品ID</label>
                 <input type="text" className="input-field" value={form.platformId}
                   onChange={e => setF('platformId', e.target.value)} placeholder="m46193847261" style={{fontSize:12}}/>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',justifyContent:'flex-end'}}>
+                {(() => {
+                  const td = calcTurnoverDays(form.listDate, form.saleDate);
+                  if (td === null) return null;
+                  return (
+                    <div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:'8px 12px',textAlign:'center'}}>
+                      <div style={{fontSize:10,color:'#0369a1',fontWeight:700,marginBottom:2}}>🔄 回転日数</div>
+                      <div style={{fontSize:18,fontWeight:800,color:'#0369a1'}}>{td}<span style={{fontSize:11,fontWeight:600}}> 日</span></div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
