@@ -2986,6 +2986,7 @@ const SalesTab = () => {
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
+  const [monthDetail, setMonthDetail] = React.useState(null); // 月次詳細モーダル用 "YYYY-MM"
   const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '' };
   const [form, setForm] = React.useState(emptyForm);
   const [ssReading, setSsReading] = React.useState(false);
@@ -3209,13 +3210,17 @@ const SalesTab = () => {
               const platformEntries = Object.entries(mData.platforms).sort((a,b) => b[1]-a[1]);
               const isGood = mData.profit >= 0;
               return (
-                <div key={m} className="card" style={{marginBottom:10,overflow:'hidden'}}>
+                <div key={m} className="card" style={{marginBottom:10,overflow:'hidden',cursor:'pointer'}}
+                  onClick={() => setMonthDetail(m)}>
                   {/* ヘッダー帯 */}
                   <div style={{background: isGood ? 'linear-gradient(135deg,#16a34a,#22c55e)' : 'linear-gradient(135deg,#dc2626,#ef4444)',
                     padding:'12px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                     <div style={{fontWeight:800,fontSize:15,color:'white',letterSpacing:'-0.02em'}}>{m.replace('-','年')}月</div>
-                    <div style={{color:'rgba(255,255,255,0.9)',fontSize:13,fontWeight:700}}>
-                      利益率 {mProfitRate}% · {mData.count}件
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                      <div style={{color:'rgba(255,255,255,0.9)',fontSize:13,fontWeight:700}}>
+                        利益率 {mProfitRate}% · {mData.count}件
+                      </div>
+                      <span style={{color:'rgba(255,255,255,0.7)',fontSize:16}}>›</span>
                     </div>
                   </div>
                   <div style={{padding:'12px 16px'}}>
@@ -3236,6 +3241,7 @@ const SalesTab = () => {
                         ))}
                       </div>
                     )}
+                    <div style={{marginTop:8,fontSize:11,color:'#bbb',fontWeight:600,textAlign:'right'}}>タップして明細を見る →</div>
                   </div>
                 </div>
               );
@@ -3334,6 +3340,92 @@ const SalesTab = () => {
           </>
         )}
       </div>
+
+      {/* 月次詳細モーダル */}
+      {monthDetail && (() => {
+        const [y, mo] = monthDetail.split('-');
+        const label = `${y}年${parseInt(mo)}月`;
+        const mdSales = summarySales
+          .filter(s => s.saleDate?.startsWith(monthDetail))
+          .sort((a, b) => (b.saleDate||'') > (a.saleDate||'') ? 1 : -1);
+        const mdRevenue = mdSales.reduce((s, r) => s + (r.salePrice||0), 0);
+        const mdProfit  = mdSales.reduce((s, r) => s + (r.profit||0), 0);
+        const mdRate    = mdRevenue > 0 ? Math.round(mdProfit / mdRevenue * 100) : 0;
+        return (
+          <div className="modal-overlay" onClick={() => setMonthDetail(null)}>
+            <div className="modal-content slide-up" onClick={e => e.stopPropagation()}
+              style={{maxHeight:'88vh',display:'flex',flexDirection:'column',padding:0,overflow:'hidden'}}>
+
+              {/* ヘッダー */}
+              <div style={{background:'linear-gradient(135deg,#0f172a,#1e293b)',padding:'16px 18px',borderRadius:'20px 20px 0 0',flexShrink:0}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <div style={{fontWeight:800,fontSize:17,color:'white'}}>{label} 売上明細</div>
+                  <button onClick={() => setMonthDetail(null)}
+                    style={{background:'rgba(255,255,255,0.15)',border:'none',borderRadius:99,width:30,height:30,
+                      fontSize:18,cursor:'pointer',color:'white',display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                  {[['売上', `¥${formatMoney(mdRevenue)}`, 'white'],
+                    ['純利益', `¥${formatMoney(mdProfit)}`, mdProfit >= 0 ? '#4ade80' : '#f87171'],
+                    ['利益率', `${mdRate}%`, '#93c5fd']].map(([l,v,c]) => (
+                    <div key={l} style={{background:'rgba(255,255,255,0.07)',borderRadius:10,padding:'8px 10px',textAlign:'center'}}>
+                      <div style={{fontSize:10,color:'rgba(255,255,255,0.55)',fontWeight:700,marginBottom:3}}>{l}</div>
+                      <div style={{fontSize:15,fontWeight:800,color:c,letterSpacing:'-0.02em'}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{marginTop:8,fontSize:12,color:'rgba(255,255,255,0.5)',textAlign:'right'}}>{mdSales.length}件</div>
+              </div>
+
+              {/* 商品リスト */}
+              <div style={{overflowY:'auto',flex:1,padding:'12px 14px',WebkitOverflowScrolling:'touch'}}>
+                {mdSales.length === 0 ? (
+                  <div style={{textAlign:'center',color:'#aaa',padding:40,fontSize:14}}>データがありません</div>
+                ) : mdSales.map(s => {
+                  const inv = data.inventory.find(i => i.id === s.inventoryId);
+                  const isPos = (s.profit||0) >= 0;
+                  const rate  = s.salePrice > 0 ? Math.round((s.profit||0) / s.salePrice * 100) : 0;
+                  return (
+                    <div key={s.id} style={{display:'flex',alignItems:'center',gap:11,
+                      padding:'10px 0',borderBottom:'1px solid #f3f4f6'}}>
+                      {/* サムネイル */}
+                      <div style={{flexShrink:0}}>
+                        <ItemThumbnail
+                          thumbId={inv?.photos?.[0]?.thumbId}
+                          thumbDataUrl={inv?.photos?.[0]?.thumbDataUrl}
+                          size={50} fallback="💰" />
+                      </div>
+                      {/* 商品情報 */}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',
+                          whiteSpace:'nowrap',color:'#111',lineHeight:1.3}}>
+                          {inv?.brand && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{inv.brand}</span>}
+                          {inv?.productName || s.memo || '商品'}
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',gap:5,marginTop:4,flexWrap:'wrap'}}>
+                          <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,
+                            padding:'2px 8px',fontWeight:700,flexShrink:0}}>{s.platform||'−'}</span>
+                          <span style={{fontSize:11,color:'#bbb',flexShrink:0}}>{s.saleDate}</span>
+                        </div>
+                      </div>
+                      {/* 金額 */}
+                      <div style={{textAlign:'right',flexShrink:0}}>
+                        <div style={{fontWeight:800,fontSize:14,color:'#111'}}>¥{formatMoney(s.salePrice)}</div>
+                        <div style={{fontSize:11,fontWeight:700,marginTop:3,
+                          color: isPos ? '#16a34a' : '#dc2626',
+                          background: isPos ? '#f0fdf4' : '#fef2f2',
+                          borderRadius:99,padding:'2px 7px',display:'inline-block'}}>
+                          {isPos?'+':''}¥{formatMoney(s.profit)} ({rate}%)
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* スクショ確認モーダル（複数候補対応） */}
       {ssCandidate && (
