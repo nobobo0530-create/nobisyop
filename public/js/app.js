@@ -3221,7 +3221,6 @@ const SalesTab = () => {
                 listDate: ex.sale_date || '',
               };
             })(),
-            },
           });
         });
       } catch(err) {
