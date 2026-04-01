@@ -704,15 +704,19 @@ const HomeTab = () => {
   const selectedMonthLabel = isCurrentMonthView ? '今月'
     : `${selDate.getFullYear()}年${selDate.getMonth()+1}月`;
 
+  // ── 孤立売上を除外（在庫に紐づかない売上は集計しない）──
+  const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
+  const validSales = (data.sales||[]).filter(s => !s.inventoryId || _invIdSet.has(s.inventoryId));
+
   // ── 月次データ（選択月ベース）──
-  const monthlySales = data.sales.filter(s => s.saleDate?.startsWith(selectedMonth));
+  const monthlySales = validSales.filter(s => s.saleDate?.startsWith(selectedMonth));
   const totalProfit = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const inventoryCount = data.inventory.filter(i => i.status !== 'sold').length;
 
   // ── 前月比較（選択月の1つ前）──
   const prevMonthDate = new Date(selDate.getFullYear(), selDate.getMonth() - 1, 1);
   const prevMonth = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
-  const prevMonthProfit = data.sales.filter(s => s.saleDate?.startsWith(prevMonth)).reduce((a, s) => a + (s.profit || 0), 0);
+  const prevMonthProfit = validSales.filter(s => s.saleDate?.startsWith(prevMonth)).reduce((a, s) => a + (s.profit || 0), 0);
 
   const monthlyGoal = userProfile?.monthlyGoal || 100000;
   const rewardPercent = userProfile?.rewardPercent || 10;
@@ -738,7 +742,7 @@ const HomeTab = () => {
   weekEnd.setDate(weekStart.getDate() + 6);
   const weekEndStr = toLocalStr(weekEnd);
 
-  const weeklySales = data.sales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
+  const weeklySales = validSales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
   const weeklyProfit = weeklySales.reduce((a, s) => a + (s.profit || 0), 0);
 
   // 1週間あたりの目標（月目標 ÷ 月の日数 × 7）
@@ -755,7 +759,7 @@ const HomeTab = () => {
   // ── マイルストーン ──
   const getSalesByMonth = () => {
     const byMonth = {};
-    data.sales.forEach(s => {
+    validSales.forEach(s => {
       const m = s.saleDate?.slice(0,7);
       if (m) byMonth[m] = (byMonth[m] || 0) + (s.profit || 0);
     });
@@ -3018,9 +3022,13 @@ const SalesTab = () => {
     toast('🗑️ 売上記録を削除しました');
   };
 
+  // 孤立売上を除外（在庫に紐づかない売上は集計しない）
+  const _salesInvIdSet = new Set((data.inventory||[]).map(i => i.id));
+  const validSales = (data.sales||[]).filter(s => !s.inventoryId || _salesInvIdSet.has(s.inventoryId));
+
   // 月次サマリー
   const salesByMonth = {};
-  data.sales.forEach(s => {
+  validSales.forEach(s => {
     const m = s.saleDate?.slice(0,7) || 'unknown';
     if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, platforms: {} };
     salesByMonth[m].revenue += s.salePrice || 0;
@@ -3095,10 +3103,10 @@ const SalesTab = () => {
         )}
 
         {/* 売上一覧 */}
-        {data.sales.length > 0 && (
+        {validSales.length > 0 && (
           <>
             <div className="section-title">売上履歴</div>
-            {[...data.sales].reverse().map(s => {
+            {[...validSales].reverse().map(s => {
               const item = data.inventory.find(i => i.id === s.inventoryId);
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               const isProfit = (s.profit || 0) >= 0;
@@ -4692,12 +4700,17 @@ const App = () => {
       const oldFull = dataRef.current;
       const otherInventory = (prev.inventory || []).filter(i => (i.userId || 'self') !== user);
       const otherSales     = (prev.sales     || []).filter(s => (s.userId || 'self') !== user);
+      const mergedInventory = [...otherInventory, ...newActiveData.inventory];
+      const mergedSales     = [...otherSales,     ...newActiveData.sales];
+      // 孤立売上の自動クリーンアップ（inventoryIdがあるが在庫に存在しない売上を削除）
+      const allInvIds = new Set(mergedInventory.map(i => i.id));
+      const cleanedSales = mergedSales.filter(s => !s.inventoryId || allInvIds.has(s.inventoryId));
       const newFull = {
         ...newActiveData,
         currentUser:  prev.currentUser,
         userProfiles: prev.userProfiles,
-        inventory: [...otherInventory, ...newActiveData.inventory],
-        sales:     [...otherSales,     ...newActiveData.sales],
+        inventory: mergedInventory,
+        sales:     cleanedSales,
       };
       dataRef.current = newFull;
       saveData(newFull);
@@ -4759,15 +4772,31 @@ const App = () => {
         const hasLocal = localData.inventory.length > 0 || localData.sales.length > 0;
         const hasCloud = cloudData.inventory.length > 0 || cloudData.sales.length > 0;
 
+        // 孤立売上クリーンアップ（起動時に一度実行）
+        const cleanOrphans = (d) => {
+          const invIds = new Set((d.inventory||[]).map(i => i.id));
+          const cleaned = (d.sales||[]).filter(s => !s.inventoryId || invIds.has(s.inventoryId));
+          return cleaned.length !== (d.sales||[]).length ? { ...d, sales: cleaned } : d;
+        };
+
         if (hasLocal && !hasCloud) {
           // ローカルにデータあり・クラウド空 → 移行
-          await migrateLocalToSupabase(localData);
+          const cleanedLocal = cleanOrphans(localData);
+          await migrateLocalToSupabase(cleanedLocal);
+          dataRef.current = cleanedLocal;
+          setFullDataRaw(cleanedLocal);
+          saveData(cleanedLocal);
           setDbStatus('migrated');
         } else {
-          // クラウドのデータで画面を更新
-          dataRef.current = cloudData;
-          setFullDataRaw(cloudData);
-          saveData(cloudData);
+          // クラウドのデータで画面を更新（孤立データも除去）
+          const cleanedCloud = cleanOrphans(cloudData);
+          dataRef.current = cleanedCloud;
+          setFullDataRaw(cleanedCloud);
+          saveData(cleanedCloud);
+          // 孤立データがあった場合はクラウドにも反映
+          if (cleanedCloud !== cloudData) {
+            syncToSupabase(cloudData, cleanedCloud);
+          }
           setDbStatus('ok');
         }
       } catch(e) {
