@@ -707,16 +707,18 @@ const HomeTab = () => {
   // ── 孤立売上を除外（在庫に紐づかない売上は集計しない）──
   const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
   const validSales = (data.sales||[]).filter(s => !s.inventoryId || _invIdSet.has(s.inventoryId));
+  // 集計用：売上金額がある売却済み商品のみ（salePrice=0のインポートデータを除外）
+  const summarySales = validSales.filter(s => (s.salePrice || 0) > 0);
 
   // ── 月次データ（選択月ベース）──
-  const monthlySales = validSales.filter(s => s.saleDate?.startsWith(selectedMonth));
+  const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(selectedMonth));
   const totalProfit = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const inventoryCount = data.inventory.filter(i => i.status !== 'sold').length;
 
   // ── 前月比較（選択月の1つ前）──
   const prevMonthDate = new Date(selDate.getFullYear(), selDate.getMonth() - 1, 1);
   const prevMonth = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
-  const prevMonthProfit = validSales.filter(s => s.saleDate?.startsWith(prevMonth)).reduce((a, s) => a + (s.profit || 0), 0);
+  const prevMonthProfit = summarySales.filter(s => s.saleDate?.startsWith(prevMonth)).reduce((a, s) => a + (s.profit || 0), 0);
 
   const monthlyGoal = userProfile?.monthlyGoal || 100000;
   const rewardPercent = userProfile?.rewardPercent || 10;
@@ -742,7 +744,7 @@ const HomeTab = () => {
   weekEnd.setDate(weekStart.getDate() + 6);
   const weekEndStr = toLocalStr(weekEnd);
 
-  const weeklySales = validSales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
+  const weeklySales = summarySales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
   const weeklyProfit = weeklySales.reduce((a, s) => a + (s.profit || 0), 0);
 
   // 1週間あたりの目標（月目標 ÷ 月の日数 × 7）
@@ -759,7 +761,7 @@ const HomeTab = () => {
   // ── マイルストーン ──
   const getSalesByMonth = () => {
     const byMonth = {};
-    validSales.forEach(s => {
+    summarySales.forEach(s => {
       const m = s.saleDate?.slice(0,7);
       if (m) byMonth[m] = (byMonth[m] || 0) + (s.profit || 0);
     });
@@ -3084,10 +3086,12 @@ const SalesTab = () => {
   // 孤立売上を除外（在庫に紐づかない売上は集計しない）
   const _salesInvIdSet = new Set((data.inventory||[]).map(i => i.id));
   const validSales = (data.sales||[]).filter(s => !s.inventoryId || _salesInvIdSet.has(s.inventoryId));
+  // 集計用：売上金額がある売却のみ（salePrice=0のインポートデータを除外）
+  const summarySales = validSales.filter(s => (s.salePrice || 0) > 0);
 
-  // 月次サマリー
+  // 月次サマリー（集計用のみ使用）
   const salesByMonth = {};
-  validSales.forEach(s => {
+  summarySales.forEach(s => {
     const m = s.saleDate?.slice(0,7) || 'unknown';
     if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, platforms: {} };
     salesByMonth[m].revenue += s.salePrice || 0;
@@ -3165,7 +3169,7 @@ const SalesTab = () => {
         {(() => {
           const now = new Date();
           const cm = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-          const thisMonth = validSales
+          const thisMonth = summarySales
             .filter(s => s.saleDate?.startsWith(cm))
             .map(s => ({ ...s, item: data.inventory.find(i => i.id === s.inventoryId) }))
             .sort((a,b) => (b.profit||0) - (a.profit||0));
