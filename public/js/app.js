@@ -3088,6 +3088,25 @@ const SalesTab = () => {
   };
 
   // ── バッチスクショ取込 ──
+  // JSON配列をロバストに解析するヘルパー
+  const parseJsonArray = (text) => {
+    const stripped = text.replace(/```(?:json)?\s*/gi,'').replace(/```/g,'').trim();
+    // 方法1: テキスト全体が配列
+    try { const r = JSON.parse(stripped); if (Array.isArray(r)) return r; } catch(_){}
+    // 方法2: 配列部分を抽出
+    const m = stripped.match(/\[[\s\S]*\]/);
+    if (m) { try { const r = JSON.parse(m[0]); if (Array.isArray(r)) return r; } catch(_){} }
+    // 方法3: 切れた配列を補完（最後の不完全オブジェクトを除去）
+    if (m) {
+      try {
+        const fixed = m[0].replace(/,?\s*\{[^}]*$/, '') + ']';
+        const r = JSON.parse(fixed);
+        if (Array.isArray(r)) return r;
+      } catch(_){}
+    }
+    return null;
+  };
+
   const handleBatchSsInput = async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
@@ -3099,13 +3118,9 @@ const SalesTab = () => {
       try {
         const blob = await compressImage(files[i], 1400, 0.9);
         const b64  = await blobToBase64(blob);
-        const text = await analyzeImagesWithClaude([{ mimeType:'image/jpeg', data:b64 }], apiKey, BATCH_SS_PROMPT, 2000);
-        const stripped = text.replace(/```(?:json)?\s*/gi,'').replace(/```/g,'');
-        // 配列JSONを抽出
-        const arrMatch = stripped.match(/\[[\s\S]*\]/);
-        if (!arrMatch) continue;
-        const items = JSON.parse(arrMatch[0]);
-        if (!Array.isArray(items)) continue;
+        const text = await analyzeImagesWithClaude([{ mimeType:'image/jpeg', data:b64 }], apiKey, BATCH_SS_PROMPT, 3000);
+        const items = parseJsonArray(text);
+        if (!items) { toast(`⚠️ ${i+1}枚目: 読み取り結果を解析できませんでした`); continue; }
         items.forEach(ex => {
           if (!ex.product_name) return;
           // 在庫と照合（商品名で近似マッチ）
@@ -3114,7 +3129,6 @@ const SalesTab = () => {
           let bestItem = null, bestScore = 0;
           data.inventory.forEach(inv => {
             const invNorm = norm((inv.brand||'')+' '+(inv.productName||''));
-            // 共通文字列の割合
             let matches = 0;
             const words = exNorm.replace(/[^\w\u3000-\u9fff]/g,' ').split(/\s+/).filter(w=>w.length>1);
             words.forEach(w => { if (invNorm.includes(w)) matches += w.length; });
@@ -3127,10 +3141,18 @@ const SalesTab = () => {
             matchedItem,
             inventoryId: matchedItem?.id || '',
             skip: false,
+            mode: matchedItem ? 'match' : 'new', // 在庫なし→即「新規仕入れ登録」モード
+            newForm: {
+              brand: '', productName: ex.product_name || '',
+              purchasePrice: '', purchaseDate: '',
+              purchaseStore: '', category: '',
+              listDate: ex.sale_date || '',
+            },
           });
         });
       } catch(err) {
         console.error('batch ss error', err);
+        toast(`⚠️ ${i+1}枚目の読み取りに失敗しました`);
       }
       setBatchLoading({ done: i + 1, total: files.length });
     }
@@ -3139,45 +3161,80 @@ const SalesTab = () => {
     setBatchRows(allRows);
   };
 
+  const updateBatchRow = (idx, patch) =>
+    setBatchRows(prev => prev.map((r,i) => i===idx ? {...r,...patch} : r));
+  const updateBatchNewForm = (idx, key, val) =>
+    setBatchRows(prev => prev.map((r,i) => i===idx ? {...r, newForm:{...r.newForm,[key]:val}} : r));
+
   const executeBatchSave = () => {
     if (!batchRows) return;
-    const toSave = batchRows.filter(r => !r.skip && r.inventoryId);
+    const toSave = batchRows.filter(r => !r.skip && (r.inventoryId || r.mode==='new'));
     if (toSave.length === 0) { toast('⚠️ 登録する商品がありません'); return; }
     const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
-    const newSales = [];
+    const newSalesList = [];
+    const addedInventory = [];
     const updatedInv = [...data.inventory];
+
     toSave.forEach(r => {
       const ex = r.extracted;
-      const inv = updatedInv.find(i => i.id === r.inventoryId);
-      if (!inv) return;
       const salePrice = ex.sale_price || 0;
-      const shipping  = ex.shipping  ?? CONFIG.ESTIMATED_SHIPPING;
+      const shipping  = ex.shipping ?? CONFIG.ESTIMATED_SHIPPING;
       const feeRate   = fees[ex.platform||'メルカリ'] ?? 0.10;
       const fee       = ex.platform_fee != null ? ex.platform_fee : Math.round(salePrice * feeRate);
-      const profit    = ex.profit != null ? ex.profit : salePrice - fee - shipping - (inv.purchasePrice||0);
-      newSales.push({
+      let invId = r.inventoryId;
+      let purchasePrice = 0;
+      let listDate = '';
+
+      if (r.mode === 'new') {
+        // 新規仕入れ登録
+        const nf = r.newForm;
+        const newInvId = `inv_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+        purchasePrice = Number(nf.purchasePrice) || 0;
+        listDate = nf.listDate || '';
+        const newInvItem = {
+          id: newInvId,
+          brand: nf.brand || '',
+          productName: nf.productName || ex.product_name || '',
+          purchasePrice,
+          purchaseDate: nf.purchaseDate || ex.sale_date || '',
+          purchaseStore: nf.purchaseStore || '',
+          category: nf.category || '',
+          listDate,
+          listPrice: salePrice,
+          status: 'sold',
+          photos: [],
+          userId: data.currentUser || 'self',
+        };
+        addedInventory.push(newInvItem);
+        updatedInv.push(newInvItem);
+        invId = newInvId;
+      } else {
+        const inv = updatedInv.find(i => i.id === invId);
+        purchasePrice = inv?.purchasePrice || 0;
+        listDate = inv?.listDate || '';
+        // 在庫を売却済みに
+        const idx2 = updatedInv.findIndex(i => i.id === invId);
+        if (idx2 >= 0) updatedInv[idx2] = { ...updatedInv[idx2], status: 'sold' };
+      }
+
+      const profit = ex.profit != null ? ex.profit : salePrice - fee - shipping - purchasePrice;
+      newSalesList.push({
         id: `sale_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
-        inventoryId: r.inventoryId,
+        inventoryId: invId,
         platform: ex.platform || 'メルカリ',
-        salePrice,
-        feeRate,
-        shipping,
-        profit,
+        salePrice, feeRate, shipping, profit,
         saleDate: ex.sale_date || today(),
-        listDate: inv.listDate || '',
-        turnoverDays: (inv.listDate && ex.sale_date)
-          ? Math.max(0, Math.floor((new Date(ex.sale_date) - new Date(inv.listDate)) / 86400000))
+        listDate,
+        turnoverDays: (listDate && ex.sale_date)
+          ? Math.max(0, Math.floor((new Date(ex.sale_date) - new Date(listDate)) / 86400000))
           : null,
         userId: data.currentUser || 'self',
       });
-      // 在庫を売却済みに
-      const idx = updatedInv.findIndex(i => i.id === r.inventoryId);
-      if (idx >= 0) updatedInv[idx] = { ...updatedInv[idx], status: 'sold' };
     });
-    const newData = { ...data, inventory: updatedInv, sales: [...(data.sales||[]), ...newSales] };
-    setData(newData);
+
+    setData({ ...data, inventory: updatedInv, sales: [...(data.sales||[]), ...newSalesList] });
     setBatchRows(null);
-    toast(`✅ ${newSales.length}件の売上を登録しました`);
+    toast(`✅ ${newSalesList.length}件の売上を登録しました（新規仕入れ: ${addedInventory.length}件）`);
   };
 
   const soldItems = data.inventory.filter(i => i.status === 'sold');
@@ -3569,7 +3626,7 @@ const SalesTab = () => {
                   style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
               </div>
               <div style={{fontSize:12,color:'#888'}}>
-                {batchRows.filter(r=>!r.skip).length}件を登録 · チェックを外すとスキップ
+                {batchRows.filter(r=>!r.skip&&(r.inventoryId||r.mode==='new')).length}件を登録 · チェックを外すとスキップ
               </div>
             </div>
 
@@ -3577,61 +3634,124 @@ const SalesTab = () => {
             <div style={{overflowY:'auto',flex:1,padding:'8px 14px',WebkitOverflowScrolling:'touch'}}>
               {batchRows.map((row, idx) => {
                 const ex = row.extracted;
-                const matched = row.matchedItem;
-                const notSkipped = !row.skip;
+                const nf = row.newForm;
                 return (
-                  <div key={idx} style={{padding:'10px 0',borderBottom:'1px solid #f3f4f6',
-                    opacity: row.skip ? 0.4 : 1, transition:'opacity 0.2s'}}>
+                  <div key={idx} style={{padding:'12px 0',borderBottom:'1px solid #f0f0f0',
+                    opacity: row.skip ? 0.35 : 1, transition:'opacity 0.2s'}}>
                     <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
                       {/* チェックボックス */}
-                      <input type="checkbox" checked={notSkipped}
-                        onChange={e => setBatchRows(prev => prev.map((r,i) => i===idx ? {...r, skip:!e.target.checked} : r))}
-                        style={{marginTop:3,width:18,height:18,flexShrink:0,accentColor:'var(--color-primary)',cursor:'pointer'}}/>
+                      <input type="checkbox" checked={!row.skip}
+                        onChange={e => updateBatchRow(idx, {skip:!e.target.checked})}
+                        style={{marginTop:2,width:18,height:18,flexShrink:0,accentColor:'var(--color-primary)',cursor:'pointer'}}/>
                       <div style={{flex:1,minWidth:0}}>
                         {/* 商品名 */}
-                        <div style={{fontSize:12,fontWeight:700,color:'#111',marginBottom:4,
+                        <div style={{fontSize:12,fontWeight:700,color:'#111',marginBottom:3,
                           overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ex.product_name}</div>
-                        {/* 金額行 */}
-                        <div style={{display:'flex',gap:8,fontSize:11,color:'#555',flexWrap:'wrap',marginBottom:6}}>
+                        {/* 金額サマリー */}
+                        <div style={{display:'flex',gap:6,fontSize:11,color:'#666',flexWrap:'wrap',marginBottom:8}}>
                           <span style={{fontWeight:700,color:'#111'}}>¥{formatMoney(ex.sale_price)}</span>
-                          {ex.platform_fee != null && <span>手数料 ¥{formatMoney(ex.platform_fee)}</span>}
-                          {ex.shipping != null && <span>送料 ¥{formatMoney(ex.shipping)}</span>}
+                          {ex.platform_fee != null && <span>手数料¥{formatMoney(ex.platform_fee)}</span>}
+                          {ex.shipping != null && <span>送料¥{formatMoney(ex.shipping)}</span>}
                           {ex.profit != null && (
-                            <span style={{fontWeight:700,color: ex.profit >= 0 ? '#16a34a' : '#dc2626'}}>
-                              利益 {ex.profit >= 0 ? '+' : ''}¥{formatMoney(ex.profit)}
+                            <span style={{fontWeight:700,color:ex.profit>=0?'#16a34a':'#dc2626'}}>
+                              利益{ex.profit>=0?'+':''}¥{formatMoney(ex.profit)}
                             </span>
                           )}
-                          {ex.sale_date && <span style={{color:'#bbb'}}>📅 {ex.sale_date}</span>}
+                          {ex.sale_date && <span style={{color:'#bbb'}}>📅{ex.sale_date}</span>}
                         </div>
-                        {/* 在庫紐付け */}
-                        <div style={{display:'flex',alignItems:'center',gap:6}}>
-                          {matched ? (
-                            <span style={{fontSize:11,background:'#f0fdf4',color:'#16a34a',borderRadius:99,
-                              padding:'2px 9px',fontWeight:700,border:'1px solid #bbf7d0'}}>
-                              ✓ {matched.brand} {matched.productName}
-                            </span>
-                          ) : (
-                            <span style={{fontSize:11,background:'#fef2f2',color:'#dc2626',borderRadius:99,
-                              padding:'2px 9px',fontWeight:700,border:'1px solid #fecaca'}}>
-                              ⚠ 未紐付け
-                            </span>
-                          )}
+
+                        {/* モード切替タブ */}
+                        <div style={{display:'flex',gap:4,marginBottom:8}}>
+                          {[['new','新規仕入れ登録'],['match','既存在庫と紐付け']].map(([m,l]) => (
+                            <button key={m} onClick={() => updateBatchRow(idx,{mode:m})}
+                              style={{flex:1,padding:'5px 0',borderRadius:8,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,
+                                background: row.mode===m ? '#0f172a' : '#f3f4f6',
+                                color: row.mode===m ? 'white' : '#888',
+                                WebkitTapHighlightColor:'transparent'}}>
+                              {l}
+                            </button>
+                          ))}
                         </div>
-                        {/* 未紐付け時：在庫セレクト */}
-                        {!matched && (
-                          <select value={row.inventoryId}
-                            onChange={e => setBatchRows(prev => prev.map((r,i) => {
-                              if (i !== idx) return r;
-                              const inv = data.inventory.find(it => it.id === e.target.value);
-                              return { ...r, inventoryId: e.target.value, matchedItem: inv || null };
-                            }))}
-                            style={{marginTop:5,width:'100%',padding:'6px 8px',borderRadius:8,
-                              border:'1px solid #e5e7eb',fontSize:12,background:'white',color:'#333'}}>
-                            <option value="">在庫から手動で選択...</option>
-                            {data.inventory.map(i => (
-                              <option key={i.id} value={i.id}>{i.brand} {i.productName}</option>
-                            ))}
-                          </select>
+
+                        {/* 新規仕入れ登録フォーム */}
+                        {row.mode === 'new' && (
+                          <div style={{background:'#f8fafc',borderRadius:10,padding:'10px 10px 6px',border:'1px solid #e2e8f0'}}>
+                            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}}>
+                              <div>
+                                <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>ブランド</div>
+                                <input value={nf.brand} onChange={e=>updateBatchNewForm(idx,'brand',e.target.value)}
+                                  placeholder="例: Gucci"
+                                  style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,boxSizing:'border-box'}}/>
+                              </div>
+                              <div>
+                                <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>カテゴリー</div>
+                                <select value={nf.category} onChange={e=>updateBatchNewForm(idx,'category',e.target.value)}
+                                  style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,background:'white',boxSizing:'border-box'}}>
+                                  <option value="">選択...</option>
+                                  {['バッグ','衣類','小物','シューズ','毛皮','その他'].map(c=><option key={c} value={c}>{c}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div style={{marginBottom:6}}>
+                              <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>商品名</div>
+                              <input value={nf.productName} onChange={e=>updateBatchNewForm(idx,'productName',e.target.value)}
+                                style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,boxSizing:'border-box'}}/>
+                            </div>
+                            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}}>
+                              <div>
+                                <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>仕入れ値（円）</div>
+                                <input type="number" value={nf.purchasePrice} onChange={e=>updateBatchNewForm(idx,'purchasePrice',e.target.value)}
+                                  placeholder="0"
+                                  style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,boxSizing:'border-box'}}/>
+                              </div>
+                              <div>
+                                <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>仕入れ日</div>
+                                <input type="date" value={nf.purchaseDate} onChange={e=>updateBatchNewForm(idx,'purchaseDate',e.target.value)}
+                                  style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,background:'white',boxSizing:'border-box'}}/>
+                              </div>
+                            </div>
+                            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                              <div>
+                                <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>仕入れ先</div>
+                                <input value={nf.purchaseStore} onChange={e=>updateBatchNewForm(idx,'purchaseStore',e.target.value)}
+                                  placeholder="例: ヤフオク"
+                                  style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,boxSizing:'border-box'}}/>
+                              </div>
+                              <div>
+                                <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:2}}>出品日</div>
+                                <input type="date" value={nf.listDate} onChange={e=>updateBatchNewForm(idx,'listDate',e.target.value)}
+                                  style={{width:'100%',padding:'6px 8px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:12,background:'white',boxSizing:'border-box'}}/>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 既存在庫紐付けモード */}
+                        {row.mode === 'match' && (
+                          <div>
+                            {row.matchedItem ? (
+                              <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                                <span style={{fontSize:11,background:'#f0fdf4',color:'#16a34a',borderRadius:99,
+                                  padding:'3px 10px',fontWeight:700,border:'1px solid #bbf7d0'}}>
+                                  ✓ {row.matchedItem.brand} {row.matchedItem.productName}
+                                </span>
+                                <button onClick={() => updateBatchRow(idx,{matchedItem:null,inventoryId:''})}
+                                  style={{fontSize:11,color:'#888',background:'none',border:'none',cursor:'pointer',padding:0}}>変更</button>
+                              </div>
+                            ) : null}
+                            <select value={row.inventoryId}
+                              onChange={e => {
+                                const inv = data.inventory.find(it => it.id === e.target.value);
+                                updateBatchRow(idx,{inventoryId:e.target.value, matchedItem:inv||null});
+                              }}
+                              style={{marginTop: row.matchedItem ? 6 : 0, width:'100%',padding:'7px 8px',borderRadius:8,
+                                border:'1px solid #e5e7eb',fontSize:12,background:'white',color:'#333',display: row.matchedItem ? 'none' : 'block'}}>
+                              <option value="">在庫から選択...</option>
+                              {data.inventory.map(i => (
+                                <option key={i.id} value={i.id}>{i.brand} {i.productName}</option>
+                              ))}
+                            </select>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -3650,7 +3770,7 @@ const SalesTab = () => {
               <button onClick={executeBatchSave}
                 style={{flex:2,padding:12,borderRadius:12,border:'none',background:'var(--color-primary)',
                   color:'white',fontWeight:700,fontSize:14,cursor:'pointer'}}>
-                {batchRows.filter(r=>!r.skip&&r.inventoryId).length}件を一括登録
+                {batchRows.filter(r=>!r.skip&&(r.inventoryId||r.mode==='new')).length}件を一括登録
               </button>
             </div>
           </div>
