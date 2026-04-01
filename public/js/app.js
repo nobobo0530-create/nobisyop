@@ -2492,7 +2492,7 @@ const PhotoSlide = ({ photoRef }) => {
 const InventoryTab = () => {
   const { data, setData, setTab, setEditingItem } = React.useContext(AppContext);
   const toast = useToast();
-  const [filter, setFilter] = React.useState('all');
+  const [filter, setFilter] = React.useState('unlisted');
   const [selected, setSelected] = React.useState(null);
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
@@ -2590,7 +2590,7 @@ const InventoryTab = () => {
 
       {/* フィルター */}
       <div style={{display:'flex',gap:8,padding:'10px 16px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-        {[['all','すべて','#6b7280'],['unlisted','未出品','#6b7280'],['listed','出品中','#1e40af'],['sold','売却済','#5b21b6']].map(([v,l,c]) => {
+        {[['unlisted','未出品','#6b7280'],['listed','出品中','#1e40af'],['sold','売却済','#5b21b6'],['all','すべて','#6b7280']].map(([v,l,c]) => {
           const cnt = v === 'all' ? data.inventory.length : data.inventory.filter(i => i.status === v).length;
           const active = filter === v;
           return (
