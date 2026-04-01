@@ -2534,8 +2534,9 @@ const InventoryTab = () => {
 
   const deleteItem = (item) => {
     if (!confirm('この商品を削除しますか？')) return;
-    const updated = data.inventory.filter(i => i.id !== item.id);
-    setData({ ...data, inventory: updated });
+    const newInv   = data.inventory.filter(i => i.id !== item.id);
+    const newSales = (data.sales||[]).filter(s => s.inventoryId !== item.id);
+    setData({ ...data, inventory: newInv, sales: newSales });
     setSelected(null);
     toast('🗑️ 削除しました');
   };
@@ -2564,8 +2565,9 @@ const InventoryTab = () => {
   };
 
   const executeBulkDelete = () => {
-    const updated = data.inventory.filter(i => !checkedIds.has(i.id));
-    setData({ ...data, inventory: updated });
+    const newInv   = data.inventory.filter(i => !checkedIds.has(i.id));
+    const newSales = (data.sales||[]).filter(s => !checkedIds.has(s.inventoryId));
+    setData({ ...data, inventory: newInv, sales: newSales });
     const cnt = checkedIds.size;
     exitBulkMode();
     toast(`🗑️ ${cnt}件を削除しました`);
@@ -3603,6 +3605,7 @@ const SELLER_BOOK_COL_MAP = {
   // 仕入れ価格
   '仕入値':'purchasePrice', '仕入金額':'purchasePrice', '仕入価格':'purchasePrice',
   '仕入れ値':'purchasePrice', '仕入れ金額':'purchasePrice', '仕入れ価格':'purchasePrice',
+  '仕入額':'purchasePrice', '仕入れ額':'purchasePrice',
   '原価':'purchasePrice', '購入金額':'purchasePrice', '落札金額':'purchasePrice', '落札価格（税込）':'purchasePrice',
   // 入金額（手数料・送料控除後の実入金。salePrice より優先）
   '入金額':'netAmount', '入金':'netAmount', '実入金額':'netAmount', '手取り':'netAmount',
