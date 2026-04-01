@@ -3533,12 +3533,16 @@ const parseCSVText = (text) => {
   const cleaned = text.replace(/^\uFEFF/, '');
   const lines = cleaned.split(/\r?\n/).filter(l => l.trim());
   if (lines.length < 2) return { headers: [], rows: [] };
+  // タブ区切り(TSV)自動検出
+  const tabCount = (lines[0].match(/\t/g)||[]).length;
+  const commaCount = (lines[0].match(/,/g)||[]).length;
+  const delimiter = tabCount > commaCount ? '\t' : ',';
   const parseRow = (line) => {
     const result = []; let cur = ''; let inQ = false;
     for (let i = 0; i < line.length; i++) {
       const c = line[i];
       if (c === '"') { if (inQ && line[i+1]==='"') { cur+='"'; i++; } else { inQ=!inQ; } }
-      else if (c === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
+      else if (c === delimiter && !inQ) { result.push(cur.trim()); cur = ''; }
       else { cur += c; }
     }
     result.push(cur.trim());
@@ -3552,7 +3556,16 @@ const SellerBookImporter = ({ data, setData, toast, currentUser }) => {
   const [importing, setImporting] = React.useState(false);
   const fileRef = React.useRef();
 
-  const cleanNum = v => Number(String(v||'').replace(/[¥,円,\s]/g,'')) || 0;
+  const cleanNum = v => {
+    if (!v && v !== 0) return 0;
+    const s = String(v)
+      .replace(/[￥¥]/g, '')                    // 全角・半角円記号
+      .replace(/[，,]/g, '')                    // 全角・半角カンマ
+      .replace(/[円]/g, '')                     // 「円」文字
+      .replace(/[\s\u00A0\u3000]/g, '')         // 各種スペース（全角含む）
+      .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFF10 + 0x30)); // 全角数字→半角
+    return Number(s) || 0;
+  };
   const cleanDate = v => {
     if (!v) return '';
     const s = String(v).replace(/\//g,'-').replace(/\s.*/,'');
