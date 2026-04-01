@@ -1140,7 +1140,6 @@ const PurchaseTab = () => {
   const [seoCategoryInput, setSeoCategoryInput] = React.useState('');
   const [swapIdx, setSwapIdx] = React.useState(null); // 入れ替え元インデックス
   const cameraInputRef = React.useRef();
-  const libraryInputRef = React.useRef();
   const multiInputRef = React.useRef();
   const tagPhotoRef = React.useRef();
 
@@ -1742,28 +1741,20 @@ const PurchaseTab = () => {
 
             {/* 写真追加ボタン */}
             {photos.length < 5 && (
-              <div style={{marginBottom:12}}>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
-                  <button className="btn-secondary" style={{padding:'10px 8px',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}
-                    onClick={() => cameraInputRef.current?.click()}>
-                    📷 カメラで撮影
-                  </button>
-                  <button className="btn-secondary" style={{padding:'10px 8px',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}
-                    onClick={() => libraryInputRef.current?.click()}>
-                    🖼 フォトライブラリ
-                  </button>
-                </div>
-                <button className="btn-secondary" style={{width:'100%',padding:'10px 8px',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+                <button className="btn-secondary" style={{padding:'12px 8px',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}
+                  onClick={() => cameraInputRef.current?.click()}>
+                  📷 カメラで撮影
+                </button>
+                <button className="btn-secondary" style={{padding:'12px 8px',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}
                   onClick={() => multiInputRef.current?.click()}>
-                  📁 複数写真を選択（最大{5 - photos.length}枚）
+                  🖼 写真を選択（複数可）
                 </button>
               </div>
             )}
 
             {/* hidden file inputs */}
             <input ref={cameraInputRef} type="file" accept="image/*" capture="environment"
-              onChange={handlePhotoSelect} style={{display:'none'}}/>
-            <input ref={libraryInputRef} type="file" accept="image/*"
               onChange={handlePhotoSelect} style={{display:'none'}}/>
             <input ref={multiInputRef} type="file" accept="image/*" multiple
               onChange={handlePhotoSelect} style={{display:'none'}}/>
@@ -1852,7 +1843,7 @@ const PurchaseTab = () => {
               {step === 1 && (
                 <button className="btn-secondary" style={{flex: photos.length > 0 ? '0 0 auto' : 1}}
                   onClick={() => setStep(3)}>
-                  {photos.length > 0 ? 'スキップ' : '📝 写真なしで手動入力'}
+                  {photos.length > 0 ? 'スキップ' : '📝 写真なしで入力'}
                 </button>
               )}
             </div>
