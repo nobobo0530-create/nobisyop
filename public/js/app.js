@@ -3088,6 +3088,76 @@ const SalesTab = () => {
   };
 
   // ── バッチスクショ取込 ──
+  // 商品タイトルからブランド・カテゴリーを推定
+  const guessFromTitle = (title) => {
+    const t = (title || '').toLowerCase();
+    // ブランド辞書（表示名, 検索キーワード）
+    const BRANDS = [
+      ['LOUIS VUITTON', ['louis vuitton','ルイヴィトン','lv ','ヴィトン']],
+      ['Chanel', ['chanel','シャネル']],
+      ['Gucci', ['gucci','グッチ']],
+      ['Hermès', ['hermes','hermès','エルメス','バーキン','ケリー']],
+      ['Prada', ['prada','プラダ']],
+      ['Christian Dior', ['christian dior','dior','ディオール','クリスチャンディオール']],
+      ['Bottega Veneta', ['bottega veneta','ボッテガ']],
+      ['Saint Laurent', ['saint laurent','ysl','サンローラン']],
+      ['Burberry', ['burberry','バーバリー']],
+      ['Céline', ['celine','céline','セリーヌ']],
+      ['Givenchy', ['givenchy','ジバンシィ','ジバンシー']],
+      ['Fendi', ['fendi','フェンディ']],
+      ['Versace', ['versace','ヴェルサーチ']],
+      ['Valentino', ['valentino','ヴァレンティノ']],
+      ['Balenciaga', ['balenciaga','バレンシアガ']],
+      ['Alexander McQueen', ['alexander mcqueen','マックイーン']],
+      ['Miu Miu', ['miu miu','ミュウミュウ']],
+      ['Loewe', ['loewe','ロエベ']],
+      ['Marni', ['marni','マルニ']],
+      ['Tod\'s', ['tod\'s','tods','トッズ']],
+      ['Cartier', ['cartier','カルティエ']],
+      ['Bvlgari', ['bvlgari','bulgari','ブルガリ']],
+      ['Tiffany', ['tiffany','ティファニー']],
+      ['Coach', ['coach','コーチ']],
+      ['Michael Kors', ['michael kors','マイケルコース']],
+      ['Kate Spade', ['kate spade','ケイトスペード']],
+      ['Furla', ['furla','フルラ']],
+      ['Longchamp', ['longchamp','ロンシャン']],
+      ['Mulberry', ['mulberry','マルベリー']],
+      ['MCM', ['mcm ','mcmバッグ']],
+      ['Vivienne Westwood', ['vivienne westwood','ヴィヴィアン']],
+      ['Moschino', ['moschino','モスキーノ']],
+      ['Marc Jacobs', ['marc jacobs','マークジェイコブス']],
+      ['Tory Burch', ['tory burch','トリーバーチ']],
+      ['Max Mara', ['max mara','マックスマーラ']],
+      ['Moncler', ['moncler','モンクレール']],
+      ['Canada Goose', ['canada goose','カナダグース']],
+      ['The North Face', ['the north face','ノースフェイス']],
+      ['Supreme', ['supreme','シュプリーム']],
+      ['Nike', ['nike','ナイキ']],
+      ['Adidas', ['adidas','アディダス']],
+      ['Puma', ['puma','プーマ']],
+      ['New Balance', ['new balance','ニューバランス']],
+      ['Converse', ['converse','コンバース']],
+      ['Vans', ['vans','ヴァンズ']],
+    ];
+    let detectedBrand = '';
+    for (const [name, keywords] of BRANDS) {
+      if (keywords.some(k => t.includes(k))) { detectedBrand = name; break; }
+    }
+    // カテゴリー推定
+    const CAT_RULES = [
+      ['バッグ', ['バッグ','bag','鞄','かばん','ショルダー','トート','クラッチ','リュック','ボストン','ポーチ','ハンドバッグ','ミニバッグ','クロスボディ','ウエストバッグ','サコッシュ','バックパック']],
+      ['小物', ['財布','ウォレット','wallet','コインケース','カードケース','キーケース','名刺入れ','ベルト','スカーフ','ストール','帽子','手袋','サングラス','ジュエリー','アクセサリー','ネックレス','リング','腕時計','時計']],
+      ['シューズ', ['シューズ','スニーカー','靴','パンプス','ブーツ','サンダル','ローファー','mule','shoe','sneaker','boot']],
+      ['毛皮', ['ファー','毛皮','ミンク','フォックス','ラビット','レザー','fur','mink']],
+      ['衣類', ['コート','ジャケット','シャツ','ブラウス','スカート','パンツ','ニット','セーター','ワンピース','スーツ','ダウン','ブルゾン','トップス','カーディガン','デニム']],
+    ];
+    let detectedCategory = '';
+    for (const [cat, keywords] of CAT_RULES) {
+      if (keywords.some(k => t.includes(k))) { detectedCategory = cat; break; }
+    }
+    return { brand: detectedBrand, category: detectedCategory };
+  };
+
   // JSON配列をロバストに解析するヘルパー
   const parseJsonArray = (text) => {
     const stripped = text.replace(/```(?:json)?\s*/gi,'').replace(/```/g,'').trim();
@@ -3142,11 +3212,15 @@ const SalesTab = () => {
             inventoryId: matchedItem?.id || '',
             skip: false,
             mode: matchedItem ? 'match' : 'new', // 在庫なし→即「新規仕入れ登録」モード
-            newForm: {
-              brand: '', productName: ex.product_name || '',
-              purchasePrice: '', purchaseDate: '',
-              purchaseStore: '', category: '',
-              listDate: ex.sale_date || '',
+            newForm: (() => {
+              const g = guessFromTitle(ex.product_name);
+              return {
+                brand: g.brand, productName: ex.product_name || '',
+                purchasePrice: '', purchaseDate: '',
+                purchaseStore: '', category: g.category,
+                listDate: ex.sale_date || '',
+              };
+            })(),
             },
           });
         });
