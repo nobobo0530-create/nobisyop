@@ -1166,6 +1166,35 @@ const PurchaseTab = () => {
   const multiInputRef = React.useRef();
   const tagPhotoRef = React.useRef();
 
+  // ── 下書き自動保存 ──
+  const DRAFT_KEY = 'nobushop_purchase_draft';
+  const [draftBanner, setDraftBanner] = React.useState(null);
+
+  // 起動時に下書きチェック
+  React.useEffect(() => {
+    if (editingItem) return;
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed?.form?.productName) setDraftBanner(parsed);
+    } catch(_) {}
+  }, []);
+
+  // form/step変化時に自動保存（Step3以降、新規のみ）
+  React.useEffect(() => {
+    if (editingItem) return;
+    if (step < 3) return;
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        form, purchaseType, generatedDesc, registrationMode,
+        savedAt: new Date().toISOString(),
+      }));
+    } catch(_) {}
+  }, [form, purchaseType, generatedDesc, step, editingItem]);
+
+  const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch(_) {} };
+
   // コンポーネントアンマウント時にObjectURLを解放
   React.useEffect(() => {
     return () => {
@@ -1613,6 +1642,7 @@ const PurchaseTab = () => {
   };
 
   const resetForm = () => {
+    clearDraft();
     photos.forEach(p => {
       if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
       if (p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
@@ -1756,6 +1786,36 @@ const PurchaseTab = () => {
       </div>
 
       <div style={{padding:'0 16px 16px'}}>
+
+        {/* 下書き復元バナー */}
+        {draftBanner && !editingItem && (
+          <div style={{background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:12,padding:'12px 14px',marginBottom:12}}>
+            <div style={{fontWeight:700,fontSize:13,color:'#92400e',marginBottom:4}}>📝 入力中のデータが残っています</div>
+            <div style={{fontSize:12,color:'#78350f',marginBottom:10}}>
+              前回の入力を再開できます（商品名: {draftBanner.form?.productName || '—'}）
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={() => {
+                setForm(draftBanner.form);
+                setPurchaseType(draftBanner.purchaseType || 'store');
+                setGeneratedDesc(draftBanner.generatedDesc || '');
+                setRegistrationMode(draftBanner.registrationMode || 'unlisted');
+                setStep(3);
+                setDraftBanner(null);
+                toast('📝 下書きを復元しました');
+              }} style={{flex:2,padding:'9px 0',background:'#f59e0b',color:'white',border:'none',
+                borderRadius:8,fontWeight:700,fontSize:13,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                続きから再開
+              </button>
+              <button onClick={() => { clearDraft(); setDraftBanner(null); }}
+                style={{flex:1,padding:'9px 0',background:'white',color:'#666',border:'1px solid #e5e7eb',
+                  borderRadius:8,fontSize:13,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                破棄
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Step 1: 写真 */}
         {step >= 1 && (
           <div className="card" style={{padding:16,marginBottom:12}}>
@@ -2441,11 +2501,21 @@ const PurchaseTab = () => {
               </div>
             )}
 
-            <button className="btn-primary" style={{width:'100%',marginTop:4,padding:16,fontSize:17}}
-              onClick={handleSave}>{editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}</button>
           </div>
         )}
       </div>
+
+      {/* 保存ボタン：常に画面下部に表示（iOS キーボードに隠れない） */}
+      {step >= 3 && (
+        <div style={{position:'sticky',bottom:0,background:'white',padding:'10px 16px 20px',
+          borderTop:'1px solid #f0f0f0',zIndex:50,
+          boxShadow:'0 -4px 12px rgba(0,0,0,0.06)'}}>
+          <button className="btn-primary" style={{width:'100%',padding:16,fontSize:17}}
+            onClick={handleSave}>
+            {editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
+          </button>
+        </div>
+      )}
     </div>
   );
 };
