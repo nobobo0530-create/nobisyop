@@ -4514,6 +4514,47 @@ const OtherTab = () => {
               </div>
             </div>
 
+            {/* データ整合性チェック */}
+            {(() => {
+              const invIds = new Set((data.inventory||[]).map(i => i.id));
+              const orphans = (data.sales||[]).filter(s => s.inventoryId && !invIds.has(s.inventoryId));
+              return (
+                <div className="card" style={{padding:16,marginBottom:12}}>
+                  <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🔍 データ整合性チェック</div>
+                  <div style={{fontSize:12,color:'#666',marginBottom:12}}>
+                    在庫に存在しない商品の売上記録（孤立データ）を検出して削除します。
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                    padding:'10px 12px',borderRadius:10,
+                    background: orphans.length > 0 ? '#fff7ed' : '#f0fdf4',
+                    border: `1px solid ${orphans.length > 0 ? '#fed7aa' : '#bbf7d0'}`,
+                    marginBottom: orphans.length > 0 ? 12 : 0}}>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:13,color: orphans.length > 0 ? '#92400e' : '#065f46'}}>
+                        {orphans.length > 0 ? `⚠️ 孤立した売上データ: ${orphans.length}件` : '✅ 問題なし'}
+                      </div>
+                      <div style={{fontSize:11,color:'#888',marginTop:2}}>
+                        在庫 {(data.inventory||[]).length}件 / 売上 {(data.sales||[]).length}件
+                      </div>
+                    </div>
+                  </div>
+                  {orphans.length > 0 && (
+                    <button
+                      onClick={() => {
+                        if (!confirm(`在庫に存在しない売上データ ${orphans.length}件を削除しますか？\nこの操作は元に戻せません。`)) return;
+                        const cleanedSales = (data.sales||[]).filter(s => !s.inventoryId || invIds.has(s.inventoryId));
+                        setData({ ...data, sales: cleanedSales });
+                        toast(`🗑️ 孤立した売上データ ${orphans.length}件を削除しました`);
+                      }}
+                      style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #fed7aa',
+                        background:'#fff7ed',color:'#c2410c',fontWeight:700,cursor:'pointer',fontSize:14,minHeight:44}}>
+                      🧹 孤立データを一括削除（{orphans.length}件）
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* データリセット */}
             <button onClick={() => {
               if (confirm('全データをリセットしますか？この操作は取り消せません。')) {
