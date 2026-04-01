@@ -2499,6 +2499,9 @@ const InventoryTab = () => {
   const toast = useToast();
   const [filter, setFilter] = React.useState('all');
   const [selected, setSelected] = React.useState(null);
+  const [bulkMode, setBulkMode] = React.useState(false);
+  const [checkedIds, setCheckedIds] = React.useState(new Set());
+  const [bulkConfirm, setBulkConfirm] = React.useState(false);
 
   const filtered = data.inventory.filter(item => {
     if (filter === 'all') return true;
@@ -2537,10 +2540,55 @@ const InventoryTab = () => {
     toast('🗑️ 削除しました');
   };
 
+  const toggleCheck = (id, e) => {
+    e.stopPropagation();
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (checkedIds.size === filtered.length) {
+      setCheckedIds(new Set());
+    } else {
+      setCheckedIds(new Set(filtered.map(i => i.id)));
+    }
+  };
+
+  const exitBulkMode = () => {
+    setBulkMode(false);
+    setCheckedIds(new Set());
+    setBulkConfirm(false);
+  };
+
+  const executeBulkDelete = () => {
+    const updated = data.inventory.filter(i => !checkedIds.has(i.id));
+    setData({ ...data, inventory: updated });
+    const cnt = checkedIds.size;
+    exitBulkMode();
+    toast(`🗑️ ${cnt}件を削除しました`);
+  };
+
+  const allChecked = filtered.length > 0 && checkedIds.size === filtered.length;
+  const someChecked = checkedIds.size > 0 && checkedIds.size < filtered.length;
+
   return (
     <div className="fade-in">
-      <div className="header">
+      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <h1>📋 在庫一覧</h1>
+        {!bulkMode ? (
+          <button onClick={() => setBulkMode(true)}
+            style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 12px',fontSize:13,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+            まとめて削除
+          </button>
+        ) : (
+          <button onClick={exitBulkMode}
+            style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 12px',fontSize:13,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+            キャンセル
+          </button>
+        )}
       </div>
 
       {/* フィルター */}
@@ -2549,7 +2597,7 @@ const InventoryTab = () => {
           const cnt = v === 'all' ? data.inventory.length : data.inventory.filter(i => i.status === v).length;
           const active = filter === v;
           return (
-            <button key={v} onClick={() => setFilter(v)}
+            <button key={v} onClick={() => { setFilter(v); setCheckedIds(new Set()); }}
               style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
                 fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
                 background: active ? 'var(--color-primary)' : '#f3f4f6',
@@ -2568,43 +2616,108 @@ const InventoryTab = () => {
         })}
       </div>
 
-      <div style={{padding:'12px 16px'}}>
+      {/* 一括選択バー（まとめて削除モード時） */}
+      {bulkMode && filtered.length > 0 && (
+        <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',background:'#fff8f8',borderBottom:'2px solid #fecaca'}}>
+          <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',userSelect:'none',flex:1}}>
+            <input type="checkbox" checked={allChecked} ref={el => { if (el) el.indeterminate = someChecked; }}
+              onChange={toggleAll}
+              style={{width:20,height:20,cursor:'pointer',accentColor:'var(--color-primary)'}} />
+            <span style={{fontSize:14,fontWeight:600,color:'#333'}}>
+              {checkedIds.size > 0 ? `${checkedIds.size}件を選択中` : 'すべて選択'}
+            </span>
+          </label>
+          <button
+            disabled={checkedIds.size === 0}
+            onClick={() => setBulkConfirm(true)}
+            style={{padding:'8px 18px',borderRadius:10,border:'none',
+              background: checkedIds.size > 0 ? '#dc2626' : '#e5e7eb',
+              color: checkedIds.size > 0 ? 'white' : '#aaa',
+              fontWeight:700,fontSize:14,cursor: checkedIds.size > 0 ? 'pointer' : 'default',
+              WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
+            🗑️ 削除
+          </button>
+        </div>
+      )}
+
+      <div style={{padding:'12px 16px', paddingBottom: bulkMode && checkedIds.size > 0 ? 100 : 12}}>
         {filtered.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
             {filter === 'all' ? '在庫がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
-            {filtered.map(item => (
-              <div key={item.id} className="card" style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}}
-                onClick={() => setSelected(item)}>
-                <div style={{position:'relative',flexShrink:0}}>
-                  <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
-                  <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
-                    style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
-                    {statusLabel[item.status] || '未出品'}
-                  </span>
-                </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:11,color:'#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}</div>
-                  <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:6}}>{item.productName}</div>
-                  <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    {conditionTag(item.condition)}
+            {filtered.map(item => {
+              const isChecked = checkedIds.has(item.id);
+              return (
+                <div key={item.id} className="card"
+                  style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
+                    background: isChecked ? '#fef2f2' : 'white',
+                    border: isChecked ? '1.5px solid #fca5a5' : '1.5px solid transparent',
+                    transition:'all 0.15s'}}
+                  onClick={bulkMode ? (e) => toggleCheck(item.id, e) : () => setSelected(item)}>
+                  {bulkMode && (
+                    <input type="checkbox" checked={isChecked}
+                      onChange={e => toggleCheck(item.id, e)}
+                      onClick={e => e.stopPropagation()}
+                      style={{width:22,height:22,flexShrink:0,cursor:'pointer',accentColor:'var(--color-primary)'}} />
+                  )}
+                  <div style={{position:'relative',flexShrink:0}}>
+                    <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
+                    <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
+                      style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
+                      {statusLabel[item.status] || '未出品'}
+                    </span>
+                  </div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,color:'#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}</div>
+                    <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:6}}>{item.productName}</div>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      {conditionTag(item.condition)}
+                    </div>
+                  </div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
+                    <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
+                    {item.listPrice > 0 && (
+                      <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
+                    )}
+                    {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                   </div>
                 </div>
-                <div style={{textAlign:'right',flexShrink:0}}>
-                  <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
-                  <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
-                  {item.listPrice > 0 && (
-                    <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
-                  )}
-                  <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
+
+      {/* 一括削除確認モーダル */}
+      {bulkConfirm && (
+        <div className="modal-overlay" onClick={() => setBulkConfirm(false)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:360}}>
+            <div className="modal-handle"/>
+            <div style={{textAlign:'center',padding:'8px 0 16px'}}>
+              <div style={{fontSize:40,marginBottom:12}}>🗑️</div>
+              <div style={{fontWeight:800,fontSize:18,marginBottom:8,color:'#111'}}>
+                {checkedIds.size}件を削除しますか？
+              </div>
+              <div style={{fontSize:14,color:'#888',lineHeight:1.6}}>
+                選択した商品を削除します。<br/>この操作は元に戻せません。
+              </div>
+            </div>
+            <div style={{display:'flex',gap:10,marginTop:8}}>
+              <button onClick={() => setBulkConfirm(false)}
+                style={{flex:1,padding:14,borderRadius:12,border:'1.5px solid #e0e0e0',background:'white',fontSize:15,fontWeight:700,cursor:'pointer',color:'#555'}}>
+                キャンセル
+              </button>
+              <button onClick={executeBulkDelete}
+                style={{flex:1,padding:14,borderRadius:12,border:'none',background:'#dc2626',color:'white',fontSize:15,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                削除する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 詳細モーダル */}
       {selected && (
