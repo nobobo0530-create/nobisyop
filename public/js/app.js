@@ -644,8 +644,16 @@ const RECEIPT_ANALYSIS_PROMPT = `レシートの写真を分析して以下のJS
   "purchase_date": "購入日（YYYY-MM-DD形式）",
   "total_amount": 合計金額（数値のみ）,
   "payment_method": "決済方法（現金/クレカ/PayPay/その他）",
+  "category": "勘定科目（仕入高/荷造運賃/通信費/消耗品費/旅費交通費/雑費 から最適なものを1つ選ぶ）",
   "items": [{"name": "商品名", "price": 価格}]
-}`;
+}
+勘定科目の判断基準：
+- 仕入高：商品・ブランド品・在庫の仕入れ
+- 荷造運賃：配送料・梱包材・宅配便
+- 通信費：インターネット・電話・切手
+- 消耗品費：文具・梱包テープ・その他消耗品
+- 旅費交通費：電車・バス・ガソリン・駐車場
+- 雑費：上記に当てはまらないもの`;
 
 const SS_ANALYSIS_PROMPT = `フリマ・オークションアプリの取引画面スクリーンショットから情報を読み取ってください。
 メルカリ・ヤフオク・ラクマに対応。JSONのみで回答（説明不要）：
@@ -4879,6 +4887,8 @@ const OtherTab = () => {
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
+  const [receiptModal, setReceiptModal] = React.useState(null); // 詳細モーダル表示中のレシート
+  const [receiptEdit, setReceiptEdit] = React.useState(null);   // 編集中フォームデータ
   const [settings, setSettings] = React.useState({ ...getInitialData().settings, ...data.settings });
   const receiptFileRef = React.useRef();
   const restoreFileRef = React.useRef();
@@ -4967,11 +4977,20 @@ const OtherTab = () => {
         const result = JSON.parse(jsonMatch[0]);
         const newReceipt = {
           id: Date.now().toString(),
-          ...result,
+          store_name: result.store_name || '',
+          purchase_date: result.purchase_date || '',
+          total_amount: result.total_amount || 0,
+          payment_method: result.payment_method || '',
+          category: result.category || '雑費',
+          items: result.items || [],
+          memo: '',
+          inventoryId: '',
           imageData: dataUrl,
           createdAt: new Date().toISOString(),
         };
         setData(prev => ({ ...prev, receipts: [...(prev.receipts || []), newReceipt] }));
+        setReceiptModal(newReceipt);
+        setReceiptEdit({ ...newReceipt });
         toast('✅ レシート読み取り完了！');
         setReceiptAnalyzing(false);
       };
@@ -5217,32 +5236,272 @@ const OtherTab = () => {
         )}
 
         {/* レシート管理 */}
-        {activeSection === 'receipts' && (
-          <div>
-            <button className="btn-primary" style={{width:'100%',marginBottom:16}}
-              onClick={() => receiptFileRef.current?.click()} disabled={receiptAnalyzing}>
-              {receiptAnalyzing ? <><span className="spinner"/>読み取り中...</> : '📷 レシートを撮影・選択'}
-            </button>
-            <input ref={receiptFileRef} type="file" accept="image/*" capture="environment"
-              onChange={handleReceiptPhoto} style={{display:'none'}}/>
+        {activeSection === 'receipts' && (() => {
+          const receipts = data.receipts || [];
+          const CATEGORIES = ['仕入高','荷造運賃','通信費','消耗品費','旅費交通費','雑費'];
+          const CAT_COLORS = {
+            '仕入高':'#3b82f6','荷造運賃':'#8b5cf6','通信費':'#06b6d4',
+            '消耗品費':'#f59e0b','旅費交通費':'#10b981','雑費':'#6b7280'
+          };
 
-            {(data.receipts || []).length === 0 ? (
-              <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>レシートがありません</div>
-            ) : (
-              [...(data.receipts || [])].reverse().map(r => (
-                <div key={r.id} className="card" style={{padding:14,marginBottom:10,display:'flex',gap:12}}>
-                  {r.imageData && <img src={r.imageData} alt="" style={{width:60,height:80,objectFit:'cover',borderRadius:8,flexShrink:0}}/>}
-                  <div>
-                    <div style={{fontWeight:700,fontSize:14}}>{r.store_name || '店舗名不明'}</div>
-                    <div style={{fontSize:12,color:'#666',marginTop:2}}>{r.purchase_date || '-'}</div>
-                    <div style={{fontSize:15,fontWeight:600,marginTop:4}}>¥{formatMoney(r.total_amount)}</div>
-                    <div style={{fontSize:12,color:'#999',marginTop:2}}>{r.payment_method || '-'}</div>
+          // 月別グループ
+          const byMonth = {};
+          [...receipts].sort((a,b)=>(b.purchase_date||b.createdAt).localeCompare(a.purchase_date||a.createdAt))
+            .forEach(r => {
+              const m = (r.purchase_date||r.createdAt||'').slice(0,7) || '不明';
+              if (!byMonth[m]) byMonth[m] = [];
+              byMonth[m].push(r);
+            });
+
+          // 勘定科目別集計（全体）
+          const catSummary = {};
+          CATEGORIES.forEach(c => catSummary[c] = 0);
+          receipts.forEach(r => {
+            const c = r.category || '雑費';
+            if (catSummary[c] !== undefined) catSummary[c] += (r.total_amount || 0);
+            else catSummary['雑費'] += (r.total_amount || 0);
+          });
+          const totalAll = receipts.reduce((s,r)=>s+(r.total_amount||0), 0);
+
+          const saveReceiptEdit = () => {
+            if (!receiptEdit) return;
+            setData(prev => ({
+              ...prev,
+              receipts: (prev.receipts||[]).map(r => r.id === receiptEdit.id ? { ...receiptEdit } : r),
+            }));
+            setReceiptModal({ ...receiptEdit });
+            toast('✅ 保存しました');
+          };
+
+          const deleteReceipt = (id) => {
+            setData(prev => ({ ...prev, receipts: (prev.receipts||[]).filter(r => r.id !== id) }));
+            setReceiptModal(null);
+            setReceiptEdit(null);
+            toast('🗑️ 削除しました');
+          };
+
+          const exportReceiptCSV = () => {
+            const headers = ['日付','店舗名','金額','決済方法','勘定科目','メモ'];
+            const rows = [...receipts]
+              .sort((a,b)=>(a.purchase_date||'').localeCompare(b.purchase_date||''))
+              .map(r => [
+                r.purchase_date||'',
+                r.store_name||'',
+                r.total_amount||0,
+                r.payment_method||'',
+                r.category||'雑費',
+                r.memo||'',
+              ]);
+            shareOrDownloadFiles([makeCsvFile([headers,...rows], `レシート_${today()}.csv`)]);
+            toast('📤 CSVを出力しました');
+          };
+
+          return (
+            <div>
+              {/* 撮影ボタン */}
+              <button className="btn-primary" style={{width:'100%',marginBottom:12}}
+                onClick={() => receiptFileRef.current?.click()} disabled={receiptAnalyzing}>
+                {receiptAnalyzing ? <><span className="spinner"/>読み取り中...</> : '📷 レシートを撮影・追加'}
+              </button>
+              <input ref={receiptFileRef} type="file" accept="image/*" capture="environment"
+                onChange={handleReceiptPhoto} style={{display:'none'}}/>
+
+              {receipts.length > 0 && (
+                <>
+                  {/* 勘定科目別サマリー */}
+                  <div className="card" style={{padding:14,marginBottom:12}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                      <div style={{fontWeight:700,fontSize:14}}>📊 勘定科目別集計</div>
+                      <button onClick={exportReceiptCSV}
+                        style={{padding:'4px 10px',border:'1px solid #ddd',borderRadius:8,fontSize:12,background:'#f9f9f9',cursor:'pointer',fontWeight:600}}>
+                        📤 CSV出力
+                      </button>
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                      {CATEGORIES.filter(c=>catSummary[c]>0).map(c => (
+                        <div key={c} style={{background:'#f8f9fa',borderRadius:8,padding:'8px 10px',
+                          borderLeft:`3px solid ${CAT_COLORS[c]}`}}>
+                          <div style={{fontSize:11,color:'#666',fontWeight:600}}>{c}</div>
+                          <div style={{fontSize:14,fontWeight:700,color:'#333'}}>¥{formatMoney(catSummary[c])}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{marginTop:10,padding:'8px 12px',background:'#fff3cd',borderRadius:8,
+                      display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                      <span style={{fontWeight:700,fontSize:13}}>合計経費</span>
+                      <span style={{fontWeight:800,fontSize:16,color:'#92400e'}}>¥{formatMoney(totalAll)}</span>
+                    </div>
+                  </div>
+
+                  {/* 月別レシート一覧 */}
+                  {Object.entries(byMonth).map(([month, mrs]) => {
+                    const monthTotal = mrs.reduce((s,r)=>s+(r.total_amount||0),0);
+                    return (
+                      <div key={month} style={{marginBottom:16}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                          padding:'6px 4px',marginBottom:6}}>
+                          <div style={{fontWeight:700,fontSize:13,color:'#555'}}>{month}</div>
+                          <div style={{fontSize:13,fontWeight:600,color:'#333'}}>¥{formatMoney(monthTotal)}</div>
+                        </div>
+                        {mrs.map(r => (
+                          <div key={r.id} className="card" onClick={() => { setReceiptModal(r); setReceiptEdit({...r}); }}
+                            style={{padding:'10px 12px',marginBottom:8,display:'flex',gap:10,cursor:'pointer',
+                              WebkitTapHighlightColor:'transparent'}}>
+                            {r.imageData && (
+                              <img src={r.imageData} alt="" style={{width:48,height:64,objectFit:'cover',borderRadius:6,flexShrink:0}}/>
+                            )}
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:4}}>
+                                <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                  {r.store_name || '店舗名不明'}
+                                </div>
+                                <div style={{fontWeight:700,fontSize:14,color:'#333',flexShrink:0}}>
+                                  ¥{formatMoney(r.total_amount)}
+                                </div>
+                              </div>
+                              <div style={{display:'flex',gap:6,marginTop:4,flexWrap:'wrap'}}>
+                                <span style={{fontSize:11,color:'#666'}}>{r.purchase_date||'-'}</span>
+                                <span style={{fontSize:11,padding:'1px 6px',borderRadius:10,fontWeight:600,
+                                  background:`${CAT_COLORS[r.category]||'#6b7280'}22`,
+                                  color: CAT_COLORS[r.category]||'#6b7280'}}>
+                                  {r.category||'雑費'}
+                                </span>
+                                {r.payment_method && (
+                                  <span style={{fontSize:11,color:'#999'}}>{r.payment_method}</span>
+                                )}
+                              </div>
+                              {r.memo && (
+                                <div style={{fontSize:12,color:'#888',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                  {r.memo}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+
+              {receipts.length === 0 && (
+                <div className="card" style={{padding:32,textAlign:'center',color:'#999'}}>
+                  <div style={{fontSize:40,marginBottom:8}}>🧾</div>
+                  <div style={{fontSize:14}}>レシートがありません</div>
+                  <div style={{fontSize:12,marginTop:4}}>ボタンから撮影・追加してください</div>
+                </div>
+              )}
+
+              {/* レシート詳細・編集モーダル */}
+              {receiptModal && receiptEdit && (
+                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,
+                  display:'flex',flexDirection:'column',justifyContent:'flex-end'}}
+                  onClick={(e)=>{ if(e.target===e.currentTarget){ setReceiptModal(null); setReceiptEdit(null); }}}>
+                  <div style={{background:'white',borderRadius:'20px 20px 0 0',padding:'20px 16px',
+                    maxHeight:'90vh',overflowY:'auto',WebkitOverflowScrolling:'touch'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+                      <div style={{fontWeight:800,fontSize:17}}>🧾 レシート詳細</div>
+                      <button onClick={()=>{ setReceiptModal(null); setReceiptEdit(null); }}
+                        style={{border:'none',background:'none',fontSize:22,cursor:'pointer',padding:'2px 8px',color:'#999'}}>✕</button>
+                    </div>
+
+                    {/* 画像 */}
+                    {receiptEdit.imageData && (
+                      <img src={receiptEdit.imageData} alt="レシート" style={{width:'100%',maxHeight:240,objectFit:'contain',borderRadius:10,marginBottom:14,background:'#f5f5f5'}}/>
+                    )}
+
+                    {/* 店舗名 */}
+                    <div style={{marginBottom:10}}>
+                      <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:4}}>店舗名</label>
+                      <input value={receiptEdit.store_name||''} onChange={e=>setReceiptEdit(p=>({...p,store_name:e.target.value}))}
+                        style={{width:'100%',padding:'10px 12px',border:'1px solid #ddd',borderRadius:10,fontSize:15,boxSizing:'border-box'}}/>
+                    </div>
+
+                    {/* 日付・金額 */}
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
+                      <div>
+                        <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:4}}>日付</label>
+                        <input type="date" value={receiptEdit.purchase_date||''} onChange={e=>setReceiptEdit(p=>({...p,purchase_date:e.target.value}))}
+                          style={{width:'100%',padding:'10px 8px',border:'1px solid #ddd',borderRadius:10,fontSize:14,boxSizing:'border-box'}}/>
+                      </div>
+                      <div>
+                        <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:4}}>金額</label>
+                        <input type="number" value={receiptEdit.total_amount||''} onChange={e=>setReceiptEdit(p=>({...p,total_amount:Number(e.target.value)}))}
+                          style={{width:'100%',padding:'10px 8px',border:'1px solid #ddd',borderRadius:10,fontSize:14,boxSizing:'border-box'}}/>
+                      </div>
+                    </div>
+
+                    {/* 勘定科目 */}
+                    <div style={{marginBottom:10}}>
+                      <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:6}}>勘定科目</label>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {CATEGORIES.map(c => (
+                          <button key={c} onClick={()=>setReceiptEdit(p=>({...p,category:c}))}
+                            style={{padding:'6px 12px',borderRadius:20,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,
+                              background: receiptEdit.category===c ? CAT_COLORS[c]||'#6b7280' : '#f0f0f0',
+                              color: receiptEdit.category===c ? 'white' : '#555',
+                              transition:'all 0.15s'}}>
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 決済方法 */}
+                    <div style={{marginBottom:10}}>
+                      <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:4}}>決済方法</label>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {['現金','クレカ','PayPay','その他'].map(pm => (
+                          <button key={pm} onClick={()=>setReceiptEdit(p=>({...p,payment_method:pm}))}
+                            style={{padding:'6px 12px',borderRadius:20,border:'none',cursor:'pointer',fontSize:12,fontWeight:600,
+                              background: receiptEdit.payment_method===pm ? '#4b5563' : '#f0f0f0',
+                              color: receiptEdit.payment_method===pm ? 'white' : '#555',
+                              transition:'all 0.15s'}}>
+                            {pm}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 仕入れ紐付け */}
+                    {receiptEdit.category === '仕入高' && (
+                      <div style={{marginBottom:10}}>
+                        <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:4}}>在庫と紐付け（任意）</label>
+                        <select value={receiptEdit.inventoryId||''} onChange={e=>setReceiptEdit(p=>({...p,inventoryId:e.target.value}))}
+                          style={{width:'100%',padding:'10px 12px',border:'1px solid #ddd',borderRadius:10,fontSize:14,boxSizing:'border-box',background:'white'}}>
+                          <option value="">紐付けなし</option>
+                          {(data.inventory||[]).map(inv => (
+                            <option key={inv.id} value={inv.id}>{inv.brand ? `${inv.brand} ` : ''}{inv.productName||'無題'}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* メモ */}
+                    <div style={{marginBottom:16}}>
+                      <label style={{fontSize:12,fontWeight:600,color:'#666',display:'block',marginBottom:4}}>メモ</label>
+                      <textarea value={receiptEdit.memo||''} onChange={e=>setReceiptEdit(p=>({...p,memo:e.target.value}))}
+                        rows={2} placeholder="備考など"
+                        style={{width:'100%',padding:'10px 12px',border:'1px solid #ddd',borderRadius:10,fontSize:14,resize:'none',boxSizing:'border-box'}}/>
+                    </div>
+
+                    {/* ボタン */}
+                    <div style={{display:'flex',gap:8}}>
+                      <button onClick={()=>{ if(window.confirm('このレシートを削除しますか？')) deleteReceipt(receiptEdit.id); }}
+                        style={{flex:1,padding:14,border:'1px solid #fca5a5',borderRadius:12,background:'#fff',color:'#dc2626',fontWeight:700,fontSize:15,cursor:'pointer'}}>
+                        🗑️ 削除
+                      </button>
+                      <button onClick={saveReceiptEdit}
+                        style={{flex:2,padding:14,border:'none',borderRadius:12,background:'var(--color-primary)',color:'white',fontWeight:700,fontSize:15,cursor:'pointer'}}>
+                        💾 保存
+                      </button>
+                    </div>
                   </div>
                 </div>
-              ))
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })()}
 
         {activeSection === 'import' && (
           <SellerBookImporter data={data} setData={setData} toast={toast} currentUser={currentUser} />
