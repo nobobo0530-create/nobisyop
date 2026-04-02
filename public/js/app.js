@@ -375,6 +375,7 @@ const getInitialData = () => ({
   receipts: [],
   settings: {
     apiKey: '',
+    removeBgApiKey: '',
     priceSplitDivisor: 100,
     platformFees: { ...CONFIG.PLATFORM_FEES },
     descriptionTemplate: CONFIG.DESCRIPTION_TEMPLATE,
@@ -4880,6 +4881,60 @@ const SellerBookImporter = ({ data, setData, toast, currentUser }) => {
 };
 
 // ============================================================
+// 白抜きユーティリティ（OtherTab外の純粋関数）
+// ============================================================
+
+// File → base64文字列（dataURL の ","以降）
+const fileToBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = (e) => resolve(e.target.result.split(',')[1]);
+  reader.onerror = reject;
+  reader.readAsDataURL(file);
+});
+
+// 透明PNG Blob → 白背景JPEG Blob（Canvas合成）
+const compositeOnWhiteBg = (transparentBlob) => new Promise((resolve, reject) => {
+  const img = new Image();
+  const url = URL.createObjectURL(transparentBlob);
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((blob) => {
+      blob ? resolve(blob) : reject(new Error('canvas変換失敗'));
+    }, 'image/jpeg', 0.92);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像読み込み失敗')); };
+  img.src = url;
+});
+
+// Fileを受け取り → プロキシ経由でbg除去 → 白背景JPEG Blobを返す
+const runRemoveBg = async (file, apiKey) => {
+  const imageBase64 = await fileToBase64(file);
+  const res = await fetch('/api/removebg', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageBase64, apiKey }),
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  // base64 PNG → Blob
+  const bytes = Uint8Array.from(atob(data.imageBase64), c => c.charCodeAt(0));
+  const pngBlob = new Blob([bytes], { type: 'image/png' });
+  // 白背景合成してJPEGに
+  return compositeOnWhiteBg(pngBlob);
+};
+
+// ============================================================
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
@@ -4887,8 +4942,12 @@ const OtherTab = () => {
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
-  const [receiptModal, setReceiptModal] = React.useState(null); // 詳細モーダル表示中のレシート
-  const [receiptEdit, setReceiptEdit] = React.useState(null);   // 編集中フォームデータ
+  const [receiptModal, setReceiptModal] = React.useState(null);
+  const [receiptEdit, setReceiptEdit] = React.useState(null);
+  // 白抜きツール用ステート（コンポーネント内で完結・アプリデータに書かない）
+  const [bgItems, setBgItems] = React.useState([]); // [{id,name,file,resultBlob,resultUrl,status,error,selected}]
+  const [bgProcessing, setBgProcessing] = React.useState(false);
+  const bgFileInputRef = React.useRef();
   const [settings, setSettings] = React.useState({ ...getInitialData().settings, ...data.settings });
   const receiptFileRef = React.useRef();
   const restoreFileRef = React.useRef();
@@ -5176,6 +5235,7 @@ const OtherTab = () => {
   const sections = [
     { id: 'qr', label: 'QR', icon: '📱' },
     { id: 'receipts', label: 'レシート', icon: '🧾' },
+    { id: 'removebg', label: '白抜き', icon: '✂️' },
     { id: 'export', label: 'エクスポート', icon: '📊' },
     { id: 'import', label: 'インポート', icon: '📥' },
     { id: 'settings', label: '設定', icon: '⚙️' },
@@ -5521,6 +5581,297 @@ const OtherTab = () => {
         )}
 
 
+        {/* 白抜きツール */}
+        {activeSection === 'removebg' && (() => {
+          const removeBgKey = settings.removeBgApiKey || '';
+          const doneCount = bgItems.filter(r => r.status === 'done').length;
+          const selectedCount = bgItems.filter(r => r.selected).length;
+          const processedCount = bgItems.filter(r => r.status === 'done' || r.status === 'error').length;
+
+          const pickFiles = (e) => {
+            const files = [...(e.target.files || [])];
+            if (!files.length) return;
+            // 古いBlobURLを解放してメモリ節約
+            bgItems.forEach(r => { if (r.resultUrl) URL.revokeObjectURL(r.resultUrl); });
+            setBgItems(files.map((f, i) => ({
+              id: i, name: f.name, file: f,
+              resultBlob: null, resultUrl: null,
+              status: 'pending', error: null, selected: false,
+            })));
+            e.target.value = '';
+          };
+
+          const startProcessing = async () => {
+            if (!removeBgKey) { toast('⚠️ Remove.bg APIキーを設定タブで入力してください'); return; }
+            if (!bgItems.length) return;
+            setBgProcessing(true);
+            // pending→queuedにリセット
+            setBgItems(prev => prev.map(r => ({ ...r, status: 'pending', resultBlob: null, resultUrl: null, error: null, selected: false })));
+            for (let i = 0; i < bgItems.length; i++) {
+              setBgItems(prev => prev.map((r, idx) => idx === i ? { ...r, status: 'processing' } : r));
+              try {
+                const blob = await runRemoveBg(bgItems[i].file, removeBgKey);
+                const url = URL.createObjectURL(blob);
+                setBgItems(prev => prev.map((r, idx) => idx === i
+                  ? { ...r, resultBlob: blob, resultUrl: url, status: 'done', selected: true } : r));
+              } catch (err) {
+                setBgItems(prev => prev.map((r, idx) => idx === i
+                  ? { ...r, status: 'error', error: err.message } : r));
+              }
+            }
+            setBgProcessing(false);
+            toast('✅ 白抜き完了！');
+          };
+
+          const saveSelected = async () => {
+            const sel = bgItems.filter(r => r.selected && r.resultBlob);
+            if (!sel.length) { toast('⚠️ 保存する画像を選択してください'); return; }
+            const files = sel.map((r, i) =>
+              new File([r.resultBlob], `shiranueki_${i + 1}.jpg`, { type: 'image/jpeg' })
+            );
+            if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
+              try { await navigator.share({ files, title: '白抜き画像' }); }
+              catch (e) { if (e.name !== 'AbortError') toast(`❌ 共有エラー: ${e.message}`); }
+            } else {
+              files.forEach(f => {
+                const url = URL.createObjectURL(f);
+                const a = document.createElement('a');
+                a.href = url; a.download = f.name;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+              });
+              toast(`📥 ${files.length}枚ダウンロードしました`);
+            }
+          };
+
+          const clearAll = () => {
+            bgItems.forEach(r => { if (r.resultUrl) URL.revokeObjectURL(r.resultUrl); });
+            setBgItems([]);
+            setBgProcessing(false);
+          };
+
+          const toggleSelect = (i) =>
+            setBgItems(prev => prev.map((r, idx) => idx === i ? { ...r, selected: !r.selected } : r));
+          const selectAll = () => setBgItems(prev => prev.map(r => r.status === 'done' ? { ...r, selected: true } : r));
+          const deselectAll = () => setBgItems(prev => prev.map(r => ({ ...r, selected: false })));
+
+          return (
+            <div>
+              {/* API Key 未設定バナー */}
+              {!removeBgKey && (
+                <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,padding:14,marginBottom:14,fontSize:13}}>
+                  <div style={{fontWeight:700,marginBottom:4,color:'#c2410c'}}>⚠️ Remove.bg APIキーが未設定</div>
+                  <div style={{color:'#78350f',marginBottom:6}}>「設定」タブの「Remove.bg APIキー」に入力してください</div>
+                  <div style={{color:'#92400e',fontSize:12}}>
+                    <a href="https://www.remove.bg/api" target="_blank" rel="noreferrer"
+                      style={{color:'#2563eb',fontWeight:600}}>remove.bg</a>
+                    {' '}で無料取得（月50枚無料）→ 「設定」タブへ
+                  </div>
+                </div>
+              )}
+
+              {/* 初期状態：使い方＋選択ボタン */}
+              {bgItems.length === 0 && (
+                <>
+                  <div className="card" style={{padding:16,marginBottom:12}}>
+                    <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>✂️ 白抜きツール — 使い方</div>
+                    <div style={{fontSize:13,color:'#555',lineHeight:1.9}}>
+                      <div>① 商品写真を複数枚まとめて選択</div>
+                      <div>② 一括で白背景に変換（AI処理）</div>
+                      <div>③ うまくいった画像だけチェック</div>
+                      <div>④「保存」→ 写真アプリへ</div>
+                      <div>⑤ 写真アプリから各商品に登録</div>
+                    </div>
+                    <div style={{marginTop:10,padding:'8px 10px',background:'#eff6ff',borderRadius:8,fontSize:12,color:'#1d4ed8'}}>
+                      💡 3商品分まとめて白抜き → 保存 → 各商品に登録OK
+                    </div>
+                    <div style={{marginTop:8,padding:'8px 10px',background:'#f0fdf4',borderRadius:8,fontSize:12,color:'#166534'}}>
+                      🔒 画像はアプリ内に保存されません。処理後すぐ破棄されます
+                    </div>
+                  </div>
+                  <input type="file" accept="image/*" multiple ref={bgFileInputRef}
+                    style={{display:'none'}} onChange={pickFiles}/>
+                  <button className="btn-primary" style={{width:'100%'}}
+                    onClick={() => bgFileInputRef.current?.click()}>
+                    🖼️ 写真を選ぶ（複数可）
+                  </button>
+                </>
+              )}
+
+              {/* 選択済み・処理前 */}
+              {bgItems.length > 0 && !bgProcessing && processedCount === 0 && (
+                <>
+                  <div style={{background:'#eff6ff',borderRadius:12,padding:'12px 14px',marginBottom:12,
+                    display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:14,color:'#1e40af'}}>🖼️ {bgItems.length}枚選択中</div>
+                      <div style={{fontSize:12,color:'#3b82f6',marginTop:2}}>1枚あたり約3〜8秒かかります</div>
+                    </div>
+                    <div style={{display:'flex',gap:8}}>
+                      <button onClick={clearAll}
+                        style={{padding:'8px 12px',border:'1px solid #ddd',borderRadius:8,background:'white',fontSize:13,cursor:'pointer',fontWeight:600}}>
+                        取消
+                      </button>
+                      <button onClick={startProcessing}
+                        style={{padding:'8px 14px',border:'none',borderRadius:8,background:'#1d4ed8',color:'white',fontWeight:700,fontSize:13,cursor:'pointer'}}>
+                        ✂️ 白抜き開始
+                      </button>
+                    </div>
+                  </div>
+                  {/* 選択ファイル一覧 */}
+                  <div className="card" style={{padding:'8px 12px'}}>
+                    {bgItems.map((r, i) => (
+                      <div key={r.id} style={{padding:'7px 0',borderBottom: i < bgItems.length-1 ? '1px solid #f5f5f5' : 'none',
+                        fontSize:13,color:'#555',display:'flex',alignItems:'center',gap:8}}>
+                        <span style={{fontSize:15}}>🖼️</span>
+                        <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.name}</span>
+                        <span style={{fontSize:11,color:'#999',flexShrink:0}}>{(r.file.size/1024/1024).toFixed(1)}MB</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {/* 処理中プログレス */}
+              {bgProcessing && (
+                <div className="card" style={{padding:24,textAlign:'center',marginBottom:12}}>
+                  <div style={{fontSize:16,fontWeight:800,marginBottom:6}}>✂️ 白抜き処理中...</div>
+                  <div style={{fontSize:14,color:'#666',marginBottom:14}}>
+                    {processedCount} / {bgItems.length} 枚完了
+                  </div>
+                  <div style={{background:'#e5e7eb',borderRadius:99,height:10,overflow:'hidden',marginBottom:8}}>
+                    <div style={{
+                      height:'100%',background:'var(--color-primary)',borderRadius:99,
+                      transition:'width 0.4s ease',
+                      width:`${(processedCount / Math.max(bgItems.length, 1)) * 100}%`
+                    }}/>
+                  </div>
+                  <div style={{fontSize:12,color:'#999'}}>
+                    {bgItems.find(r => r.status === 'processing')?.name || ''}
+                  </div>
+                </div>
+              )}
+
+              {/* 結果グリッド */}
+              {bgItems.length > 0 && (bgProcessing || processedCount > 0) && (
+                <>
+                  {!bgProcessing && (
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                      <div style={{fontWeight:700,fontSize:14}}>
+                        ✅ {doneCount}/{bgItems.length}枚成功
+                        {bgItems.filter(r=>r.status==='error').length > 0 && (
+                          <span style={{color:'#dc2626',marginLeft:6,fontWeight:400,fontSize:12}}>
+                            （{bgItems.filter(r=>r.status==='error').length}枚失敗）
+                          </span>
+                        )}
+                      </div>
+                      <div style={{display:'flex',gap:6}}>
+                        <button onClick={selectAll}
+                          style={{padding:'5px 10px',border:'1px solid #ddd',borderRadius:8,fontSize:12,cursor:'pointer',background:'white',fontWeight:600}}>
+                          全選択
+                        </button>
+                        <button onClick={deselectAll}
+                          style={{padding:'5px 10px',border:'1px solid #ddd',borderRadius:8,fontSize:12,cursor:'pointer',background:'white',fontWeight:600}}>
+                          全解除
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:14}}>
+                    {bgItems.map((r, i) => (
+                      <div key={r.id}
+                        onClick={() => r.status === 'done' && toggleSelect(i)}
+                        style={{borderRadius:12,overflow:'hidden',cursor:r.status==='done'?'pointer':'default',
+                          border: r.selected ? '2.5px solid var(--color-primary)' : '2px solid #e5e7eb',
+                          background: r.status==='error' ? '#fff5f5' : 'white',
+                          position:'relative', WebkitTapHighlightColor:'transparent'}}>
+
+                        {/* 画像表示エリア */}
+                        {r.resultUrl ? (
+                          <img src={r.resultUrl} alt="" style={{width:'100%',aspectRatio:'1',objectFit:'contain',background:'white',display:'block'}}/>
+                        ) : r.status === 'processing' ? (
+                          <div style={{aspectRatio:'1',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#f9fafb',gap:8}}>
+                            <span className="spinner"/>
+                            <span style={{fontSize:11,color:'#6b7280'}}>処理中...</span>
+                          </div>
+                        ) : r.status === 'error' ? (
+                          <div style={{aspectRatio:'1',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:10,gap:4}}>
+                            <span style={{fontSize:28}}>❌</span>
+                            <span style={{fontSize:11,color:'#dc2626',textAlign:'center',lineHeight:1.4}}>{r.error}</span>
+                          </div>
+                        ) : (
+                          <div style={{aspectRatio:'1',display:'flex',alignItems:'center',justifyContent:'center',background:'#f9fafb'}}>
+                            <span style={{fontSize:11,color:'#9ca3af'}}>待機中</span>
+                          </div>
+                        )}
+
+                        {/* チェックバッジ */}
+                        {r.status === 'done' && (
+                          <div style={{position:'absolute',top:6,right:6,width:24,height:24,borderRadius:12,
+                            background: r.selected ? 'var(--color-primary)' : 'rgba(255,255,255,0.9)',
+                            border: r.selected ? 'none' : '2px solid #ccc',
+                            display:'flex',alignItems:'center',justifyContent:'center',
+                            boxShadow:'0 1px 4px rgba(0,0,0,0.2)',fontSize:13,color:'white',fontWeight:800}}>
+                            {r.selected ? '✓' : ''}
+                          </div>
+                        )}
+
+                        {/* ファイル名 */}
+                        <div style={{padding:'4px 8px',fontSize:10,color:'#666',overflow:'hidden',
+                          textOverflow:'ellipsis',whiteSpace:'nowrap',background:'#f9fafb',borderTop:'1px solid #f0f0f0'}}>
+                          {r.name}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* アクションボタン */}
+                  {!bgProcessing && (
+                    <div style={{display:'flex',gap:8,marginBottom:12}}>
+                      <button onClick={clearAll}
+                        style={{flex:1,padding:14,border:'1px solid #e5e7eb',borderRadius:12,
+                          background:'#f9fafb',fontWeight:700,fontSize:14,cursor:'pointer',color:'#374151'}}>
+                        🗑️ クリア
+                      </button>
+                      <button onClick={saveSelected} disabled={selectedCount===0}
+                        style={{flex:2,padding:14,border:'none',borderRadius:12,
+                          background: selectedCount>0 ? 'var(--color-primary)' : '#d1d5db',
+                          color:'white',fontWeight:700,fontSize:14,
+                          cursor:selectedCount>0?'pointer':'default',transition:'background 0.2s'}}>
+                        📱 選択した{selectedCount}枚を保存
+                      </button>
+                    </div>
+                  )}
+
+                  {!bgProcessing && (
+                    <div style={{textAlign:'center',marginBottom:8}}>
+                      <button onClick={() => {
+                        bgItems.forEach(r => { if (r.resultUrl) URL.revokeObjectURL(r.resultUrl); });
+                        setBgItems([]);
+                        bgFileInputRef.current?.click();
+                      }}
+                        style={{border:'none',background:'none',color:'#2563eb',fontSize:13,cursor:'pointer',
+                          textDecoration:'underline'}}>
+                        ← 別の写真を選び直す
+                      </button>
+                    </div>
+                  )}
+
+                  {/* iOS保存ガイド */}
+                  {!bgProcessing && doneCount > 0 && (
+                    <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:'10px 12px',fontSize:12,color:'#166534',lineHeight:1.7}}>
+                      <div style={{fontWeight:700,marginBottom:4}}>📱 iPhoneへの保存方法</div>
+                      <div>「保存」ボタン → 共有シートから「画像を保存」</div>
+                      <div style={{color:'#15803d',marginTop:2}}>または長押し → 「写真に追加」でも保存できます</div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })()}
+
         {/* 設定 */}
         {activeSection === 'settings' && (
           <div>
@@ -5667,6 +6018,20 @@ const OtherTab = () => {
               <input className="input-field" type="password" value={settings.apiKey}
                 onChange={e => setSetting('apiKey', e.target.value)}
                 placeholder="sk-ant-api..."/>
+              <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>✂️ Remove.bg APIキー</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                白抜きツールに使用。
+                <a href="https://www.remove.bg/api" target="_blank" rel="noreferrer"
+                  style={{color:'#2563eb'}}>remove.bg</a>
+                で無料取得（月50枚）
+              </div>
+              <input className="input-field" type="password" value={settings.removeBgApiKey||''}
+                onChange={e => setSetting('removeBgApiKey', e.target.value)}
+                placeholder="xxxxxxxxxx（remove.bg API Key）"/>
               <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
             </div>
 
