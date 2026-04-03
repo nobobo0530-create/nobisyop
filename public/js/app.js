@@ -392,6 +392,16 @@ const getInitialData = () => ({
     // ヤフオクストア一覧（ストアごとに許可証番号が異なるため別管理）
     // { id, storeName, license, companyName }
     yahooStores: [],
+    storeMaster: {
+      normalStores: [
+        'セカンドストリート','オフハウス','ブックオフ','ブックオフプラス',
+        'ブックオフスーパーバザー','四次元ポケット','萬屋','万SAI堂','万代','タイヨー堂','エコリング',
+      ],
+      yahooStores: [
+        'エンパワーヤフーショップ','オークション代行クイックドゥ','すまりく ヤフオク！ショップ',
+        'pleasure','ECO BASEヤフー店','リアクロ','エルミ ヤフーSHOP',
+      ],
+    },
     // Google Sheets連携（OAuth2）
     gasUrl: '',
     googleClientId: '',
@@ -1164,9 +1174,7 @@ const PurchaseTab = () => {
   const [generatedDesc, setGeneratedDesc] = React.useState('');
   const [showDesc, setShowDesc] = React.useState(false);
   const [purchaseType, setPurchaseType] = React.useState('store'); // 'store' | 'online'
-  const [purchaseStoreIsCustom, setPurchaseStoreIsCustom] = React.useState(false); // 仕入れ先「その他」モード
-  const [purchaseIsYahoo, setPurchaseIsYahoo] = React.useState(false);             // ヤフオクストアモード
-  const [yahooSubStoreIsCustom, setYahooSubStoreIsCustom] = React.useState(false); // ヤフオク手入力モード
+  const [storeCustomText, setStoreCustomText] = React.useState(null); // null=選択モード, string=手入力モード
   const [tagReading, setTagReading] = React.useState(false);
   const [tagReadResult, setTagReadResult] = React.useState(null);
   const [seoCategoryInput, setSeoCategoryInput] = React.useState('');
@@ -1269,18 +1277,11 @@ const PurchaseTab = () => {
       showOptionalFee:   (editingItem.purchaseCost?.optionalFeeTaxIn > 0) || false,
     });
     setPurchaseType(editingItem.purchaseType || 'store');
-    // ヤフオクストア判定
-    const isYahoo = editingItem.purchaseStoreType === 'yahoo';
-    setPurchaseIsYahoo(isYahoo);
-    if (isYahoo) {
-      const yahooStores = data.settings?.yahooStores || [];
-      const knownYahoo = yahooStores.find(s => s.storeName === editingItem.purchaseStore);
-      setYahooSubStoreIsCustom(!knownYahoo && !!editingItem.purchaseStore);
-      setPurchaseStoreIsCustom(false);
-    } else {
-      const isKnownStore = CONFIG.PURCHASE_STORES.filter(s => s !== 'ヤフオクストア').includes(editingItem.purchaseStore);
-      setPurchaseStoreIsCustom(!isKnownStore && !!editingItem.purchaseStore);
-    }
+    // 仕入れ先マスタとの照合
+    const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+    const allKnownStores = [...(master.normalStores||[]), ...(master.yahooStores||[])];
+    const isCustomStore = !!editingItem.purchaseStore && !allKnownStores.includes(editingItem.purchaseStore);
+    setStoreCustomText(isCustomStore ? editingItem.purchaseStore : null);
     // 保存済み説明文を復元
     if (editingItem.descriptionText) {
       setGeneratedDesc(editingItem.descriptionText);
@@ -1626,8 +1627,9 @@ const PurchaseTab = () => {
       '※万が一コピー品・偽物などがあった場合、返品対応させて頂きますのでお申し付け下さい。',
       '',
       '【商品状態】',
-      conditionText,
-      '中古品のため多少の使用感ありますが、目立った傷や汚れなどはなく今後もご愛用できる商品です！',
+      ...(form.conditionDetail
+        ? [form.conditionDetail]
+        : ['中古品のため多少の使用感ありますが、目立った傷や汚れなどはなく今後もご愛用できる商品です！']),
       '',
       '※中古品にご理解のほどよろしくお願い致します。',
       '',
@@ -1657,9 +1659,8 @@ const PurchaseTab = () => {
       if (p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
     });
     setStep(1); setPhotos([]); setAiResult(null); setGeneratedDesc(''); setShowDesc(false);
-    setAiTypeDetection(null); setPurchaseTypeSource('manual'); setPurchaseStoreIsCustom(false);
+    setAiTypeDetection(null); setPurchaseTypeSource('manual'); setStoreCustomText(null);
     setRegistrationMode('unlisted');
-    setPurchaseIsYahoo(false); setYahooSubStoreIsCustom(false);
     setSeoCategoryInput(''); setEditingItem(null);
     setForm({
       productName: '', brand: '', category: '', color: '',
@@ -1710,7 +1711,7 @@ const PurchaseTab = () => {
         purchaseCost,
         purchaseType,
         purchaseTypeSource,
-        purchaseStoreType: purchaseIsYahoo ? 'yahoo' : 'normal',
+        purchaseStoreType: (() => { const m = data.settings?.storeMaster || getInitialData().settings.storeMaster; return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal'; })(),
         aiTypeDetection: aiTypeDetection || editingItem.aiTypeDetection || null,
         listPrice: Number(form.listPrice) || 0,
         photos: photoRefs,
@@ -1734,7 +1735,7 @@ const PurchaseTab = () => {
       purchaseCost,
       purchaseType,
       purchaseTypeSource,
-      purchaseStoreType: purchaseIsYahoo ? 'yahoo' : 'normal',
+      purchaseStoreType: (() => { const m = data.settings?.storeMaster || getInitialData().settings.storeMaster; return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal'; })(),
       aiTypeDetection: aiTypeDetection || null,
       listPrice: Number(form.listPrice) || 0,
       photos: photoRefs,
@@ -2198,76 +2199,77 @@ const PurchaseTab = () => {
               </div>
               <div>
                 <label className="field-label">仕入れ先</label>
-                {/* ── メイン仕入れ先選択 ── */}
-                <select className="input-field"
-                  value={purchaseIsYahoo ? 'ヤフオクストア' : (purchaseStoreIsCustom ? 'その他' : (form.purchaseStore || ''))}
-                  onChange={e => {
-                    const val = e.target.value;
-                    if (val === 'ヤフオクストア') {
-                      setPurchaseIsYahoo(true);
-                      setPurchaseStoreIsCustom(false);
-                      setYahooSubStoreIsCustom(false);
-                      setF('purchaseStore', '');
-                      setF('sellerLicense', '');
-                    } else if (val === 'その他') {
-                      setPurchaseIsYahoo(false);
-                      setPurchaseStoreIsCustom(true);
+                {/* ── 統合仕入れ先マスタ選択 ── */}
+                {(() => {
+                  const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+                  const yahooNames = new Set([
+                    ...(master.yahooStores||[]),
+                    ...(data.settings?.yahooStores||[]).map(s => s.storeName),
+                  ]);
+                  const allStores = [
+                    ...(master.normalStores||[]),
+                    ...(master.yahooStores||[]),
+                  ].filter((v,i,a) => a.indexOf(v) === i) // dedupe
+                   .sort((a,b) => a.localeCompare(b, 'ja'));
+
+                  const handleSelect = (val) => {
+                    if (val === '__custom__') {
+                      setStoreCustomText('');
                       setF('purchaseStore', '');
                       setF('sellerLicense', '');
                     } else {
-                      setPurchaseIsYahoo(false);
-                      setPurchaseStoreIsCustom(false);
+                      setStoreCustomText(null);
                       setF('purchaseStore', val);
-                      const license = (data.settings?.storeLicenses || {})[val] || '';
-                      setF('sellerLicense', license);
+                      if (yahooNames.has(val)) {
+                        const found = (data.settings?.yahooStores||[]).find(s => s.storeName === val);
+                        setF('sellerLicense', found?.license || '');
+                      } else {
+                        setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
+                      }
                     }
-                  }}>
-                  <option value="">選択してください</option>
-                  {CONFIG.PURCHASE_STORES.map(s => <option key={s} value={s}>{s}</option>)}
-                  <option value="その他">その他（手入力）</option>
-                </select>
+                  };
 
-                {/* ── 通常店舗：手入力 ── */}
-                {purchaseStoreIsCustom && (
-                  <input className="input-field" style={{marginTop:6}}
-                    value={form.purchaseStore}
-                    onChange={e => setF('purchaseStore', e.target.value)}
-                    placeholder="店舗名を入力"/>
-                )}
-
-                {/* ── ヤフオクストア：サブ選択 ── */}
-                {purchaseIsYahoo && (() => {
-                  const yahooStores = data.settings?.yahooStores || [];
                   return (
-                    <div style={{marginTop:6,background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:10,padding:10}}>
-                      <div style={{fontSize:11,color:'#c2410c',fontWeight:600,marginBottom:6}}>🏪 ヤフオクストア選択</div>
+                    <>
                       <select className="input-field"
-                        value={yahooSubStoreIsCustom ? '__custom__' : (form.purchaseStore || '')}
-                        onChange={e => {
-                          if (e.target.value === '__custom__') {
-                            setYahooSubStoreIsCustom(true);
-                            setF('purchaseStore', '');
-                            setF('sellerLicense', '');
-                          } else {
-                            setYahooSubStoreIsCustom(false);
-                            const found = yahooStores.find(s => s.storeName === e.target.value);
-                            setF('purchaseStore', e.target.value);
-                            setF('sellerLicense', found?.license || '');
-                          }
-                        }}>
-                        <option value="">ストアを選択...</option>
-                        {yahooStores.map(s => (
-                          <option key={s.id} value={s.storeName}>{s.storeName}{s.companyName ? ` (${s.companyName})` : ''}</option>
+                        value={storeCustomText !== null ? '__custom__' : (form.purchaseStore || '')}
+                        onChange={e => handleSelect(e.target.value)}>
+                        <option value="">選択してください</option>
+                        {allStores.map(s => (
+                          <option key={s} value={s}>
+                            {yahooNames.has(s) ? '🏪 ' : ''}{s}
+                          </option>
                         ))}
-                        <option value="__custom__">その他（手入力）</option>
+                        <option value="__custom__">＋ その他（手入力）</option>
                       </select>
-                      {yahooSubStoreIsCustom && (
-                        <input className="input-field" style={{marginTop:6}}
-                          value={form.purchaseStore}
-                          onChange={e => setF('purchaseStore', e.target.value)}
-                          placeholder="ストア名を入力"/>
+
+                      {storeCustomText !== null && (
+                        <div style={{marginTop:6,display:'flex',gap:6}}>
+                          <input className="input-field" style={{flex:1,marginBottom:0}}
+                            value={storeCustomText}
+                            onChange={e => { setStoreCustomText(e.target.value); setF('purchaseStore', e.target.value); }}
+                            placeholder="仕入れ先名を入力"/>
+                          <button
+                            onClick={() => {
+                              const name = storeCustomText.trim();
+                              if (!name) return;
+                              // マスタに追加して保存
+                              const newMaster = {
+                                ...master,
+                                normalStores: [...new Set([...(master.normalStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
+                              };
+                              setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
+                              setF('purchaseStore', name);
+                              setStoreCustomText(null);
+                              toast('✅ 仕入れ先を追加しました');
+                            }}
+                            style={{padding:'10px 14px',border:'none',borderRadius:10,background:'var(--color-primary)',
+                              color:'white',fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
+                            追加
+                          </button>
+                        </div>
                       )}
-                    </div>
+                    </>
                   );
                 })()}
 
@@ -3077,23 +3079,34 @@ const InventoryTab = () => {
                   <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
                     <button
                       onClick={() => {
-                        const title = selected.englishTitle || selected.productName || '';
-                        if (!title) { toast('⚠️ タイトルがありません'); return; }
-                        copyToClipboard(title).then(ok => toast(ok ? '📋 タイトルをコピーしました' : 'コピー失敗'));
+                        if (!selected.productName) { toast('⚠️ 商品名がありません'); return; }
+                        copyToClipboard(selected.productName).then(ok => toast(ok ? '📋 商品名をコピー' : 'コピー失敗'));
                       }}
                       style={{padding:'10px 6px',borderRadius:10,border:'1.5px solid #e0e0e0',
-                        background: (selected.englishTitle||selected.productName) ? 'white' : '#f9fafb',
+                        background: selected.productName ? 'white' : '#f9fafb',
                         fontSize:12,fontWeight:700,cursor:'pointer',color:'#333',
-                        opacity:(selected.englishTitle||selected.productName)?1:0.5,
+                        opacity:selected.productName?1:0.5,
                         WebkitTapHighlightColor:'transparent'}}>
-                      📋 タイトルコピー
+                      📋 商品名
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!selected.englishTitle) { toast('⚠️ 英語タイトルがありません'); return; }
+                        copyToClipboard(selected.englishTitle).then(ok => toast(ok ? '📋 英語タイトルをコピー' : 'コピー失敗'));
+                      }}
+                      style={{padding:'10px 6px',borderRadius:10,border:'1.5px solid #e0e0e0',
+                        background: selected.englishTitle ? 'white' : '#f9fafb',
+                        fontSize:12,fontWeight:700,cursor:'pointer',color:'#333',
+                        opacity:selected.englishTitle?1:0.5,
+                        WebkitTapHighlightColor:'transparent'}}>
+                      📋 英語タイトル
                     </button>
                     <button
                       onClick={() => {
                         if (!selected.descriptionText) { toast('⚠️ 説明文がありません。仕入れ登録から生成してください'); return; }
                         copyToClipboard(selected.descriptionText).then(ok => toast(ok ? '📋 説明文をコピーしました' : 'コピー失敗'));
                       }}
-                      style={{padding:'10px 6px',borderRadius:10,border:'1.5px solid #e0e0e0',
+                      style={{gridColumn:'1 / -1',padding:'10px 6px',borderRadius:10,border:'1.5px solid #e0e0e0',
                         background: selected.descriptionText ? 'white' : '#f9fafb',
                         fontSize:12,fontWeight:700,cursor:'pointer',color:'#333',
                         opacity:selected.descriptionText?1:0.5,
@@ -3112,17 +3125,23 @@ const InventoryTab = () => {
             })()}
 
             {/* 売却済みのコピーボタン（既存） */}
-            {selected.status === 'sold' && (selected.englishTitle || selected.descriptionText) && (
-              <div style={{display:'flex',gap:8,marginBottom:12}}>
+            {selected.status === 'sold' && (selected.productName || selected.englishTitle || selected.descriptionText) && (
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+                {selected.productName && (
+                  <button onClick={() => copyToClipboard(selected.productName).then(ok => toast(ok ? '📋 商品名をコピー' : 'コピー失敗'))}
+                    style={{padding:'10px 8px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',color:'#333',WebkitTapHighlightColor:'transparent'}}>
+                    📋 商品名
+                  </button>
+                )}
                 {selected.englishTitle && (
-                  <button onClick={() => copyToClipboard(selected.englishTitle).then(ok => toast(ok ? '📋 タイトルをコピーしました' : 'コピー失敗'))}
-                    style={{flex:1,padding:'10px 8px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',color:'#333'}}>
-                    📋 タイトルコピー
+                  <button onClick={() => copyToClipboard(selected.englishTitle).then(ok => toast(ok ? '📋 英語タイトルをコピー' : 'コピー失敗'))}
+                    style={{padding:'10px 8px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',color:'#333',WebkitTapHighlightColor:'transparent'}}>
+                    📋 英語タイトル
                   </button>
                 )}
                 {selected.descriptionText && (
                   <button onClick={() => copyToClipboard(selected.descriptionText).then(ok => toast(ok ? '📋 説明文をコピーしました' : 'コピー失敗'))}
-                    style={{flex:1,padding:'10px 8px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',color:'#333'}}>
+                    style={{gridColumn:'1 / -1',padding:'10px 8px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',color:'#333',WebkitTapHighlightColor:'transparent'}}>
                     📋 説明文コピー
                   </button>
                 )}
