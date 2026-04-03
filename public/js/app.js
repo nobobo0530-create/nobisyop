@@ -37,7 +37,7 @@ JSONのみで回答（説明・前置き一切不要）：
   "bid_price": 落札価格（数値のみ）,
   "shipping": 送料（数値のみ）,
   "total": 合計金額（数値のみ）,
-  "purchase_date": "落札日・注文完了日（YYYY-MM-DD形式。「X月X日」「終了日時」「購入日時」から変換。年が画面に表示されていない場合は現在年2026を補完すること）",
+  "purchase_date": "【最重要・日付読み取りルール】落札終了日・注文完了日のみをYYYY-MM-DD形式で返すこと。ヤフオク画面では「終了日時」「X月X日(曜) HH:MM 終了」の行にある日付を使用する。支払い期限・発送期限・評価期限など締め切り日は絶対に使用しない。年が省略されている場合は2026を補完。",
   "store_name": "出品者名・ストア名（読み取れる場合のみ。ショップ名・出品アカウント名など）",
   "platform": "プラットフォーム名（ヤフオク/メルカリ/ラクマ/その他）"
 }
@@ -1601,22 +1601,26 @@ const PurchaseTab = () => {
         updates.productName = result.product_title;
       }
 
-      // 仕入れ日（落札日・注文完了日）– 年が省略されている場合は現在年を補完
+      // 仕入れ日（落札終了日）– 年が省略されている場合は現在年を補完
       if (result.purchase_date) {
-        let dateStr = String(result.purchase_date);
+        let dateStr = String(result.purchase_date).trim();
         const currentYear = new Date().getFullYear();
-        if (!dateStr.match(/^\d{4}-/)) {
-          // MM/DD または M/D 形式
-          const slashM = dateStr.match(/^(\d{1,2})\/(\d{1,2})$/);
-          // MM-DD または M-D 形式（年なし）
-          const dashM  = dateStr.match(/^(\d{1,2})-(\d{1,2})$/);
-          // M月D日 形式
+        if (!dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          // 既に正しいYYYY-MM-DD形式でなければ変換を試みる
+          // MM/DD(曜) または M/D など（曜日カッコは無視）
+          const slashM = dateStr.match(/^(\d{1,2})\/(\d{1,2})/);
+          // M月D日（曜） 形式
           const jpM    = dateStr.match(/^(\d{1,2})月(\d{1,2})日/);
+          // MM-DD 形式（年なし）
+          const dashM  = dateStr.match(/^(\d{1,2})-(\d{1,2})$/);
           if (slashM) dateStr = `${currentYear}-${slashM[1].padStart(2,'0')}-${slashM[2].padStart(2,'0')}`;
-          else if (dashM) dateStr = `${currentYear}-${dashM[1].padStart(2,'0')}-${dashM[2].padStart(2,'0')}`;
           else if (jpM)   dateStr = `${currentYear}-${jpM[1].padStart(2,'0')}-${jpM[2].padStart(2,'0')}`;
+          else if (dashM) dateStr = `${currentYear}-${dashM[1].padStart(2,'0')}-${dashM[2].padStart(2,'0')}`;
         }
-        updates.purchaseDate = dateStr;
+        // YYYY-MM-DD形式に変換できた場合のみセット（変換失敗は無視）
+        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+          updates.purchaseDate = dateStr;
+        }
       }
 
       // ストア名（マスタ照合して選択 or カスタム入力モードへ）
@@ -3401,6 +3405,7 @@ const SalesTab = () => {
   const [batchLoading, setBatchLoading] = React.useState(false); // {done,total} or false
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
+  const [showAllKobotsu, setShowAllKobotsu] = React.useState(false); // 古物台帳全件表示モーダル
   const apiKey = data.settings?.apiKey || '';
 
   // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
@@ -4776,10 +4781,73 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 ))}
               </tbody>
             </table>
-            {kobotsuPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {kobotsuPreview.length-10}件（CSVに全件含まれます）</div>}
+            {kobotsuPreview.length > 10 && (
+              <button type="button" onClick={() => setShowAllKobotsu(true)}
+                style={{display:'block',width:'100%',marginTop:8,padding:'8px',borderRadius:8,
+                  border:'1px dashed #ddd',background:'#fafafa',cursor:'pointer',
+                  fontSize:12,color:'#2563eb',fontWeight:700,textAlign:'center'}}>
+                …他 {kobotsuPreview.length-10}件を全て表示
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* ── 古物台帳 全件表示モーダル ── */}
+      {showAllKobotsu && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,display:'flex',flexDirection:'column'}}
+          onClick={e => { if (e.target === e.currentTarget) setShowAllKobotsu(false); }}>
+          <div style={{background:'white',margin:'0',flex:1,display:'flex',flexDirection:'column',
+            borderRadius:0,overflow:'hidden',maxHeight:'100vh'}}>
+            {/* ヘッダー */}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+              padding:'12px 16px',borderBottom:'1px solid #eee',flexShrink:0,background:'white'}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:16}}>📜 古物台帳 全件</div>
+                <div style={{fontSize:12,color:'#999',marginTop:2}}>全 {kobotsuPreview.length} 件</div>
+              </div>
+              <button onClick={() => setShowAllKobotsu(false)}
+                style={{background:'#f5f5f5',border:'none',borderRadius:20,width:32,height:32,
+                  fontSize:18,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                ✕
+              </button>
+            </div>
+            {/* テーブル */}
+            <div style={{flex:1,overflowY:'auto',overflowX:'auto',WebkitOverflowScrolling:'touch',padding:'0 4px 16px'}}>
+              <table style={{fontSize:12,borderCollapse:'collapse',minWidth:560,width:'100%'}}>
+                <thead style={{position:'sticky',top:0,zIndex:1}}>
+                  <tr>
+                    <th colSpan={5} style={{...thStyle,background:'#dbeafe',color:'#1e3a5f',textAlign:'center'}}>◀ 仕入れ（入れ）</th>
+                    <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
+                  </tr>
+                  <tr style={{background:'#f8f8f8'}}>
+                    {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路'].map(h=>(
+                      <th key={h} style={thStyle}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {kobotsuPreview.map(({item,sale},i) => (
+                    <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
+                      <td style={tdStyle({color:'#555'})}>{item.purchaseDate}</td>
+                      <td style={tdStyle()}>{item.category||'−'}</td>
+                      <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
+                      <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
+                      <td style={tdStyle({color:'#555',fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||'−'}</td>
+                      <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
+                        {item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '未設定'}
+                      </td>
+                      <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
+                      <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
+                      <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
