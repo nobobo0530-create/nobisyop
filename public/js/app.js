@@ -1182,6 +1182,7 @@ const PurchaseTab = () => {
   const [showDesc, setShowDesc] = React.useState(false);
   const [purchaseType, setPurchaseType] = React.useState('store'); // 'store' | 'online'
   const [storeCustomText, setStoreCustomText] = React.useState(null); // null=選択モード, string=手入力モード
+  const [scanMode, setScanMode] = React.useState('product_only'); // 'product_only' | 'with_price'
   const [tagReading, setTagReading] = React.useState(false);
   const [tagReadResult, setTagReadResult] = React.useState(null);
   const [seoCategoryInput, setSeoCategoryInput] = React.useState('');
@@ -1408,7 +1409,21 @@ const PurchaseTab = () => {
         }
       }
       if (imageDataList.length === 0) throw new Error(`画像の取得に失敗しました（${photos.length}枚中0枚。写真を一度削除して追加し直してください）`);
-      const text = await analyzeImagesWithClaude(imageDataList, apiKey, PRODUCT_ANALYSIS_PROMPT, 1500);
+
+      // with_price モード時は仕入れ価格フィールドも読み取るよう補足プロンプトを追加
+      const pricePromptSupplement = `
+
+【仕入れ価格も読み取る場合の追加フィールド】
+写真に値札・落札確認画面・注文画面が含まれている場合、以下のフィールドも必ず読み取ってください：
+  "item_price": 商品価格・落札価格（数値のみ）,
+  "item_shipping": 送料（数値のみ）,
+  "item_store_name": "出品者名・ストア名（読み取れない場合はnull）"`;
+      const effectivePrompt = scanMode === 'with_price'
+        ? PRODUCT_ANALYSIS_PROMPT + pricePromptSupplement
+        : PRODUCT_ANALYSIS_PROMPT;
+      const effectiveMaxTokens = scanMode === 'with_price' ? 1800 : 1500;
+
+      const text = await analyzeImagesWithClaude(imageDataList, apiKey, effectivePrompt, effectiveMaxTokens);
       // マークダウンコードブロック・余分なテキストを除去してJSONを抽出
       const stripped = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
@@ -1465,13 +1480,33 @@ const PurchaseTab = () => {
           setPurchaseTypeSource('ai');
         }
       }
-      // 購入日の自動入力（電脳仕入れのスクリーンショットから読み取り）
+      // 購入日の自動入力
       if (result.purchase_date && /^\d{4}-\d{2}-\d{2}$/.test(result.purchase_date)) {
         setForm(prev => ({ ...prev, purchaseDate: result.purchase_date }));
-        toast('✅ AI解析完了！（購入日も自動入力しました）');
-      } else {
-        toast('✅ AI解析完了！');
       }
+      // with_price モード: 仕入れ価格・ストア名の自動入力
+      const priceFilledItems = [];
+      if (scanMode === 'with_price') {
+        const priceUpdates = {};
+        if (result.item_price > 0) { priceUpdates.itemPriceTaxIn = result.item_price; priceFilledItems.push(`¥${result.item_price.toLocaleString()}`); }
+        if (result.item_shipping > 0) { priceUpdates.shippingTaxIn = result.item_shipping; priceFilledItems.push(`送料¥${result.item_shipping.toLocaleString()}`); }
+        if (result.item_store_name) {
+          priceUpdates.purchaseStore = result.item_store_name;
+          priceFilledItems.push(`ストア: ${result.item_store_name}`);
+          const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+          const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[])];
+          setStoreCustomText(allKnown.includes(result.item_store_name) ? null : result.item_store_name);
+        }
+        if (Object.keys(priceUpdates).length > 0) {
+          setForm(prev => ({ ...prev, ...priceUpdates }));
+          if (result.item_price || result.item_shipping) {
+            setPurchaseType('online');
+            setPurchaseTypeSource('ai');
+          }
+        }
+      }
+      const priceMsg = priceFilledItems.length > 0 ? `（仕入れ値も入力: ${priceFilledItems.join(' / ')}）` : '';
+      toast(`✅ AI解析完了！${priceMsg}`);
       setStep(3);
     } catch (e) {
       toast(`❌ 解析エラー: ${e.message}`);
@@ -1699,6 +1734,7 @@ const PurchaseTab = () => {
     });
     setStep(1); setPhotos([]); setAiResult(null); setGeneratedDesc(''); setShowDesc(false);
     setAiTypeDetection(null); setPurchaseTypeSource('manual'); setStoreCustomText(null);
+    setScanMode('product_only');
     setRegistrationMode('unlisted');
     setSeoCategoryInput(''); setEditingItem(null);
     setForm({
@@ -1985,7 +2021,33 @@ const PurchaseTab = () => {
         {/* Step 2: AI解析（未出品モードのみ）*/}
         {step >= 2 && registrationMode === 'unlisted' && (
           <div className="card" style={{padding:16,marginBottom:12}}>
-            <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>Step 2: AI解析</div>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:10}}>Step 2: AI解析</div>
+
+            {/* 読み取り範囲選択 */}
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,color:'#666',fontWeight:600,marginBottom:6}}>読み取り範囲を選択</div>
+              <div style={{display:'flex',gap:8}}>
+                {[
+                  ['product_only', '🔍 商品情報のみ', '商品写真だけの時'],
+                  ['with_price',   '💴 仕入れ値も読み取る', '落札・値札画面も含む時'],
+                ].map(([mode, label, sub]) => (
+                  <button key={mode} type="button"
+                    onClick={() => setScanMode(mode)}
+                    style={{flex:1,padding:'10px 8px',borderRadius:10,border:'2px solid',
+                      borderColor: scanMode === mode ? 'var(--color-primary)' : '#e0e0e0',
+                      background: scanMode === mode ? '#fff0f0' : '#f9fafb',
+                      cursor:'pointer',textAlign:'center',
+                      WebkitTapHighlightColor:'transparent'}}>
+                    <div style={{fontSize:13,fontWeight:700,
+                      color: scanMode === mode ? 'var(--color-primary)' : '#555'}}>
+                      {label}
+                    </div>
+                    <div style={{fontSize:11,color:'#999',marginTop:2}}>{sub}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {!apiKey && (
               <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:12,marginBottom:12,fontSize:13,color:'#92400e'}}>
                 ⚠️ APIキー未設定。設定タブで入力してください。
@@ -1993,7 +2055,9 @@ const PurchaseTab = () => {
             )}
             <button className="btn-primary" style={{width:'100%'}}
               onClick={handleAnalyze} disabled={analyzing}>
-              {analyzing ? <><span className="spinner"/><span>解析中...</span></> : '🤖 AI解析する'}
+              {analyzing
+                ? <><span className="spinner"/><span>解析中...</span></>
+                : scanMode === 'with_price' ? '🤖 AI解析する（仕入れ値まで）' : '🤖 AI解析する'}
             </button>
             {step === 2 && !aiResult && (
               <button className="btn-secondary" style={{width:'100%',marginTop:8}}
@@ -2249,93 +2313,6 @@ const PurchaseTab = () => {
 
             <hr style={{borderColor:'#f0f0f0',margin:'12px 0'}}/>
 
-            {/* 仕入れ情報 */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
-              <div>
-                <label className="field-label">仕入れ日</label>
-                <input type="date" className="input-field" value={form.purchaseDate}
-                  onChange={e => setF('purchaseDate', e.target.value)}/>
-              </div>
-              <div>
-                <label className="field-label">仕入れ先</label>
-                {/* ── 統合仕入れ先マスタ選択 ── */}
-                {(() => {
-                  const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-                  const yahooNames = new Set([
-                    ...(master.yahooStores||[]),
-                    ...(data.settings?.yahooStores||[]).map(s => s.storeName),
-                  ]);
-                  const allStores = [
-                    ...(master.normalStores||[]),
-                    ...(master.yahooStores||[]),
-                  ].filter((v,i,a) => a.indexOf(v) === i) // dedupe
-                   .sort((a,b) => a.localeCompare(b, 'ja'));
-
-                  const handleSelect = (val) => {
-                    if (val === '__custom__') {
-                      setStoreCustomText('');
-                      setF('purchaseStore', '');
-                      setF('sellerLicense', '');
-                    } else {
-                      setStoreCustomText(null);
-                      setF('purchaseStore', val);
-                      if (yahooNames.has(val)) {
-                        const found = (data.settings?.yahooStores||[]).find(s => s.storeName === val);
-                        setF('sellerLicense', found?.license || '');
-                      } else {
-                        setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
-                      }
-                    }
-                  };
-
-                  return (
-                    <>
-                      <select className="input-field"
-                        value={storeCustomText !== null ? '__custom__' : (form.purchaseStore || '')}
-                        onChange={e => handleSelect(e.target.value)}>
-                        <option value="">選択してください</option>
-                        {allStores.map(s => (
-                          <option key={s} value={s}>
-                            {yahooNames.has(s) ? '🏪 ' : ''}{s}
-                          </option>
-                        ))}
-                        <option value="__custom__">＋ その他（手入力）</option>
-                      </select>
-
-                      {storeCustomText !== null && (
-                        <div style={{marginTop:6,display:'flex',gap:6}}>
-                          <input className="input-field" style={{flex:1,marginBottom:0}}
-                            value={storeCustomText}
-                            onChange={e => { setStoreCustomText(e.target.value); setF('purchaseStore', e.target.value); }}
-                            placeholder="仕入れ先名を入力"/>
-                          <button
-                            onClick={() => {
-                              const name = storeCustomText.trim();
-                              if (!name) return;
-                              // マスタに追加して保存
-                              const newMaster = {
-                                ...master,
-                                normalStores: [...new Set([...(master.normalStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
-                              };
-                              setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
-                              setF('purchaseStore', name);
-                              setStoreCustomText(null);
-                              toast('✅ 仕入れ先を追加しました');
-                            }}
-                            style={{padding:'10px 14px',border:'none',borderRadius:10,background:'var(--color-primary)',
-                              color:'white',fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
-                            追加
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-
-                {/* 許可証番号は設定画面で管理（フォームには表示しない） */}
-              </div>
-            </div>
-
             {/* 仕入れ方法 */}
             <div style={{marginBottom:12}}>
               <label className="field-label">仕入れ方法</label>
@@ -2418,6 +2395,91 @@ const PurchaseTab = () => {
                     )}
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* 仕入れ情報（読み取り結果の下に配置） */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+              <div>
+                <label className="field-label">仕入れ日</label>
+                <input type="date" className="input-field" value={form.purchaseDate}
+                  onChange={e => setF('purchaseDate', e.target.value)}/>
+              </div>
+              <div>
+                <label className="field-label">仕入れ先</label>
+                {/* ── 統合仕入れ先マスタ選択 ── */}
+                {(() => {
+                  const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+                  const yahooNames = new Set([
+                    ...(master.yahooStores||[]),
+                    ...(data.settings?.yahooStores||[]).map(s => s.storeName),
+                  ]);
+                  const allStores = [
+                    ...(master.normalStores||[]),
+                    ...(master.yahooStores||[]),
+                  ].filter((v,i,a) => a.indexOf(v) === i)
+                   .sort((a,b) => a.localeCompare(b, 'ja'));
+
+                  const handleSelect = (val) => {
+                    if (val === '__custom__') {
+                      setStoreCustomText('');
+                      setF('purchaseStore', '');
+                      setF('sellerLicense', '');
+                    } else {
+                      setStoreCustomText(null);
+                      setF('purchaseStore', val);
+                      if (yahooNames.has(val)) {
+                        const found = (data.settings?.yahooStores||[]).find(s => s.storeName === val);
+                        setF('sellerLicense', found?.license || '');
+                      } else {
+                        setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
+                      }
+                    }
+                  };
+
+                  return (
+                    <>
+                      <select className="input-field"
+                        value={storeCustomText !== null ? '__custom__' : (form.purchaseStore || '')}
+                        onChange={e => handleSelect(e.target.value)}>
+                        <option value="">選択してください</option>
+                        {allStores.map(s => (
+                          <option key={s} value={s}>
+                            {yahooNames.has(s) ? '🏪 ' : ''}{s}
+                          </option>
+                        ))}
+                        <option value="__custom__">＋ その他（手入力）</option>
+                      </select>
+
+                      {storeCustomText !== null && (
+                        <div style={{marginTop:6,display:'flex',gap:6}}>
+                          <input className="input-field" style={{flex:1,marginBottom:0}}
+                            value={storeCustomText}
+                            onChange={e => { setStoreCustomText(e.target.value); setF('purchaseStore', e.target.value); }}
+                            placeholder="仕入れ先名を入力"/>
+                          <button
+                            onClick={() => {
+                              const name = storeCustomText.trim();
+                              if (!name) return;
+                              const newMaster = {
+                                ...master,
+                                normalStores: [...new Set([...(master.normalStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
+                              };
+                              setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
+                              setF('purchaseStore', name);
+                              setStoreCustomText(null);
+                              toast('✅ 仕入れ先を追加しました');
+                            }}
+                            style={{padding:'10px 14px',border:'none',borderRadius:10,background:'var(--color-primary)',
+                              color:'white',fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
+                            追加
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+                {/* 許可証番号は設定画面で管理 */}
               </div>
             </div>
 
