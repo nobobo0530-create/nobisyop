@@ -1971,8 +1971,15 @@ const PurchaseTab = () => {
             {/* 商品名 */}
             <div style={{marginBottom:12}}>
               <label className="field-label">商品名（日本語）<span style={{color:form.productName.length>40?'red':form.productName.length>30?'orange':'#999'}}>({form.productName.length}/40)</span></label>
-              <input className="input-field" value={form.productName}
-                onChange={e => setF('productName', e.target.value.slice(0,40))} placeholder="例: ノースフェイス ダウンジャケット ブラック L"/>
+              <div style={{display:'flex',gap:6}}>
+                <input className="input-field" style={{flex:1}} value={form.productName}
+                  onChange={e => setF('productName', e.target.value.slice(0,40))} placeholder="例: ノースフェイス ダウンジャケット ブラック L"/>
+                <button disabled={!form.productName}
+                  onClick={() => copyToClipboard(form.productName).then(ok => toast(ok ? '📋 商品名をコピー' : 'コピー失敗'))}
+                  style={{padding:'0 12px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:12,fontWeight:600,cursor:'pointer',color:'#555',opacity:form.productName?1:0.4,whiteSpace:'nowrap'}}>
+                  コピー
+                </button>
+              </div>
             </div>
 
             {/* 英語タイトル */}
@@ -1984,10 +1991,18 @@ const PurchaseTab = () => {
                   color: form.englishTitle.length > 40 ? '#dc2626' : form.englishTitle.length >= 35 ? '#f59e0b' : '#16a34a',
                 }}>{form.englishTitle.length}/40</span>
               </div>
-              <input className={`input-field${form.englishTitle.length > 40 ? ' highlight' : ''}`}
-                value={form.englishTitle}
-                onChange={e => setF('englishTitle', e.target.value)}
-                placeholder="AI解析で自動入力。例: Louis Vuitton Musette Salsa Shoulder Bag"/>
+              <div style={{display:'flex',gap:6}}>
+                <input className={`input-field${form.englishTitle.length > 40 ? ' highlight' : ''}`}
+                  style={{flex:1}}
+                  value={form.englishTitle}
+                  onChange={e => setF('englishTitle', e.target.value)}
+                  placeholder="AI解析で自動入力。例: Louis Vuitton Musette Salsa Shoulder Bag"/>
+                <button disabled={!form.englishTitle}
+                  onClick={() => copyToClipboard(form.englishTitle).then(ok => toast(ok ? '📋 英語タイトルをコピー' : 'コピー失敗'))}
+                  style={{padding:'0 12px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:12,fontWeight:600,cursor:'pointer',color:'#555',opacity:form.englishTitle?1:0.4,whiteSpace:'nowrap'}}>
+                  コピー
+                </button>
+              </div>
               {form.englishTitle.length > 40 && (
                 <div style={{fontSize:11,color:'#dc2626',marginTop:3}}>⚠️ 40文字を超えています（{form.englishTitle.length - 40}文字オーバー）</div>
               )}
