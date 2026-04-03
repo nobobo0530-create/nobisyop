@@ -3405,7 +3405,6 @@ const SalesTab = () => {
   const [batchLoading, setBatchLoading] = React.useState(false); // {done,total} or false
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
-  const [showAllKobotsu, setShowAllKobotsu] = React.useState(false); // 古物台帳全件表示モーダル
   const apiKey = data.settings?.apiKey || '';
 
   // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
@@ -4533,6 +4532,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
   const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
+  const [showAllKobotsu, setShowAllKobotsu]   = React.useState(false); // 古物台帳全件表示モーダル
   const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
 
   const spreadsheetId = settings.googleSpreadsheetId || '';
