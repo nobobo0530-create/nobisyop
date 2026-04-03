@@ -30,10 +30,17 @@ const CONFIG = {
 JSONのみで回答（説明・前置き一切不要）：
 {"price": 8800, "tax_type": "税込 または 税抜 または 不明", "confidence": "high または low", "notes": "読み取り内容の補足"}
 完全に価格の存在が確認できない場合のみ price を null にしてください。`,
-  AUCTION_PRICE_PROMPT: `この写真はオークションまたはフリマアプリの落札・注文確認画面です。
-落札価格と送料を読み取ってください。
-JSONのみで回答してください（説明不要）：
-{"bid_price": 8000, "shipping": 800, "total": 8800, "platform": "ヤフオク", "notes": "補足"}
+  AUCTION_PRICE_PROMPT: `この写真はヤフオク・メルカリ・ラクマなどの落札・注文確認画面です。
+以下の情報をできるだけ読み取ってください。JSONのみで回答してください（説明不要）：
+{
+  "product_title": "商品タイトル（全文・省略なし。ヤフオクは長いタイトルをそのまま全部入れること）",
+  "bid_price": 落札価格（数値のみ）,
+  "shipping": 送料（数値のみ）,
+  "total": 合計金額（数値のみ）,
+  "purchase_date": "落札日・注文完了日（YYYY-MM-DD形式。「X月X日」「終了日時」「購入日時」から変換）",
+  "store_name": "出品者名・ストア名（読み取れる場合のみ。ショップ名・出品アカウント名など）",
+  "platform": "プラットフォーム名（ヤフオク/メルカリ/ラクマ/その他）"
+}
 読み取れない値はnullにしてください。`,
   DESCRIPTION_TEMPLATE: `We offer immediate purchase approval. Our store deals exclusively in authentic products, so please feel confident in making your purchase.
 
@@ -484,14 +491,14 @@ const analyzeImagesWithClaude = async (imageDataList, apiKey, prompt, maxTokens 
 };
 
 // 1枚の画像からClaude APIで価格を読み取る汎用関数
-const readPriceFromImage = async (file, prompt, apiKey) => {
+const readPriceFromImage = async (file, prompt, apiKey, maxTokens = 200) => {
   // 値札の小さい数字を読むため1200px・quality0.9に引き上げ
   const blob = await compressImage(file, 1200, 0.9);
   const base64 = await blobToBase64(blob);
   const imageDataList = [{ mimeType: 'image/jpeg', data: base64 }];
-  const text = await analyzeImagesWithClaude(imageDataList, apiKey, prompt, 200);
+  const text = await analyzeImagesWithClaude(imageDataList, apiKey, prompt, maxTokens);
   // JSONを抽出（AIが余分なテキストを返しても対応）
-  const match = text.match(/\{[\s\S]*?\}/);
+  const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error(`応答が不正: ${text.slice(0, 60)}`);
   return JSON.parse(match[0]);
 };
@@ -1541,19 +1548,51 @@ const PurchaseTab = () => {
     if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; }
     setTagReading(true);
     try {
-      const result = await readPriceFromImage(file, CONFIG.AUCTION_PRICE_PROMPT, apiKey);
+      // タイトルや日付を含む拡張レスポンスのため maxTokens を増やす
+      const result = await readPriceFromImage(file, CONFIG.AUCTION_PRICE_PROMPT, apiKey, 600);
       const bidPrice = result.bid_price || 0;
       const shipping = result.shipping || 0;
       const total = result.total || (bidPrice + shipping);
-      if (total > 0) {
-        setForm(prev => ({
-          ...prev,
-          itemPriceTaxIn: bidPrice || total,
-          shippingTaxIn: shipping > 0 ? shipping : '',
-        }));
-        setTagReadResult({ type: 'online', ...result, total });
-        toast(`✅ 読み取り成功: 合計¥${total.toLocaleString()}`);
-      } else {
+
+      const updates = {
+        itemPriceTaxIn: (bidPrice || total) > 0 ? (bidPrice || total) : '',
+        shippingTaxIn:  shipping > 0 ? shipping : '',
+      };
+
+      // 商品タイトル（省略なし・40字制限なし）
+      if (result.product_title) {
+        updates.productName = result.product_title;
+      }
+
+      // 仕入れ日（落札日・注文完了日）
+      if (result.purchase_date) {
+        updates.purchaseDate = result.purchase_date;
+      }
+
+      // ストア名（マスタ照合して選択 or カスタム入力モードへ）
+      if (result.store_name) {
+        const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+        const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[])];
+        updates.purchaseStore = result.store_name;
+        if (allKnown.includes(result.store_name)) {
+          setStoreCustomText(null); // マスタにある → ドロップダウン選択
+        } else {
+          setStoreCustomText(result.store_name); // マスタにない → カスタム入力モード
+        }
+      }
+
+      setForm(prev => ({ ...prev, ...updates }));
+      setTagReadResult({ type: 'online', ...result, total });
+
+      const filled = [
+        result.product_title && 'タイトル',
+        result.purchase_date && '仕入れ日',
+        result.store_name   && 'ストア名',
+        total > 0           && `¥${total.toLocaleString()}`,
+      ].filter(Boolean).join(' / ');
+      toast(`✅ 読み取り成功: ${filled || '価格のみ'}`);
+
+      if (total === 0 && !result.product_title) {
         toast('❌ 価格を読み取れませんでした。手入力してください');
       }
     } catch(e) {
@@ -1970,10 +2009,15 @@ const PurchaseTab = () => {
 
             {/* 商品名 */}
             <div style={{marginBottom:12}}>
-              <label className="field-label">商品名（日本語）<span style={{color:form.productName.length>40?'red':form.productName.length>30?'orange':'#999'}}>({form.productName.length}/40)</span></label>
+              <label className="field-label">商品名（日本語）
+                <span style={{marginLeft:6,fontSize:11,fontWeight:700,
+                  color: form.productName.length>40 ? '#dc2626' : form.productName.length>30 ? '#f59e0b' : '#999'}}>
+                  {form.productName.length}字{form.productName.length>40 ? '（メルカリ出品時は40字以内に調整）' : ''}
+                </span>
+              </label>
               <div style={{display:'flex',gap:6}}>
                 <input className="input-field" style={{flex:1}} value={form.productName}
-                  onChange={e => setF('productName', e.target.value.slice(0,40))} placeholder="例: ノースフェイス ダウンジャケット ブラック L"/>
+                  onChange={e => setF('productName', e.target.value)} placeholder="例: ノースフェイス ダウンジャケット ブラック L"/>
                 <button disabled={!form.productName}
                   onClick={() => copyToClipboard(form.productName).then(ok => toast(ok ? '📋 商品名をコピー' : 'コピー失敗'))}
                   style={{padding:'0 12px',borderRadius:10,border:'1.5px solid #e0e0e0',background:'white',fontSize:12,fontWeight:600,cursor:'pointer',color:'#555',opacity:form.productName?1:0.4,whiteSpace:'nowrap'}}>
@@ -2355,10 +2399,23 @@ const PurchaseTab = () => {
                   </div>
                 )}
                 {tagReadResult?.type === 'online' && (
-                  <div style={{marginTop:6,padding:'8px 12px',background:'#f0fdf4',borderRadius:8,fontSize:13,color:'#166534'}}>
-                    ✅ {tagReadResult.platform && <span style={{marginRight:6}}>{tagReadResult.platform}</span>}
-                    落札¥{(tagReadResult.bid_price||0).toLocaleString()} + 送料¥{(tagReadResult.shipping||0).toLocaleString()}
-                    <span style={{fontWeight:700,marginLeft:8}}>= ¥{tagReadResult.total?.toLocaleString()}</span>
+                  <div style={{marginTop:6,padding:'10px 12px',background:'#f0fdf4',borderRadius:8,fontSize:13,color:'#166534',lineHeight:1.7}}>
+                    <div style={{fontWeight:700,marginBottom:4}}>
+                      ✅ {tagReadResult.platform && <span style={{marginRight:6}}>{tagReadResult.platform}</span>}
+                      落札¥{(tagReadResult.bid_price||0).toLocaleString()} + 送料¥{(tagReadResult.shipping||0).toLocaleString()}
+                      <span style={{marginLeft:8}}>= ¥{tagReadResult.total?.toLocaleString()}</span>
+                    </div>
+                    {tagReadResult.product_title && (
+                      <div style={{fontSize:12,color:'#166534',marginTop:2}}>
+                        📝 タイトル: <span style={{fontWeight:600}}>{tagReadResult.product_title.slice(0,50)}{tagReadResult.product_title.length>50?'…':''}</span>
+                      </div>
+                    )}
+                    {tagReadResult.purchase_date && (
+                      <div style={{fontSize:12,color:'#166534'}}>📅 仕入れ日: {tagReadResult.purchase_date}</div>
+                    )}
+                    {tagReadResult.store_name && (
+                      <div style={{fontSize:12,color:'#166534'}}>🏪 ストア: {tagReadResult.store_name}</div>
+                    )}
                   </div>
                 )}
               </div>
