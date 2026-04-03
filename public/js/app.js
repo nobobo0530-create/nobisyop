@@ -6216,84 +6216,88 @@ const OtherTab = () => {
             {/* ── ヤフオクストア 古物商番号管理 ── */}
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🟠 ヤフオクストア 古物商番号管理</div>
-              <div style={{fontSize:12,color:'#999',marginBottom:12}}>登録したストアを仕入れ時に選ぶと許可証番号が自動入力されます</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:12}}>店を選んだとき自動で許可証番号が入力されます</div>
+              {(() => {
+                // デフォルト表示するストア名
+                const DEFAULT_YAHOO_STORES = [
+                  'ECO BASEヤフー店','エルミ ヤフーSHOP','エンパワーヤフーショップ',
+                  'オークション代行クイックドゥ','すまりく ヤフオク！ショップ','pleasure','リアクロ',
+                ];
+                const yahooStores = settings.yahooStores || [];
+                // デフォルト＋登録済みを統合してあいうえお順に表示（重複排除）
+                const allNames = [...new Set([
+                  ...DEFAULT_YAHOO_STORES,
+                  ...yahooStores.map(s => s.storeName).filter(Boolean),
+                ])].sort((a,b) => a.localeCompare(b, 'ja'));
 
-              {/* 登録済みストア一覧 */}
-              {(settings.yahooStores || []).length === 0 && !yahooAddForm && (
-                <div style={{textAlign:'center',color:'#bbb',fontSize:13,padding:'12px 0',marginBottom:8}}>
-                  まだ登録がありません
-                </div>
-              )}
-              {(settings.yahooStores || []).map((store, i) => (
-                <div key={store.id} style={{marginBottom:10,borderBottom:'1px solid #f0f0f0',paddingBottom:10}}>
-                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
-                    <div style={{fontSize:13,fontWeight:700,color:'#333'}}>{store.storeName || `ストア ${i+1}`}</div>
-                    <button onClick={() => {
-                      setSetting('yahooStores', (settings.yahooStores||[]).filter((_,j) => j !== i));
-                    }} style={{background:'none',border:'none',color:'#dc2626',fontSize:18,cursor:'pointer',padding:'0 6px',lineHeight:1}}>×</button>
-                  </div>
-                  <input className="input-field" style={{fontSize:13,marginBottom:0}}
-                    value={store.license || ''}
-                    onChange={e => {
-                      const updated = [...(settings.yahooStores||[])];
-                      updated[i] = { ...updated[i], license: e.target.value };
-                      setSetting('yahooStores', updated);
-                    }}
-                    placeholder="古物商許可証番号（例: 東京都公安委員会 第○号）"/>
-                </div>
-              ))}
+                // 指定ストアのライセンスを取得
+                const getLicense = (name) =>
+                  yahooStores.find(s => s.storeName === name)?.license || '';
 
-              {/* 新規追加フォーム（インライン展開） */}
-              {yahooAddForm ? (
-                <div style={{background:'#f9fafb',borderRadius:10,padding:12,border:'1.5px solid #e0e0e0'}}>
-                  <div style={{fontSize:12,fontWeight:700,color:'#555',marginBottom:8}}>新規ストアを追加</div>
-                  <div style={{marginBottom:8}}>
-                    <label className="field-label">ストア名</label>
-                    <input className="input-field" style={{fontSize:13}}
-                      value={yahooAddForm.storeName}
-                      onChange={e => setYahooAddForm(prev => ({...prev, storeName: e.target.value}))}
-                      placeholder="例: エンパワーヤフーショップ"
-                      autoFocus/>
-                  </div>
-                  <div style={{marginBottom:10}}>
-                    <label className="field-label">古物商許可証番号（任意）</label>
-                    <input className="input-field" style={{fontSize:13}}
-                      value={yahooAddForm.license}
-                      onChange={e => setYahooAddForm(prev => ({...prev, license: e.target.value}))}
-                      placeholder="例: 東京都公安委員会 第123456789号"/>
-                  </div>
-                  <div style={{display:'flex',gap:8}}>
-                    <button
-                      onClick={() => {
-                        const name = yahooAddForm.storeName.trim();
-                        if (!name) { return; }
-                        const newStore = {
-                          id: Date.now().toString(),
-                          storeName: name,
-                          license: yahooAddForm.license.trim(),
-                          companyName: '',
-                        };
-                        setSetting('yahooStores', [...(settings.yahooStores||[]), newStore]);
-                        setYahooAddForm(null);
-                        toast('✅ ストアを追加しました');
-                      }}
-                      style={{flex:1,padding:'10px',borderRadius:10,border:'none',
-                        background:'var(--color-primary)',color:'white',fontWeight:700,fontSize:13,cursor:'pointer'}}>
-                      追加
-                    </button>
-                    <button onClick={() => setYahooAddForm(null)}
-                      style={{padding:'10px 16px',borderRadius:10,border:'1.5px solid #e0e0e0',
-                        background:'white',fontSize:13,cursor:'pointer',color:'#666'}}>
-                      キャンセル
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button className="btn-secondary" style={{width:'100%',fontSize:13}}
-                  onClick={() => setYahooAddForm({ storeName: '', license: '' })}>
-                  ＋ 新規ストアを追加
-                </button>
-              )}
+                // 指定ストアのライセンスを保存（なければ新規追加）
+                const setLicense = (name, license) => {
+                  const exists = yahooStores.some(s => s.storeName === name);
+                  const updated = exists
+                    ? yahooStores.map(s => s.storeName === name ? {...s, license} : s)
+                    : [...yahooStores, {id: Date.now().toString(), storeName: name, license, companyName: ''}];
+                  setSetting('yahooStores', updated);
+                };
+
+                return (
+                  <>
+                    {allNames.map(name => (
+                      <div key={name} style={{marginBottom:10}}>
+                        <label className="field-label">{name}</label>
+                        <input className="input-field" style={{fontSize:13}}
+                          value={getLicense(name)}
+                          onChange={e => setLicense(name, e.target.value)}
+                          placeholder="例: 青森県公安委員会 第041100001号"/>
+                      </div>
+                    ))}
+                    {/* 新規ストア追加（ストア名のみ入力 → リストに追加） */}
+                    {yahooAddForm ? (
+                      <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
+                        <input className="input-field" style={{flex:1,marginBottom:0,fontSize:13}}
+                          value={yahooAddForm.storeName}
+                          onChange={e => setYahooAddForm({storeName: e.target.value})}
+                          placeholder="ストア名を入力"
+                          autoFocus
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              const name = yahooAddForm.storeName.trim();
+                              if (!name || allNames.includes(name)) return;
+                              setLicense(name, '');
+                              setYahooAddForm(null);
+                            }
+                            if (e.key === 'Escape') setYahooAddForm(null);
+                          }}/>
+                        <button
+                          onClick={() => {
+                            const name = yahooAddForm.storeName.trim();
+                            if (!name || allNames.includes(name)) { setYahooAddForm(null); return; }
+                            setLicense(name, '');
+                            setYahooAddForm(null);
+                          }}
+                          style={{padding:'10px 14px',borderRadius:10,border:'none',
+                            background:'var(--color-primary)',color:'white',
+                            fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0}}>
+                          追加
+                        </button>
+                        <button onClick={() => setYahooAddForm(null)}
+                          style={{padding:'10px 12px',borderRadius:10,border:'1.5px solid #e0e0e0',
+                            background:'white',fontSize:13,cursor:'pointer',color:'#666',flexShrink:0}}>
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button className="btn-secondary" style={{width:'100%',fontSize:13,marginTop:4}}
+                        onClick={() => setYahooAddForm({storeName:''})}>
+                        ＋ 新規ストアを追加
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             <div className="card" style={{padding:16,marginBottom:12}}>
