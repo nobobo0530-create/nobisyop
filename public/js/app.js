@@ -37,7 +37,7 @@ JSONのみで回答（説明・前置き一切不要）：
   "bid_price": 落札価格（数値のみ）,
   "shipping": 送料（数値のみ）,
   "total": 合計金額（数値のみ）,
-  "purchase_date": "落札日・注文完了日（YYYY-MM-DD形式。「X月X日」「終了日時」「購入日時」から変換）",
+  "purchase_date": "落札日・注文完了日（YYYY-MM-DD形式。「X月X日」「終了日時」「購入日時」から変換。年が画面に表示されていない場合は現在年2026を補完すること）",
   "store_name": "出品者名・ストア名（読み取れる場合のみ。ショップ名・出品アカウント名など）",
   "platform": "プラットフォーム名（ヤフオク/メルカリ/ラクマ/その他）"
 }
@@ -400,13 +400,15 @@ const getInitialData = () => ({
     // { id, storeName, license, companyName }
     yahooStores: [],
     storeMaster: {
+      // 店舗仕入れ時に表示（実店舗）
       normalStores: [
-        'セカンドストリート','オフハウス','ブックオフ','ブックオフプラス',
-        'ブックオフスーパーバザー','四次元ポケット','萬屋','万SAI堂','万代','タイヨー堂','エコリング',
+        'セカンドストリート','オフハウス','萬屋','万代','万SAI堂',
+        'ブックオフ','四次元ポケット','タイヨードー','タック',
       ],
+      // 電脳仕入れ時に表示（オークション・ECサイト）
       yahooStores: [
-        'エンパワーヤフーショップ','オークション代行クイックドゥ','すまりく ヤフオク！ショップ',
-        'pleasure','ECO BASEヤフー店','リアクロ','エルミ ヤフーSHOP',
+        'ヤフオクストア','エンパワーヤフーショップ','オークション代行クイックドゥ',
+        'すまりく ヤフオク！ショップ','pleasure','ECO BASEヤフー店','リアクロ','エルミ ヤフーSHOP',
       ],
     },
     // Google Sheets連携（OAuth2）
@@ -1599,9 +1601,22 @@ const PurchaseTab = () => {
         updates.productName = result.product_title;
       }
 
-      // 仕入れ日（落札日・注文完了日）
+      // 仕入れ日（落札日・注文完了日）– 年が省略されている場合は現在年を補完
       if (result.purchase_date) {
-        updates.purchaseDate = result.purchase_date;
+        let dateStr = String(result.purchase_date);
+        const currentYear = new Date().getFullYear();
+        if (!dateStr.match(/^\d{4}-/)) {
+          // MM/DD または M/D 形式
+          const slashM = dateStr.match(/^(\d{1,2})\/(\d{1,2})$/);
+          // MM-DD または M-D 形式（年なし）
+          const dashM  = dateStr.match(/^(\d{1,2})-(\d{1,2})$/);
+          // M月D日 形式
+          const jpM    = dateStr.match(/^(\d{1,2})月(\d{1,2})日/);
+          if (slashM) dateStr = `${currentYear}-${slashM[1].padStart(2,'0')}-${slashM[2].padStart(2,'0')}`;
+          else if (dashM) dateStr = `${currentYear}-${dashM[1].padStart(2,'0')}-${dashM[2].padStart(2,'0')}`;
+          else if (jpM)   dateStr = `${currentYear}-${jpM[1].padStart(2,'0')}-${jpM[2].padStart(2,'0')}`;
+        }
+        updates.purchaseDate = dateStr;
       }
 
       // ストア名（マスタ照合して選択 or カスタム入力モードへ）
@@ -1815,7 +1830,7 @@ const PurchaseTab = () => {
       listPrice: Number(form.listPrice) || 0,
       photos: photoRefs,
       mgmtNo,
-      status: 'unlisted',
+      status: registrationMode === 'listed' ? 'listed' : 'unlisted',
       profit,
       descriptionText: generatedDesc || '',
       createdAt: new Date().toISOString(),
@@ -2414,10 +2429,11 @@ const PurchaseTab = () => {
                     ...(master.yahooStores||[]),
                     ...(data.settings?.yahooStores||[]).map(s => s.storeName),
                   ]);
-                  const allStores = [
-                    ...(master.normalStores||[]),
-                    ...(master.yahooStores||[]),
-                  ].filter((v,i,a) => a.indexOf(v) === i)
+                  // 仕入れ方法に応じてリストを切り替え（あいうえお順）
+                  const storeList = (purchaseType === 'online'
+                    ? (master.yahooStores||[])
+                    : (master.normalStores||[])
+                  ).filter((v,i,a) => a.indexOf(v) === i)
                    .sort((a,b) => a.localeCompare(b, 'ja'));
 
                   const handleSelect = (val) => {
@@ -2443,11 +2459,7 @@ const PurchaseTab = () => {
                         value={storeCustomText !== null ? '__custom__' : (form.purchaseStore || '')}
                         onChange={e => handleSelect(e.target.value)}>
                         <option value="">選択してください</option>
-                        {allStores.map(s => (
-                          <option key={s} value={s}>
-                            {yahooNames.has(s) ? '🏪 ' : ''}{s}
-                          </option>
-                        ))}
+                        {storeList.map(s => <option key={s} value={s}>{s}</option>)}
                         <option value="__custom__">＋ その他（手入力）</option>
                       </select>
 
@@ -2461,14 +2473,16 @@ const PurchaseTab = () => {
                             onClick={() => {
                               const name = storeCustomText.trim();
                               if (!name) return;
+                              // 店舗 or 電脳、適切なリストに追加（あいうえお順）
+                              const listKey = purchaseType === 'online' ? 'yahooStores' : 'normalStores';
                               const newMaster = {
                                 ...master,
-                                normalStores: [...new Set([...(master.normalStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
+                                [listKey]: [...new Set([...(master[listKey]||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
                               };
                               setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
                               setF('purchaseStore', name);
                               setStoreCustomText(null);
-                              toast('✅ 仕入れ先を追加しました');
+                              toast(`✅ ${purchaseType === 'online' ? '電脳' : '店舗'}仕入れ先を追加しました`);
                             }}
                             style={{padding:'10px 14px',border:'none',borderRadius:10,background:'var(--color-primary)',
                               color:'white',fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
@@ -2596,9 +2610,28 @@ const PurchaseTab = () => {
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
-                <label className="field-label">出品日</label>
-                <input type="date" className="input-field" value={form.listDate}
-                  onChange={e => setF('listDate', e.target.value)}/>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
+                  <label className="field-label" style={{margin:0}}>出品日</label>
+                  <button type="button"
+                    onClick={() => setF('listDate', form.listDate === '' ? today() : '')}
+                    style={{fontSize:11,padding:'2px 8px',borderRadius:8,border:'1.5px solid',
+                      borderColor: form.listDate === '' ? 'var(--color-primary)' : '#d0d0d0',
+                      background: form.listDate === '' ? '#fff0f0' : 'white',
+                      color: form.listDate === '' ? 'var(--color-primary)' : '#888',
+                      fontWeight:700,cursor:'pointer',lineHeight:'1.4'}}>
+                    未定
+                  </button>
+                </div>
+                {form.listDate === '' ? (
+                  <div style={{padding:'8px 10px',background:'#fff0f0',borderRadius:10,
+                    border:'1.5px solid var(--color-primary)',fontSize:12,
+                    color:'var(--color-primary)',fontWeight:700,textAlign:'center'}}>
+                    未定
+                  </div>
+                ) : (
+                  <input type="date" className="input-field" value={form.listDate}
+                    onChange={e => setF('listDate', e.target.value)}/>
+                )}
               </div>
               <div>
                 <label className="field-label">見込み売上 (円)</label>
@@ -2655,6 +2688,24 @@ const PurchaseTab = () => {
         <div style={{position:'sticky',bottom:0,background:'white',padding:'10px 16px 20px',
           borderTop:'1px solid #f0f0f0',zIndex:50,
           boxShadow:'0 -4px 12px rgba(0,0,0,0.06)'}}>
+          {/* 出品ステータス選択 */}
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            {[
+              ['unlisted', '📦 未出品', '#E84040'],
+              ['listed',   '✅ 出品済み', '#2563eb'],
+            ].map(([mode, label, color]) => (
+              <button key={mode} type="button"
+                onClick={() => setRegistrationMode(mode)}
+                style={{flex:1,padding:'9px 8px',borderRadius:10,border:'2px solid',
+                  borderColor: registrationMode === mode ? color : '#e0e0e0',
+                  background: registrationMode === mode ? (mode === 'listed' ? '#eff6ff' : '#fff0f0') : 'white',
+                  fontSize:13,fontWeight:700,cursor:'pointer',
+                  color: registrationMode === mode ? color : '#888',
+                  touchAction:'manipulation'}}>
+                {label}
+              </button>
+            ))}
+          </div>
           <button className="btn-primary" style={{width:'100%',padding:16,fontSize:17}}
             onClick={handleSave}>
             {editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
@@ -3155,7 +3206,7 @@ const InventoryTab = () => {
               </div>
               <div>
                 <div style={{fontSize:12,color:'#999'}}>出品日</div>
-                <div>{selected.listDate || '-'}</div>
+                <div>{selected.listDate || <span style={{color:'#E84040',fontSize:12}}>未定</span>}</div>
               </div>
               <div>
                 <div style={{fontSize:12,color:'#999'}}>仕入れ先</div>
@@ -3176,7 +3227,7 @@ const InventoryTab = () => {
                 { label: '写真',         ok: (selected.photos||[]).length > 0,  note: `${(selected.photos||[]).length}枚` },
                 { label: '商品名',       ok: !!selected.productName,             note: null },
                 { label: '見込み売上',   ok: (selected.listPrice||0) > 0,        note: selected.listPrice > 0 ? `¥${formatMoney(selected.listPrice)}` : null },
-                { label: '出品日',       ok: !!selected.listDate,                note: selected.listDate || null },
+                { label: '出品日',       ok: selected.listDate != null,          note: selected.listDate || '未定' },
                 { label: '説明文',       ok: !!selected.descriptionText,         note: null },
                 { label: 'メルカリ用タイトル', ok: !!selected.englishTitle,      note: null },
               ];
