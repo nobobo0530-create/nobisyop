@@ -1167,6 +1167,7 @@ const PurchaseTab = () => {
     sizeConfidence: 'medium', material: '',
     purchaseDate: today(), purchaseStore: '',
     sellerLicense: '',      // 仕入先の古物商許可証番号
+    sellerCompanyName: '',  // 仕入先の法人名（ヤフオクストア用）
     paymentMethod: '現金', listDate: today(), listPrice: '',
     estimatedPriceRange: '', notes: '',
     englishTitle: '',       // 英語タイトル（メルカリ用）
@@ -1270,6 +1271,7 @@ const PurchaseTab = () => {
       purchaseDate:       editingItem.purchaseDate       || today(),
       purchaseStore:      editingItem.purchaseStore      || '',
       sellerLicense:      editingItem.sellerLicense      || '',
+      sellerCompanyName:  editingItem.sellerCompanyName  || '',
       paymentMethod:      editingItem.paymentMethod      || '現金',
       listDate:           editingItem.listDate           || today(),
       listPrice:          editingItem.listPrice != null  ? String(editingItem.listPrice) : '',
@@ -1287,9 +1289,13 @@ const PurchaseTab = () => {
       showOptionalFee:   (editingItem.purchaseCost?.optionalFeeTaxIn > 0) || false,
     });
     setPurchaseType(editingItem.purchaseType || 'store');
-    // 仕入れ先マスタとの照合
+    // 仕入れ先マスタとの照合（storeMaster + settings.yahooStores の両方を確認）
     const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-    const allKnownStores = [...(master.normalStores||[]), ...(master.yahooStores||[])];
+    const allKnownStores = [
+      ...(master.normalStores||[]),
+      ...(master.yahooStores||[]),
+      ...(data.settings?.yahooStores||[]).map(s => s.storeName),
+    ];
     const isCustomStore = !!editingItem.purchaseStore && !allKnownStores.includes(editingItem.purchaseStore);
     setStoreCustomText(isCustomStore ? editingItem.purchaseStore : null);
     // 保存済み説明文を復元
@@ -1761,7 +1767,7 @@ const PurchaseTab = () => {
       brandReading: '', categoryKeywords: '', colorDisplay: '',
       condition: 'A', conditionDetail: '',
       sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '', sizeConfidence: 'medium', material: '',
-      purchaseDate: today(), purchaseStore: '', sellerLicense: '',
+      purchaseDate: today(), purchaseStore: '', sellerLicense: '', sellerCompanyName: '',
       paymentMethod: '現金', listDate: today(), listPrice: '',
       estimatedPriceRange: '', notes: '',
       englishTitle: '', descriptionText: '',
@@ -2429,15 +2435,20 @@ const PurchaseTab = () => {
                 {/* ── 統合仕入れ先マスタ選択 ── */}
                 {(() => {
                   const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+                  // 設定に登録されたヤフオクストア（詳細オブジェクト）
+                  const settingsYahooStores = data.settings?.yahooStores || [];
                   const yahooNames = new Set([
                     ...(master.yahooStores||[]),
-                    ...(data.settings?.yahooStores||[]).map(s => s.storeName),
+                    ...settingsYahooStores.map(s => s.storeName),
                   ]);
-                  // 仕入れ方法に応じてリストを切り替え（あいうえお順）
+                  // 仕入れ方法に応じてリストを切り替え（storeMaster + settings.yahooStores を統合・あいうえお順）
                   const storeList = (purchaseType === 'online'
-                    ? (master.yahooStores||[])
+                    ? [
+                        ...(master.yahooStores||[]),
+                        ...settingsYahooStores.map(s => s.storeName).filter(n => n),
+                      ]
                     : (master.normalStores||[])
-                  ).filter((v,i,a) => a.indexOf(v) === i)
+                  ).filter((v,i,a) => v && a.indexOf(v) === i)
                    .sort((a,b) => a.localeCompare(b, 'ja'));
 
                   const handleSelect = (val) => {
@@ -2445,14 +2456,21 @@ const PurchaseTab = () => {
                       setStoreCustomText('');
                       setF('purchaseStore', '');
                       setF('sellerLicense', '');
+                      setF('sellerCompanyName', '');
                     } else {
                       setStoreCustomText(null);
                       setF('purchaseStore', val);
-                      if (yahooNames.has(val)) {
-                        const found = (data.settings?.yahooStores||[]).find(s => s.storeName === val);
-                        setF('sellerLicense', found?.license || '');
+                      // settings.yahooStores から許可証番号・法人名を自動入力
+                      const foundYahoo = settingsYahooStores.find(s => s.storeName === val);
+                      if (foundYahoo) {
+                        setF('sellerLicense', foundYahoo.license || '');
+                        setF('sellerCompanyName', foundYahoo.companyName || '');
+                      } else if (yahooNames.has(val)) {
+                        setF('sellerLicense', '');
+                        setF('sellerCompanyName', '');
                       } else {
                         setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
+                        setF('sellerCompanyName', '');
                       }
                     }
                   };
@@ -4615,6 +4633,19 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const thStyle = {padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'};
   const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
 
+  // 許可証番号の解決関数（item保存値 → settings.yahooStores → settings.storeLicenses の順で検索）
+  const resolveLicense = (item) => {
+    if (item.sellerLicense) return item.sellerLicense;
+    const found = (data.settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+    if (found?.license) return found.license;
+    return (settings.storeLicenses||{})[item.purchaseStore] || '';
+  };
+  const resolveCompanyName = (item) => {
+    if (item.sellerCompanyName) return item.sellerCompanyName;
+    const found = (data.settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+    return found?.companyName || '';
+  };
+
   return (
     <div>
       {/* ── Google Sheets連携カード ── */}
@@ -4770,9 +4801,12 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                     <td style={tdStyle()}>{item.category||'−'}</td>
                     <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
                     <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                    <td style={tdStyle({color:'#555',fontSize:11,maxWidth:70,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||'−'}</td>
+                    <td style={tdStyle({color:'#555',fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
+                      <div>{item.purchaseStore||'−'}</div>
+                      {resolveCompanyName(item) && <div style={{fontSize:10,color:'#aaa'}}>{resolveCompanyName(item)}</div>}
+                    </td>
                     <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
-                      {item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '未設定'}
+                      {resolveLicense(item) || '未設定'}
                     </td>
                     <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
                     <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
@@ -4833,9 +4867,12 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       <td style={tdStyle()}>{item.category||'−'}</td>
                       <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
                       <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                      <td style={tdStyle({color:'#555',fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||'−'}</td>
+                      <td style={tdStyle({color:'#555',fontSize:11,maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>
+                        <div>{item.purchaseStore||'−'}</div>
+                        {resolveCompanyName(item) && <div style={{fontSize:10,color:'#aaa'}}>{resolveCompanyName(item)}</div>}
+                      </td>
                       <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
-                        {item.sellerLicense || (settings.storeLicenses||{})[item.purchaseStore] || '未設定'}
+                        {resolveLicense(item) || '未設定'}
                       </td>
                       <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
                       <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
@@ -5427,9 +5464,10 @@ const OtherTab = () => {
       .map((item, i) => {
         const sale = data.sales.find(s => s.inventoryId === item.id);
         // 確認区分: 許可証番号があれば「古物商許可証 ○○号」、なければ「目視確認」
-        // settings（ローカル）を優先し、未保存の変更にも対応
+        // item保存値 → settings.yahooStores → settings.storeLicenses の順で解決
         const storeLicensesMap = settings.storeLicenses || data.settings?.storeLicenses || {};
-        const license = item.sellerLicense || storeLicensesMap[item.purchaseStore] || '';
+        const foundYahooStore = (data.settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+        const license = item.sellerLicense || foundYahooStore?.license || storeLicensesMap[item.purchaseStore] || '';
         const confirmType = license
           ? `古物商許可証（${license}）`
           : (item.purchaseStore ? '目視確認' : '古物商許可証確認');
