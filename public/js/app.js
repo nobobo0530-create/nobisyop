@@ -5309,6 +5309,7 @@ const OtherTab = () => {
   const bgFileInputRef = React.useRef();
   const [settings, setSettings] = React.useState({ ...getInitialData().settings, ...data.settings });
   const [yahooAddForm, setYahooAddForm] = React.useState(null); // null=非表示, {storeName:'',license:''}=入力中
+  const [storeRenameForm, setStoreRenameForm] = React.useState({ from: '', to: '' }); // ストア名一括変更
   const receiptFileRef = React.useRef();
   const restoreFileRef = React.useRef();
   const [photoCount, setPhotoCount] = React.useState(0);
@@ -6345,6 +6346,58 @@ const OtherTab = () => {
                         ＋ 新規ストアを追加
                       </button>
                     )}
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* ── ストア名一括変更 ── */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>✏️ ストア名一括変更</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:12}}>仕入データに保存された仕入れ先名をまとめて書き換えます</div>
+              <div style={{marginBottom:8}}>
+                <label className="field-label">変更前のストア名</label>
+                <input className="input-field" style={{fontSize:13}}
+                  value={storeRenameForm.from}
+                  onChange={e => setStoreRenameForm(f => ({...f, from: e.target.value}))}
+                  placeholder="例: オークション代行ウィックドゥ さん"/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="field-label">変更後のストア名</label>
+                <input className="input-field" style={{fontSize:13}}
+                  value={storeRenameForm.to}
+                  onChange={e => setStoreRenameForm(f => ({...f, to: e.target.value}))}
+                  placeholder="例: オークション代行クイックドゥ"/>
+              </div>
+              {(() => {
+                const matchCount = data.inventory.filter(i => i.purchaseStore === storeRenameForm.from.trim()).length;
+                return (
+                  <>
+                    {storeRenameForm.from.trim() && (
+                      <div style={{fontSize:12,color:'#666',marginBottom:8}}>
+                        対象: <b>{matchCount}件</b>の仕入データ
+                      </div>
+                    )}
+                    <button
+                      disabled={!storeRenameForm.from.trim() || !storeRenameForm.to.trim() || matchCount === 0}
+                      onClick={() => {
+                        const from = storeRenameForm.from.trim();
+                        const to   = storeRenameForm.to.trim();
+                        if (!from || !to || matchCount === 0) return;
+                        if (!window.confirm(`「${from}」→「${to}」に${matchCount}件変更します。よろしいですか？`)) return;
+                        const newInventory = data.inventory.map(i =>
+                          i.purchaseStore === from ? {...i, purchaseStore: to} : i
+                        );
+                        setData({...data, inventory: newInventory});
+                        setStoreRenameForm({ from: '', to: '' });
+                      }}
+                      style={{width:'100%',padding:'12px',borderRadius:10,border:'none',
+                        background: (!storeRenameForm.from.trim()||!storeRenameForm.to.trim()||matchCount===0) ? '#e5e7eb' : 'var(--color-primary)',
+                        color: (!storeRenameForm.from.trim()||!storeRenameForm.to.trim()||matchCount===0) ? '#aaa' : 'white',
+                        fontWeight:700,fontSize:14,cursor: matchCount>0 ? 'pointer' : 'default',
+                        WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
+                      一括変更する
+                    </button>
                   </>
                 );
               })()}
