@@ -102,7 +102,13 @@ JSONのみで回答（説明・前置き一切不要）：
 // ストア名の正規化（表記ゆれ・OCRミスを正規名に変換）
 const normalizeStoreName = (name) => {
   if (!name) return name;
-  let n = String(name).trim().replace(/さん[。．\s]*$/, '').trim(); // 末尾「さん」除去
+  let n = String(name)
+    .trim()
+    .replace(/\u3000/g, ' ')   // 全角スペース → 半角
+    .replace(/\s+/g, ' ')      // 連続スペース → 1つに
+    .trim()
+    .replace(/さん[。．\s]*$/, '') // 末尾「さん」除去
+    .trim();
   for (const { pattern, correct } of CONFIG.STORE_NAME_ALIASES) {
     if (pattern.test(n)) return correct;
   }
