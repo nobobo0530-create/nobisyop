@@ -38,7 +38,7 @@ JSONのみで回答（説明・前置き一切不要）：
   "shipping": 送料（数値のみ）,
   "total": 合計金額（数値のみ）,
   "purchase_date": "【最重要・日付読み取りルール】落札終了日・注文完了日のみをYYYY-MM-DD形式で返すこと。ヤフオク画面では「終了日時」「X月X日(曜) HH:MM 終了」の行にある日付を使用する。支払い期限・発送期限・評価期限など締め切り日は絶対に使用しない。年が省略されている場合は2026を補完。",
-  "store_name": "出品者名・ストア名（読み取れる場合のみ。ショップ名・出品アカウント名など）",
+  "store_name": "出品者名・ストア名（読み取れる場合のみ。ショップ名・出品アカウント名など。末尾に「さん」が付く場合は除外して店名本体のみ返すこと）",
   "platform": "プラットフォーム名（ヤフオク/メルカリ/ラクマ/その他）"
 }
 読み取れない値はnullにしてください。`,
@@ -1607,37 +1607,42 @@ const PurchaseTab = () => {
         updates.productName = result.product_title;
       }
 
-      // 仕入れ日（落札終了日）– 年が省略されている場合は現在年を補完
+      // 仕入れ日（落札終了日）– 年が省略 or 誤った年の場合は現在年を補完
       if (result.purchase_date) {
         let dateStr = String(result.purchase_date).trim();
         const currentYear = new Date().getFullYear();
         if (!dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          // 既に正しいYYYY-MM-DD形式でなければ変換を試みる
-          // MM/DD(曜) または M/D など（曜日カッコは無視）
-          const slashM = dateStr.match(/^(\d{1,2})\/(\d{1,2})/);
-          // M月D日（曜） 形式
-          const jpM    = dateStr.match(/^(\d{1,2})月(\d{1,2})日/);
-          // MM-DD 形式（年なし）
-          const dashM  = dateStr.match(/^(\d{1,2})-(\d{1,2})$/);
+          // YYYY-MM-DD形式でなければ変換
+          const slashM = dateStr.match(/^(\d{1,2})\/(\d{1,2})/);   // MM/DD(曜) 形式
+          const jpM    = dateStr.match(/^(\d{1,2})月(\d{1,2})日/);  // M月D日（曜） 形式
+          const dashM  = dateStr.match(/^(\d{1,2})-(\d{1,2})$/);    // MM-DD 形式
           if (slashM) dateStr = `${currentYear}-${slashM[1].padStart(2,'0')}-${slashM[2].padStart(2,'0')}`;
           else if (jpM)   dateStr = `${currentYear}-${jpM[1].padStart(2,'0')}-${jpM[2].padStart(2,'0')}`;
           else if (dashM) dateStr = `${currentYear}-${dashM[1].padStart(2,'0')}-${dashM[2].padStart(2,'0')}`;
         }
-        // YYYY-MM-DD形式に変換できた場合のみセット（変換失敗は無視）
+        // YYYY-MM-DD形式になった場合、年が現在年より古ければ現在年に強制補正
+        // （AIがモデル訓練時の年を返す誤作動を防ぐ）
         if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+          const parsedYear = parseInt(dateStr.slice(0, 4), 10);
+          if (parsedYear < currentYear) {
+            dateStr = `${currentYear}${dateStr.slice(4)}`;
+          }
           updates.purchaseDate = dateStr;
         }
       }
 
-      // ストア名（マスタ照合して選択 or カスタム入力モードへ）
+      // ストア名（末尾の「さん」を除去してからマスタ照合）
       if (result.store_name) {
+        const cleanName = String(result.store_name).trim()
+          .replace(/さん[。．\s]*$/, '').trim();  // 末尾「さん」除去
         const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-        const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[])];
-        updates.purchaseStore = result.store_name;
-        if (allKnown.includes(result.store_name)) {
-          setStoreCustomText(null); // マスタにある → ドロップダウン選択
+        const settingsYahooNames = (data.settings?.yahooStores||[]).map(s => s.storeName);
+        const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[]), ...settingsYahooNames];
+        updates.purchaseStore = cleanName;
+        if (allKnown.includes(cleanName)) {
+          setStoreCustomText(null);
         } else {
-          setStoreCustomText(result.store_name); // マスタにない → カスタム入力モード
+          setStoreCustomText(cleanName);
         }
       }
 
@@ -2806,6 +2811,7 @@ const InventoryTab = () => {
   const [filter, setFilter] = React.useState('unlisted');
   const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
   const [search, setSearch] = React.useState('');
+  const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
   const [selected, setSelected] = React.useState(null);
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
@@ -2829,6 +2835,7 @@ const InventoryTab = () => {
 
   const filtered = data.inventory.filter(item => {
     if (filter !== 'all' && item.status !== filter) return false;
+    if (storeFilter && item.purchaseStore !== storeFilter) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       return (item.productName||'').toLowerCase().includes(q) ||
@@ -2837,6 +2844,20 @@ const InventoryTab = () => {
     }
     return true;
   });
+
+  // 仕入れ先サマリー（storeFilter選択時に表示）
+  const storeFilteredAll = storeFilter
+    ? data.inventory.filter(i => i.purchaseStore === storeFilter) : [];
+  const storeTotal = storeFilteredAll.reduce((s, i) => s + (i.purchasePrice||0), 0);
+  const storeSold  = storeFilteredAll.filter(i => i.status === 'sold');
+  const storeSoldProfit = storeSold.reduce((s, i) => {
+    const sale = data.sales?.find(sl => sl.inventoryId === i.id);
+    return s + (sale?.profit || 0);
+  }, 0);
+
+  // 仕入れ先ドロップダウン用（在庫に存在する仕入れ先をあいうえお順）
+  const storeOptions = [...new Set(data.inventory.map(i => i.purchaseStore).filter(Boolean))]
+    .sort((a,b) => a.localeCompare(b, 'ja'));
 
   // 並び替え
   const sorted = [...filtered].sort((a, b) => {
@@ -3002,6 +3023,35 @@ const InventoryTab = () => {
               {l}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ストアで絞り込み */}
+      {!bulkMode && storeOptions.length > 0 && (
+        <div style={{padding:'8px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:11,color:'#aaa',fontWeight:600,flexShrink:0}}>仕入れ先</span>
+            <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+              style={{flex:1,padding:'5px 8px',borderRadius:8,border:'1.5px solid #e0e0e0',
+                fontSize:12,background:'white',color:'#333'}}>
+              <option value="">すべての仕入れ先</option>
+              {storeOptions.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {storeFilter && (
+              <button onClick={() => setStoreFilter('')}
+                style={{background:'none',border:'none',color:'#aaa',fontSize:16,cursor:'pointer',padding:'0 4px'}}>×</button>
+            )}
+          </div>
+          {storeFilter && (
+            <div style={{display:'flex',gap:12,marginTop:6,fontSize:11,color:'#666'}}>
+              <span>全{storeFilteredAll.length}件</span>
+              <span>仕入合計 ¥{storeTotal.toLocaleString()}</span>
+              <span>売却済 {storeSold.length}件</span>
+              <span style={{color: storeSoldProfit>=0?'#16a34a':'#dc2626',fontWeight:700}}>
+                利益 ¥{storeSoldProfit.toLocaleString()}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
