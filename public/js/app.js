@@ -2848,9 +2848,12 @@ const InventoryTab = () => {
     return { level: 'ok', days: d };
   };
 
+  // 表示・フィルター用に正規化した仕入れ先を返す（データ未修正でも正規名で扱う）
+  const normalizedStore = (item) => normalizeStoreName(item.purchaseStore) || '';
+
   const filtered = data.inventory.filter(item => {
     if (filter !== 'all' && item.status !== filter) return false;
-    if (storeFilter && item.purchaseStore !== storeFilter) return false;
+    if (storeFilter && normalizedStore(item) !== storeFilter) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       return (item.productName||'').toLowerCase().includes(q) ||
@@ -2860,9 +2863,9 @@ const InventoryTab = () => {
     return true;
   });
 
-  // 仕入れ先サマリー（storeFilter選択時に表示）
+  // 仕入れ先サマリー（storeFilter選択時に表示）※正規化名で照合
   const storeFilteredAll = storeFilter
-    ? data.inventory.filter(i => i.purchaseStore === storeFilter) : [];
+    ? data.inventory.filter(i => normalizedStore(i) === storeFilter) : [];
   const storeTotal = storeFilteredAll.reduce((s, i) => s + (i.purchasePrice||0), 0);
   const storeSold  = storeFilteredAll.filter(i => i.status === 'sold');
   const storeSoldProfit = storeSold.reduce((s, i) => {
@@ -2870,9 +2873,10 @@ const InventoryTab = () => {
     return s + (sale?.profit || 0);
   }, 0);
 
-  // 仕入れ先ドロップダウン用（在庫に存在する仕入れ先をあいうえお順）
-  const storeOptions = [...new Set(data.inventory.map(i => i.purchaseStore).filter(Boolean))]
-    .sort((a,b) => a.localeCompare(b, 'ja'));
+  // 仕入れ先ドロップダウン用（正規化＋重複排除＋あいうえお順）
+  const storeOptions = [...new Set(
+    data.inventory.map(i => normalizedStore(i)).filter(Boolean)
+  )].sort((a,b) => a.localeCompare(b, 'ja'));
 
   // 並び替え
   const sorted = [...filtered].sort((a, b) => {
