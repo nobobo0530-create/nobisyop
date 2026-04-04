@@ -23,6 +23,12 @@ const CONFIG = {
     'ヤフオクストア', 'セカンドストリート', 'オフハウス',
     '四次元ポケット', '萬屋', '万SAI堂', '万代', 'タイヨー堂', 'エコリング',
   ],
+  // ストア名の表記ゆれ正規化テーブル（正規表現 → 正しいストア名）
+  STORE_NAME_ALIASES: [
+    { pattern: /オークション代行.*(ドゥ|どぅ)/,  correct: 'オークション代行クイックドゥ' },
+    { pattern: /エンパワー\s+ヤフーショップ/,   correct: 'エンパワーヤフーショップ' },
+    { pattern: /エンパワー\s+ヤフー\s*SHOP/i,   correct: 'エンパワーヤフーショップ' },
+  ],
   TAG_PRICE_PROMPT: `この写真の値札・価格タグ・価格シールに書かれた金額を読み取ってください。
 【重要】数字が多少不鮮明でも、見えている桁数や文脈から最もありえる価格を推定して回答してください。「読めない」ではなく必ずベストの数値を出してください。
 ・税込/税抜どちらでも可。¥や円記号は不要（数値のみ）
@@ -91,6 +97,16 @@ JSONのみで回答（説明・前置き一切不要）：
 ・らくらくメルカリ便とゆうゆうメルカリ便についてサイズ次第で配送時に変更する可能性ございます。
 
 管理番号：{management_number}`,
+};
+
+// ストア名の正規化（表記ゆれ・OCRミスを正規名に変換）
+const normalizeStoreName = (name) => {
+  if (!name) return name;
+  let n = String(name).trim().replace(/さん[。．\s]*$/, '').trim(); // 末尾「さん」除去
+  for (const { pattern, correct } of CONFIG.STORE_NAME_ALIASES) {
+    if (pattern.test(n)) return correct;
+  }
+  return n;
 };
 
 // ============================================================
@@ -1631,10 +1647,9 @@ const PurchaseTab = () => {
         }
       }
 
-      // ストア名（末尾の「さん」を除去してからマスタ照合）
+      // ストア名（正規化してからマスタ照合）
       if (result.store_name) {
-        const cleanName = String(result.store_name).trim()
-          .replace(/さん[。．\s]*$/, '').trim();  // 末尾「さん」除去
+        const cleanName = normalizeStoreName(result.store_name); // 「さん」除去＋表記ゆれ正規化
         const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
         const settingsYahooNames = (data.settings?.yahooStores||[]).map(s => s.storeName);
         const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[]), ...settingsYahooNames];
@@ -6345,6 +6360,62 @@ const OtherTab = () => {
                         onClick={() => setYahooAddForm({storeName:''})}>
                         ＋ 新規ストアを追加
                       </button>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* ── データクリーンアップ（ストア名正規化） ── */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🔧 データクリーンアップ</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:10}}>OCRミスや表記ゆれで登録されたストア名を自動修正します</div>
+              {(() => {
+                // 修正対象を集計
+                const targets = data.inventory.filter(i => {
+                  const fixed = normalizeStoreName(i.purchaseStore);
+                  return fixed && fixed !== i.purchaseStore;
+                });
+                const preview = targets.slice(0, 3).map(i =>
+                  `「${i.purchaseStore}」→「${normalizeStoreName(i.purchaseStore)}」`
+                );
+                return (
+                  <>
+                    <div style={{fontSize:12,color:'#555',marginBottom:10,background:'#f8f8f8',borderRadius:8,padding:'8px 10px'}}>
+                      <div style={{fontWeight:700,marginBottom:4}}>修正ルール:</div>
+                      {CONFIG.STORE_NAME_ALIASES.map((a,i) => (
+                        <div key={i} style={{marginBottom:2}}>• 末尾「さん」／{a.pattern.toString().replace(/\//g,'')} → <b>{a.correct}</b></div>
+                      ))}
+                    </div>
+                    {targets.length > 0 ? (
+                      <>
+                        <div style={{fontSize:12,color:'#dc2626',fontWeight:700,marginBottom:6}}>
+                          修正対象: {targets.length}件
+                        </div>
+                        {preview.map((p,i) => (
+                          <div key={i} style={{fontSize:11,color:'#666',marginBottom:2}}>• {p}</div>
+                        ))}
+                        {targets.length > 3 && <div style={{fontSize:11,color:'#aaa'}}>…他{targets.length-3}件</div>}
+                        <button
+                          onClick={() => {
+                            if (!window.confirm(`${targets.length}件のストア名を自動修正します。よろしいですか？`)) return;
+                            const newInventory = data.inventory.map(i => {
+                              const fixed = normalizeStoreName(i.purchaseStore);
+                              return (fixed && fixed !== i.purchaseStore) ? {...i, purchaseStore: fixed} : i;
+                            });
+                            setData({...data, inventory: newInventory});
+                          }}
+                          style={{width:'100%',marginTop:10,padding:'12px',borderRadius:10,border:'none',
+                            background:'#dc2626',color:'white',
+                            fontWeight:700,fontSize:14,cursor:'pointer',
+                            WebkitTapHighlightColor:'transparent'}}>
+                          今すぐ修正する
+                        </button>
+                      </>
+                    ) : (
+                      <div style={{fontSize:13,color:'#16a34a',fontWeight:700,textAlign:'center',padding:'8px 0'}}>
+                        ✅ 修正が必要なデータはありません
+                      </div>
                     )}
                   </>
                 );
