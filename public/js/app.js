@@ -1169,7 +1169,8 @@ const HomeTab = () => {
 // 仕入れ登録タブ
 // ============================================================
 const PurchaseTab = () => {
-  const { data, setData, editingItem, setEditingItem, currentUser } = React.useContext(AppContext);
+  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId } = React.useContext(AppContext);
+  const [lastSavedItem, setLastSavedItem] = React.useState(null); // 直前に保存した仕入れ品（売上記録クイックアクション用）
   const toast = useToast();
   const [step, setStep] = React.useState(1); // 1:写真, 2:AI解析, 3:入力
   const [registrationMode, setRegistrationMode] = React.useState('unlisted'); // 'unlisted'|'listed'
@@ -1922,6 +1923,7 @@ const PurchaseTab = () => {
     };
     setData({ ...data, inventory: [...data.inventory, newItem] });
     toast('✅ 仕入れを登録しました！');
+    setLastSavedItem(newItem);
     resetForm();
   };
 
@@ -1929,6 +1931,32 @@ const PurchaseTab = () => {
 
   return (
     <div className="fade-in">
+      {/* ── 仕入れ登録完了後 クイックアクションバナー ── */}
+      {lastSavedItem && !editingItem && (
+        <div style={{background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',padding:'10px 16px',
+          display:'flex',alignItems:'center',gap:10}}>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:11,color:'#166534',fontWeight:700,marginBottom:2}}>✅ 登録完了</div>
+            <div style={{fontSize:12,color:'#1e293b',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              {lastSavedItem.brand ? `${lastSavedItem.brand} ` : ''}{lastSavedItem.productName}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              setPendingSaleItemId(lastSavedItem.id);
+              setTab('sales');
+              setLastSavedItem(null);
+            }}
+            style={{flexShrink:0,padding:'7px 14px',borderRadius:99,background:'#E84040',color:'white',
+              border:'none',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
+            💰 売上を記録
+          </button>
+          <button onClick={() => setLastSavedItem(null)}
+            style={{flexShrink:0,background:'none',border:'none',fontSize:18,color:'#999',cursor:'pointer',padding:'0 4px',lineHeight:1}}>
+            ×
+          </button>
+        </div>
+      )}
       <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <h1 style={{margin:0}}>{editingItem ? '✏️ 商品を編集' : '📦 仕入れ登録'}</h1>
         {editingItem && (
@@ -2896,11 +2924,11 @@ const PurchaseTab = () => {
         )}
       </div>
 
-      {/* 保存ボタン：常に画面下部に表示（iOS キーボードに隠れない） */}
+      {/* 保存ボタン：常に画面下部に表示（ボトムナビの上に固定） */}
       {step >= 3 && (
-        <div style={{position:'sticky',bottom:0,background:'white',padding:'10px 16px 20px',
-          borderTop:'1px solid #f0f0f0',zIndex:50,
-          boxShadow:'0 -4px 12px rgba(0,0,0,0.06)'}}>
+        <div style={{position:'sticky',bottom:'calc(64px + env(safe-area-inset-bottom))',background:'white',
+          padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',zIndex:110,
+          boxShadow:'0 -4px 12px rgba(0,0,0,0.08)'}}>
           {/* 出品ステータス選択 */}
           <div style={{display:'flex',gap:8,marginBottom:10}}>
             {[
@@ -2992,7 +3020,7 @@ const PhotoSlide = ({ photoRef }) => {
 // 在庫一覧タブ
 // ============================================================
 const InventoryTab = () => {
-  const { data, setData, setTab, setEditingItem } = React.useContext(AppContext);
+  const { data, setData, setTab, setEditingItem, setPendingSaleItemId } = React.useContext(AppContext);
   const toast = useToast();
   const [filter, setFilter] = React.useState('unlisted');
   const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
@@ -3068,7 +3096,10 @@ const InventoryTab = () => {
     const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'sold' } : i);
     setData({ ...data, inventory: updated });
     setSelected(null);
-    toast('✅ 売却済みに変更しました。売上記録タブで詳細を登録してください。');
+    // 売上記録タブへ自動遷移（商品を事前選択）
+    setPendingSaleItemId(item.id);
+    setTab('sales');
+    toast('✅ 売却済みに変更しました。売上情報を入力してください。');
   };
 
   const markAsListed = (item) => {
@@ -3606,7 +3637,18 @@ const InventoryTab = () => {
               {selected.status !== 'sold' && (
                 <button className="btn-primary" style={{width:'100%'}}
                   onClick={() => markAsSold(selected)}>
-                  🎉 売れた！
+                  🎉 売れた！（売上記録へ →）
+                </button>
+              )}
+              {selected.status === 'sold' && (
+                <button style={{width:'100%',padding:'12px',borderRadius:12,border:'1.5px solid #E84040',
+                  background:'white',color:'#E84040',fontSize:14,fontWeight:700,cursor:'pointer'}}
+                  onClick={() => {
+                    setSelected(null);
+                    setPendingSaleItemId(selected.id);
+                    setTab('sales');
+                  }}>
+                  💰 この商品の売上を記録する →
                 </button>
               )}
               {selected.status === 'unlisted' && (
@@ -3649,7 +3691,7 @@ const InventoryTab = () => {
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
-  const { data, setData, currentUser, setEditingItem, setTab } = React.useContext(AppContext);
+  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
@@ -4068,6 +4110,34 @@ const SalesTab = () => {
     setForm(emptyForm);
     setShowForm(true);
   };
+
+  // 在庫商品を事前選択した状態で売上フォームを開く
+  const openNewWithItem = React.useCallback((inventoryId) => {
+    const inv = data.inventory.find(i => i.id === inventoryId);
+    const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+    const platform = emptyForm.platform;
+    const feeRate = fees[platform] ?? 0.10;
+    setEditingSale(null);
+    setForm({
+      ...emptyForm,
+      inventoryId,
+      platform,
+      feeRate,
+      salePrice:     inv?.listPrice   ? String(inv.listPrice)   : '',
+      purchasePrice: inv?.purchasePrice ? String(inv.purchasePrice) : '',
+      purchaseDate:  inv?.purchaseDate  || '',
+      purchaseStore: inv?.purchaseStore || '',
+    });
+    setShowForm(true);
+  }, [data.inventory, data.settings]);
+
+  // pendingSaleItemId（他タブからの遷移）を受け取ってフォームを開く
+  React.useEffect(() => {
+    if (pendingSaleItemId) {
+      openNewWithItem(pendingSaleItemId);
+      setPendingSaleItemId(null);
+    }
+  }, [pendingSaleItemId]);
 
   const openEdit = (sale) => {
     setEditingSale(sale);
@@ -7831,6 +7901,7 @@ const App = () => {
   const [fullData, setFullDataRaw] = React.useState(loadData);   // 全ユーザーの全データ
   const [tab, setTab]            = React.useState('home');
   const [editingItem, setEditingItem] = React.useState(null);
+  const [pendingSaleItemId, setPendingSaleItemId] = React.useState(null); // 売上記録を促すinventoryId
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
   const dataRef = React.useRef(fullData);
@@ -8068,7 +8139,7 @@ const App = () => {
   const showApiWarning = !data.settings?.apiKey && tab !== 'other';
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
