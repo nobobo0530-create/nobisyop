@@ -3667,7 +3667,7 @@ const SalesTab = () => {
   // ── まとめ販売（売上分割）────────────────────────────────
   const SALE_BUNDLE_LABELS = ['A','B','C','D','E','F'];
   const initSaleBundleItems = (n) => Array.from({length:n}, (_,i) =>
-    ({ id: String(i), label:`商品${SALE_BUNDLE_LABELS[i]||i+1}`, inventoryId:'', salePrice:'' })
+    ({ id: String(i), label:`商品${SALE_BUNDLE_LABELS[i]||i+1}`, inventoryId:'', salePrice:'', shipping:'' })
   );
   const [bundleSale, setBundleSale] = React.useState(false);
   const [bundleSaleItems, setBundleSaleItems] = React.useState(initSaleBundleItems(2));
@@ -4182,14 +4182,11 @@ const SalesTab = () => {
     if (bundleSale) {
       const filled = bundleSaleItems.filter(bi => bi.inventoryId && bi.salePrice !== '');
       if (filled.length < 2) { toast('まとめ販売は2件以上の商品と価格を入力してください'); return; }
-      const totalShip = Number(form.shipping) || 0;
-      const shipBase  = Math.floor(totalShip / filled.length);
-      const shipRem   = totalShip - shipBase * filled.length;
       const ts = Date.now();
       const newSales = filled.map((bi, idx) => {
         const inv = data.inventory.find(i => i.id === bi.inventoryId);
         const sp  = Number(bi.salePrice);
-        const ship= idx === filled.length-1 ? shipBase + shipRem : shipBase;
+        const ship = Number(bi.shipping) || 0;
         const pp  = inv?.purchasePrice || 0;
         return {
           id: `sale_${ts}_${idx}`,
@@ -5077,7 +5074,8 @@ const SalesTab = () => {
                           const newItems = initSaleBundleItems(n);
                           if (bundleSaleSplitMethod==='equal' && Number(form.salePrice)>0) {
                             const total=Number(form.salePrice), base=Math.floor(total/n), rem=total-base*n;
-                            setBundleSaleItems(newItems.map((bi,i)=>({...bi,salePrice:String(i===n-1?base+rem:base)})));
+                            const totalShip=Number(form.shipping)||0, baseShip=Math.floor(totalShip/n), remShip=totalShip-baseShip*n;
+                            setBundleSaleItems(newItems.map((bi,i)=>({...bi,salePrice:String(i===n-1?base+rem:base),shipping:String(i===n-1?baseShip+remShip:baseShip)})));
                           } else { setBundleSaleItems(newItems); }
                         }}
                           style={{padding:'6px 16px',borderRadius:99,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,
@@ -5104,7 +5102,8 @@ const SalesTab = () => {
                         if (m==='equal' && Number(form.salePrice)>0) {
                           const total=Number(form.salePrice), n=bundleSaleItems.length;
                           const base=Math.floor(total/n), rem=total-base*n;
-                          setBundleSaleItems(prev=>prev.map((bi,i)=>({...bi,salePrice:String(i===n-1?base+rem:base)})));
+                          const totalShip=Number(form.shipping)||0, baseShip=Math.floor(totalShip/n), remShip=totalShip-baseShip*n;
+                          setBundleSaleItems(prev=>prev.map((bi,i)=>({...bi,salePrice:String(i===n-1?base+rem:base),shipping:String(i===n-1?baseShip+remShip:baseShip)})));
                         }
                       }}
                         style={{flex:1,padding:'7px 0',borderRadius:99,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,
@@ -5118,7 +5117,6 @@ const SalesTab = () => {
 
                   {/* 各アイテム */}
                   {bundleSaleItems.map((bi, idx) => {
-                    const isInlineOpen = bundleSaleInlineForm?.idx === idx;
                     const selectedInv = data.inventory.find(i => i.id === bi.inventoryId);
                     return (
                     <div key={bi.id} style={{background:'#f8fafc',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #e2e8f0'}}>
@@ -5131,116 +5129,248 @@ const SalesTab = () => {
                           </span>
                         )}
                       </div>
-
-                      {/* インライン仕入れ登録フォーム */}
-                      {isInlineOpen ? (
-                        <div style={{background:'#fffbeb',borderRadius:8,padding:'10px',border:'1.5px solid #fcd34d',marginBottom:8}}>
-                          <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:8}}>📝 新規仕入れ登録</div>
-                          <input
-                            placeholder="商品名（必須）"
-                            value={bundleSaleInlineForm.productName}
-                            onChange={e => setBundleSaleInlineForm(prev => ({...prev, productName: e.target.value}))}
-                            style={{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:13,marginBottom:6,boxSizing:'border-box'}}
-                          />
-                          <div style={{display:'flex',gap:6,marginBottom:8}}>
-                            <input
-                              placeholder="ブランド"
-                              value={bundleSaleInlineForm.brand}
-                              onChange={e => setBundleSaleInlineForm(prev => ({...prev, brand: e.target.value}))}
-                              style={{flex:1,padding:'7px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12}}
-                            />
-                            <div style={{display:'flex',alignItems:'center',gap:4,background:'white',borderRadius:8,border:'1px solid #e2e8f0',padding:'0 8px'}}>
-                              <span style={{fontSize:11,color:'#888',whiteSpace:'nowrap'}}>仕入</span>
-                              <input
-                                type="number"
-                                placeholder="0"
-                                value={bundleSaleInlineForm.purchasePrice}
-                                onChange={e => setBundleSaleInlineForm(prev => ({...prev, purchasePrice: e.target.value}))}
-                                style={{width:80,padding:'7px 4px',border:'none',fontSize:12,fontWeight:700,textAlign:'right',outline:'none'}}
-                              />
-                              <span style={{fontSize:11,color:'#888'}}>円</span>
-                            </div>
-                          </div>
-                          <div style={{display:'flex',gap:6}}>
-                            <button
-                              onClick={() => {
-                                if (!bundleSaleInlineForm.productName.trim()) { toast('商品名を入力してください'); return; }
-                                const newItem = {
-                                  id: Date.now().toString(),
-                                  productName: bundleSaleInlineForm.productName.trim(),
-                                  brand: bundleSaleInlineForm.brand.trim(),
-                                  purchasePrice: Number(bundleSaleInlineForm.purchasePrice) || 0,
-                                  status: 'listed',
-                                  userId: currentUser,
-                                  createdAt: new Date().toISOString(),
-                                };
-                                setData(prev => ({...prev, inventory: [...prev.inventory, newItem]}));
-                                setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b, inventoryId: newItem.id} : b));
-                                setBundleSaleInlineForm(null);
-                                toast('✅ 仕入れを登録して商品に反映しました');
-                              }}
-                              style={{flex:1,padding:'8px',borderRadius:8,background:'#E84040',color:'white',border:'none',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-                              ✅ 登録して選択
-                            </button>
-                            <button
-                              onClick={() => setBundleSaleInlineForm(null)}
-                              style={{padding:'8px 14px',borderRadius:8,background:'#f3f4f6',color:'#555',border:'none',fontSize:12,cursor:'pointer',fontWeight:600}}>
-                              キャンセル
-                            </button>
+                      {/* 在庫から選択 */}
+                      <select value={bi.inventoryId}
+                        onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b, inventoryId: e.target.value} : b))}
+                        style={{width:'100%',padding:'7px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12,background:'white',color: bi.inventoryId ? '#1a1a1a' : '#9ca3af',marginBottom:6}}>
+                        <option value="">在庫から商品を選択...</option>
+                        {data.inventory.filter(i => i.status !== 'sold').map(i => (
+                          <option key={i.id} value={i.id}>{i.brand ? `${i.brand} ` : ''}{i.productName}</option>
+                        ))}
+                      </select>
+                      {/* 新規仕入れ登録ボタン */}
+                      <button
+                        onClick={() => setBundleSaleInlineForm({
+                          idx,
+                          productName:'', brand:'', category:'', color:'',
+                          condition:'A', purchaseDate:today(), purchaseStore:'',
+                          paymentMethod:'現金', itemPriceTaxIn:'', listPrice:'', listDate:today(), notes:''
+                        })}
+                        style={{width:'100%',padding:'6px',borderRadius:8,border:'1.5px dashed #fbbf24',background:'#fffbeb',fontSize:11,color:'#92400e',cursor:'pointer',fontWeight:700,marginBottom:8}}>
+                        ＋ 在庫にない場合は新規仕入れ登録
+                      </button>
+                      {/* 販売価格・送料 */}
+                      <div style={{display:'flex',gap:8}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:3}}>販売価格</div>
+                          <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <input type="number" value={bi.salePrice} placeholder="0"
+                              onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b, salePrice: e.target.value} : b))}
+                              style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:13,fontWeight:700,background:'white',textAlign:'right'}}/>
+                            <span style={{fontSize:11,color:'#888'}}>円</span>
                           </div>
                         </div>
-                      ) : (
-                        <>
-                          {/* 在庫から選択 */}
-                          <select value={bi.inventoryId}
-                            onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b, inventoryId: e.target.value} : b))}
-                            style={{width:'100%',padding:'7px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12,background:'white',color: bi.inventoryId ? '#1a1a1a' : '#9ca3af',marginBottom:6}}>
-                            <option value="">在庫から商品を選択...</option>
-                            {data.inventory.filter(i => i.status !== 'sold').map(i => (
-                              <option key={i.id} value={i.id}>{i.brand ? `${i.brand} ` : ''}{i.productName}</option>
-                            ))}
-                          </select>
-                          {/* 新規仕入れ登録ボタン */}
-                          <button
-                            onClick={() => setBundleSaleInlineForm({idx, productName:'', brand:'', purchasePrice:''})}
-                            style={{width:'100%',padding:'6px',borderRadius:8,border:'1.5px dashed #fbbf24',background:'#fffbeb',fontSize:11,color:'#92400e',cursor:'pointer',fontWeight:700,marginBottom:8,letterSpacing:'0.01em'}}>
-                            ＋ 在庫にない場合は新規仕入れ登録
-                          </button>
-                        </>
-                      )}
-
-                      {/* 販売価格 */}
-                      <div style={{display:'flex',alignItems:'center',gap:6}}>
-                        <span style={{fontSize:12,color:'#666',flexShrink:0}}>販売価格</span>
-                        <input type="number" value={bi.salePrice} placeholder="0"
-                          onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b, salePrice: e.target.value} : b))}
-                          style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:14,fontWeight:700,background:'white',textAlign:'right'}}/>
-                        <span style={{fontSize:12,color:'#666'}}>円</span>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:10,color:'#888',fontWeight:700,marginBottom:3}}>送料</div>
+                          <div style={{display:'flex',alignItems:'center',gap:4}}>
+                            <input type="number" value={bi.shipping} placeholder="0"
+                              onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b, shipping: e.target.value} : b))}
+                              style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:13,fontWeight:700,background:'white',textAlign:'right'}}/>
+                            <span style={{fontSize:11,color:'#888'}}>円</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                     );
                   })}
 
-                  {/* 合計サマリー */}
+                  {/* 合計サマリー（販売価格＋送料） */}
                   {(() => {
-                    const total = Number(form.salePrice) || 0;
-                    const allocated = bundleSaleItems.reduce((s,bi) => s+(Number(bi.salePrice)||0), 0);
-                    const remaining = total - allocated;
+                    const totalSale = Number(form.salePrice) || 0;
+                    const totalShip = Number(form.shipping) || 0;
+                    const allocSale = bundleSaleItems.reduce((s,bi) => s+(Number(bi.salePrice)||0), 0);
+                    const allocShip = bundleSaleItems.reduce((s,bi) => s+(Number(bi.shipping)||0), 0);
+                    const remSale = totalSale - allocSale;
+                    const remShip = totalShip - allocShip;
+                    const saleOk = Math.abs(remSale) <= 1;
+                    const shipOk = totalShip === 0 || Math.abs(remShip) <= 1;
+                    const allOk  = saleOk && shipOk;
                     return (
-                      <div style={{background: Math.abs(remaining)<=1 ? '#f0fdf4' : '#fef3c7',
-                        border:`1px solid ${Math.abs(remaining)<=1 ? '#bbf7d0' : '#fcd34d'}`,
-                        borderRadius:8,padding:'8px 12px',fontSize:12,
-                        display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                        <span style={{color:'#555'}}>配分済：<b>¥{allocated.toLocaleString()}</b>{total>0 && <span style={{color:'#999'}}> / 合計 ¥{total.toLocaleString()}</span>}</span>
-                        <span style={{fontWeight:700,color: Math.abs(remaining)<=1 ? '#16a34a' : '#d97706'}}>
-                          {Math.abs(remaining)<=1 ? '✅ 一致' : total>0 ? `差額 ¥${remaining.toLocaleString()}` : '上で販売価格を入力'}
-                        </span>
+                      <div style={{background: allOk ? '#f0fdf4' : '#fef3c7',
+                        border:`1px solid ${allOk ? '#bbf7d0' : '#fcd34d'}`,
+                        borderRadius:8,padding:'8px 12px',fontSize:12}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom: totalShip>0 ? 4 : 0}}>
+                          <span style={{color:'#555'}}>販売価格：<b>¥{allocSale.toLocaleString()}</b>{totalSale>0 && <span style={{color:'#999'}}> / ¥{totalSale.toLocaleString()}</span>}</span>
+                          <span style={{fontWeight:700,color: saleOk ? '#16a34a' : '#d97706'}}>
+                            {saleOk ? '✅' : totalSale>0 ? `差額 ¥${remSale.toLocaleString()}` : '—'}
+                          </span>
+                        </div>
+                        {totalShip > 0 && (
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                            <span style={{color:'#555'}}>送料：<b>¥{allocShip.toLocaleString()}</b><span style={{color:'#999'}}> / ¥{totalShip.toLocaleString()}</span></span>
+                            <span style={{fontWeight:700,color: shipOk ? '#16a34a' : '#d97706'}}>
+                              {shipOk ? '✅' : `差額 ¥${remShip.toLocaleString()}`}
+                            </span>
+                          </div>
+                        )}
+                        {!totalSale && <span style={{color:'#999'}}>上で販売価格を入力すると自動配分されます</span>}
                       </div>
                     );
                   })()}
                 </div>
               )}
             </div>
+
+            {/* ── フル仕入れ登録モーダル（分割登録内から起動）── */}
+            {bundleSaleInlineForm && (() => {
+              const inf = bundleSaleInlineForm;
+              const setInf = (key, val) => setBundleSaleInlineForm(prev => ({...prev, [key]: val}));
+              const saveInlineInv = () => {
+                if (!inf.productName.trim()) { toast('商品名を入力してください'); return; }
+                if (!inf.itemPriceTaxIn) { toast('仕入れ価格を入力してください'); return; }
+                const newItem = {
+                  id: Date.now().toString(),
+                  productName: inf.productName.trim(),
+                  brand: inf.brand.trim(),
+                  category: inf.category,
+                  color: inf.color,
+                  condition: inf.condition,
+                  conditionDetail: '',
+                  purchaseDate: inf.purchaseDate,
+                  purchaseStore: inf.purchaseStore,
+                  paymentMethod: inf.paymentMethod,
+                  purchasePrice: Number(inf.itemPriceTaxIn) || 0,
+                  purchaseCost: { totalTaxIn: Number(inf.itemPriceTaxIn)||0, totalTaxEx: Number(inf.itemPriceTaxIn)||0 },
+                  listPrice: Number(inf.listPrice) || 0,
+                  listDate: inf.listDate,
+                  notes: inf.notes,
+                  status: 'listed',
+                  userId: currentUser,
+                  photos: [], seoCategories: [], descriptionText: '',
+                  createdAt: new Date().toISOString(),
+                };
+                setData({ ...data, inventory: [...data.inventory, newItem] });
+                setBundleSaleItems(prev => prev.map((b,i) => i===inf.idx ? {...b, inventoryId: newItem.id} : b));
+                setBundleSaleInlineForm(null);
+                toast('✅ 仕入れを登録して商品に反映しました');
+              };
+              return (
+                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:300,display:'flex',alignItems:'flex-end',backdropFilter:'blur(4px)'}}>
+                  <div style={{background:'white',borderRadius:'24px 24px 0 0',width:'100%',maxHeight:'90vh',overflowY:'auto',
+                    padding:'8px 20px 0',paddingBottom:'calc(20px + env(safe-area-inset-bottom))'}}>
+                    <div style={{width:40,height:4,background:'#e0e0e0',borderRadius:2,margin:'0 auto 12px'}}/>
+                    {/* ヘッダー */}
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+                      <div>
+                        <div style={{fontWeight:800,fontSize:16}}>📝 新規仕入れ登録</div>
+                        <div style={{fontSize:11,color:'#888'}}>登録後は自動で{bundleSaleInlineForm.idx!==null ? `商品${SALE_BUNDLE_LABELS[bundleSaleInlineForm.idx]||bundleSaleInlineForm.idx+1}` : ''}に反映されます</div>
+                      </div>
+                      <button onClick={() => setBundleSaleInlineForm(null)}
+                        style={{padding:'6px 14px',borderRadius:99,border:'1px solid #e0e0e0',background:'white',fontSize:13,cursor:'pointer',color:'#555',fontWeight:600}}>
+                        閉じる
+                      </button>
+                    </div>
+
+                    {/* 商品名 */}
+                    <div style={{marginBottom:12}}>
+                      <label className="field-label">商品名 <span style={{color:'#E84040'}}>*必須</span></label>
+                      <input className="input-field" value={inf.productName}
+                        onChange={e => setInf('productName', e.target.value)}
+                        placeholder="例: ノースフェイス ダウンジャケット ブラック L"/>
+                    </div>
+
+                    {/* ブランド */}
+                    <div style={{marginBottom:12}}>
+                      <label className="field-label">ブランド</label>
+                      <input className="input-field" value={inf.brand}
+                        onChange={e => setInf('brand', e.target.value)}
+                        placeholder="例: THE NORTH FACE"/>
+                    </div>
+
+                    {/* カテゴリ・色 */}
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+                      <div>
+                        <label className="field-label">カテゴリー</label>
+                        <select className="input-field" value={inf.category} onChange={e => setInf('category', e.target.value)}>
+                          <option value="">選択</option>
+                          {['バッグ','衣類','小物','シューズ','その他'].map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="field-label">カラー</label>
+                        <input className="input-field" value={inf.color} onChange={e => setInf('color', e.target.value)} placeholder="カラー"/>
+                      </div>
+                    </div>
+
+                    {/* 状態ランク */}
+                    <div style={{marginBottom:12}}>
+                      <label className="field-label">状態ランク</label>
+                      <div style={{display:'flex',gap:8}}>
+                        {['S','A','B','C'].map(c => (
+                          <button key={c} onClick={() => setInf('condition', c)}
+                            style={{flex:1,padding:'10px 0',borderRadius:10,border:'2px solid',
+                              borderColor: inf.condition===c ? 'var(--color-primary)' : '#e0e0e0',
+                              background: inf.condition===c ? '#fff0f0' : 'white',
+                              color: inf.condition===c ? 'var(--color-primary)' : '#666',
+                              fontWeight: inf.condition===c ? 700 : 400, fontSize:15, cursor:'pointer'}}>
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <hr style={{borderColor:'#f0f0f0',margin:'12px 0'}}/>
+
+                    {/* 仕入れ日・仕入れ先 */}
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+                      <div>
+                        <label className="field-label">仕入れ日</label>
+                        <input type="date" className="input-field" value={inf.purchaseDate} onChange={e => setInf('purchaseDate', e.target.value)}/>
+                      </div>
+                      <div>
+                        <label className="field-label">支払方法</label>
+                        <select className="input-field" value={inf.paymentMethod} onChange={e => setInf('paymentMethod', e.target.value)}>
+                          {['現金','クレカ','PayPay','メルペイ','その他'].map(m => <option key={m} value={m}>{m}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{marginBottom:12}}>
+                      <label className="field-label">仕入れ先</label>
+                      <input className="input-field" value={inf.purchaseStore}
+                        onChange={e => setInf('purchaseStore', e.target.value)} placeholder="例: ブックオフ 渋谷店"/>
+                    </div>
+
+                    {/* 仕入れ価格 */}
+                    <div style={{marginBottom:12}}>
+                      <label className="field-label">仕入れ価格（税込） <span style={{color:'#E84040'}}>*必須</span></label>
+                      <div style={{display:'flex',alignItems:'center',gap:8}}>
+                        <input type="number" className="input-field" style={{flex:1,textAlign:'right',fontWeight:700,fontSize:18}}
+                          value={inf.itemPriceTaxIn} onChange={e => setInf('itemPriceTaxIn', e.target.value)} placeholder="0"/>
+                        <span style={{fontSize:14,color:'#666',flexShrink:0}}>円</span>
+                      </div>
+                    </div>
+
+                    <hr style={{borderColor:'#f0f0f0',margin:'12px 0'}}/>
+
+                    {/* 出品価格・出品日 */}
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+                      <div>
+                        <label className="field-label">出品価格（円）</label>
+                        <input type="number" className="input-field" value={inf.listPrice}
+                          onChange={e => setInf('listPrice', e.target.value)} placeholder="0"/>
+                      </div>
+                      <div>
+                        <label className="field-label">出品日</label>
+                        <input type="date" className="input-field" value={inf.listDate} onChange={e => setInf('listDate', e.target.value)}/>
+                      </div>
+                    </div>
+
+                    {/* メモ */}
+                    <div style={{marginBottom:20}}>
+                      <label className="field-label">メモ</label>
+                      <textarea className="input-field" value={inf.notes}
+                        onChange={e => setInf('notes', e.target.value)}
+                        placeholder="状態詳細・特記事項など" style={{minHeight:80}}/>
+                    </div>
+
+                    {/* 登録ボタン */}
+                    <button className="btn-primary" style={{width:'100%',marginBottom:12}} onClick={saveInlineInv}>
+                      💾 仕入れを登録して選択する
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* 通常モードの商品選択（まとめ販売OFFのみ表示） */}
             {!bundleSale && (
