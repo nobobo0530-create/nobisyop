@@ -3694,21 +3694,52 @@ const SalesTab = () => {
             if (score > bestScore) { bestScore = score; bestItem = inv; }
           });
           const matchedItem = bestScore > 0.25 ? bestItem : null;
-          // 重複チェック（商品ID or 在庫ID一致で既存売上があるか）
+          // 重複チェック（複合条件）
           let dupSale = null;
+          let dupReason = '';
+          // ① 商品IDが一致（強制重複）
           if (ex.product_id) {
-            dupSale = (data.sales||[]).find(s => s.platformId && s.platformId === ex.product_id) || null;
+            const found = (data.sales||[]).find(s => s.platformId && s.platformId === ex.product_id);
+            if (found) { dupSale = found; dupReason = '商品IDが一致しています'; }
           }
+          // ② 在庫IDが一致（強制重複）
           if (!dupSale && matchedItem) {
-            dupSale = (data.sales||[]).find(s => s.inventoryId === matchedItem.id) || null;
+            const found = (data.sales||[]).find(s => s.inventoryId === matchedItem.id);
+            if (found) { dupSale = found; dupReason = '同じ在庫商品が既に売上登録済みです'; }
+          }
+          // ③ 複合条件（タイトル類似 + ブランド + カテゴリ + 価格 + 送料）
+          if (!dupSale) {
+            const normStr = s => (s || '').trim().toLowerCase();
+            const exTitle = normStr(ex.product_name);
+            for (const s of data.sales || []) {
+              if (ex.product_id && s.platformId === ex.product_id) continue; // already checked
+              const sInv = data.inventory.find(i => i.id === s.inventoryId);
+              if (!sInv) continue;
+              const sTitle = normStr((sInv.brand||'') + ' ' + (sInv.productName||''));
+              const sim = diceSimilarity(exTitle, sTitle);
+              if (sim < 0.6) continue;
+              const gBrand = guessFromTitle(ex.product_name).brand || '';
+              const brandMatch = gBrand && normStr(sInv.brand) && normStr(gBrand) === normStr(sInv.brand);
+              if (!brandMatch) continue;
+              const priceDiff = (ex.sale_price && s.salePrice)
+                ? Math.abs(s.salePrice - ex.sale_price) / Math.max(s.salePrice, 1) : 1;
+              if (priceDiff > 0.05) continue;
+              const shipA = ex.shipping != null ? Number(ex.shipping) : null;
+              const shipB = s.shipping  != null ? Number(s.shipping)  : null;
+              if (shipA != null && shipB != null && Math.abs(shipA - shipB) > 50) continue;
+              dupSale = s;
+              dupReason = `タイトル類似度 ${Math.round(sim*100)}% · ブランド一致 · 販売価格一致${shipA!=null&&shipB!=null?' · 送料一致':''}`;
+              break;
+            }
           }
           allRows.push({
             extracted: ex,
             matchedItem,
             inventoryId: matchedItem?.id || '',
-            skip: !!dupSale,      // 重複候補は最初からチェックを外す
+            skip: !!dupSale,
             isDuplicate: !!dupSale,
             duplicateSale: dupSale || null,
+            duplicateReason: dupReason,
             mode: matchedItem ? 'match' : 'new', // 在庫なし→即「新規仕入れ登録」モード
             newForm: (() => {
               const g = guessFromTitle(ex.product_name);
@@ -3859,22 +3890,67 @@ const SalesTab = () => {
   };
 
   // 重複売上チェック（商品ID一致 or 同在庫の売上登録済み）
-  const findDuplicateSale = ({ inventoryId, platformId, salePrice, saleDate }) => {
+  // ── 重複売上 複合判定 ──────────────────────────────────────────
+  // Dice係数でタイトル類似度を計算（bigram）
+  const diceSimilarity = (a, b) => {
+    const n = s => (s || '').toLowerCase().replace(/[\s　【】（）()「」\-_・,、。．]/g, '');
+    const na = n(a), nb = n(b);
+    if (!na || !nb) return 0;
+    if (na === nb) return 1;
+    const bigrams = s => { const set = new Set(); for (let i=0; i<s.length-1; i++) set.add(s.slice(i,i+2)); return set; };
+    const ba = bigrams(na), bb = bigrams(nb);
+    if (ba.size === 0 || bb.size === 0) return 0;
+    let common = 0; for (const g of ba) if (bb.has(g)) common++;
+    return (2 * common) / (ba.size + bb.size);
+  };
+
+  const findDuplicateSale = ({ inventoryId, platformId, salePrice, shipping, brand, category, productName }) => {
+    const normStr = s => (s || '').trim().toLowerCase();
+    const newTitle = normStr((brand || '') + ' ' + (productName || ''));
+    const newBrand = normStr(brand);
+    const newCat   = normStr(category);
+
     for (const s of data.sales || []) {
       if (editingSale && s.id === editingSale.id) continue;
-      // 商品IDが一致（最強シグナル）
+
+      // ① 商品IDが一致（強制重複）
       if (platformId && platformId.trim() && s.platformId && s.platformId === platformId.trim()) {
-        return { sale: s, reason: '商品IDが一致しています' };
+        return { sale: s, reason: '商品IDが一致しています', level: 'strong' };
       }
-      // 同じ在庫に対して売上が既に登録されている
+
+      // ② 同じ在庫ID（強制重複）
       if (inventoryId && s.inventoryId === inventoryId) {
-        const priceDiff = (salePrice && s.salePrice)
-          ? Math.abs(s.salePrice - salePrice) / Math.max(s.salePrice, 1) : 1;
-        const reason = priceDiff < 0.05
-          ? '同じ商品・ほぼ同額の売上が登録済みです'
-          : '同じ在庫商品の売上が既に登録されています';
-        return { sale: s, reason };
+        return { sale: s, reason: '同じ在庫商品が既に売上登録済みです', level: 'strong' };
       }
+
+      // ③ 複合条件（タイトル類似 + ブランド + カテゴリ + 価格 + 送料）
+      const exInv = data.inventory.find(i => i.id === s.inventoryId);
+      if (!exInv) continue;
+
+      const exTitle = normStr((exInv.brand || '') + ' ' + (exInv.productName || ''));
+      const similarity = diceSimilarity(newTitle, exTitle);
+      if (similarity < 0.6) continue;
+
+      const brandMatch = newBrand && normStr(exInv.brand) && newBrand === normStr(exInv.brand);
+      if (!brandMatch) continue;
+
+      const catMatch = newCat && normStr(exInv.category) && newCat === normStr(exInv.category);
+      if (!catMatch) continue;
+
+      const priceDiff = (salePrice && s.salePrice)
+        ? Math.abs(s.salePrice - Number(salePrice)) / Math.max(s.salePrice, 1) : 1;
+      if (priceDiff > 0.05) continue;
+
+      const shipA = shipping != null ? Number(shipping) : null;
+      const shipB = s.shipping    != null ? Number(s.shipping) : null;
+      if (shipA != null && shipB != null && Math.abs(shipA - shipB) > 50) continue;
+
+      const reasons = [
+        `タイトル類似度 ${Math.round(similarity * 100)}%`,
+        'ブランド一致', 'カテゴリ一致', '販売価格一致',
+        ...(shipA != null && shipB != null ? ['送料一致'] : []),
+      ];
+      return { sale: s, reason: reasons.join(' · '), level: 'warning' };
     }
     return null;
   };
@@ -3921,9 +3997,12 @@ const SalesTab = () => {
     if (!editingSale) {
       const dup = findDuplicateSale({
         inventoryId: form.inventoryId,
-        platformId: form.platformId,
-        salePrice: Number(form.salePrice),
-        saleDate: form.saleDate,
+        platformId:  form.platformId,
+        salePrice:   Number(form.salePrice),
+        shipping:    Number(form.shipping),
+        brand:       selectedItem?.brand       || '',
+        category:    selectedItem?.category    || '',
+        productName: selectedItem?.productName || '',
       });
       if (dup) {
         setDupConfirm({ existingSale: dup.sale, reason: dup.reason, onConfirm: doSave });
@@ -4354,10 +4433,11 @@ const SalesTab = () => {
                         {row.isDuplicate && row.duplicateSale && (
                           <div style={{fontSize:10,color:'#b45309',background:'#fffbeb',border:'1px solid #fcd34d',
                             borderRadius:8,padding:'5px 8px',marginBottom:6}}>
+                            {row.duplicateReason && (
+                              <div style={{fontWeight:700,marginBottom:3}}>{row.duplicateReason}</div>
+                            )}
                             <span style={{fontWeight:700}}>登録済み：</span>
-                            {row.duplicateSale.saleDate} ·&nbsp;
-                            販売価格 ¥{formatMoney(row.duplicateSale.salePrice)} ·&nbsp;
-                            {row.duplicateSale.platform || 'フリマ'}
+                            {row.duplicateSale.saleDate} · 販売価格 ¥{formatMoney(row.duplicateSale.salePrice)} · {row.duplicateSale.platform || 'フリマ'}
                             {row.duplicateSale.platformId ? ` · ID:${row.duplicateSale.platformId}` : ''}
                             <span style={{display:'block',marginTop:2,color:'#999'}}>
                               ※チェックを入れると重複登録されます
