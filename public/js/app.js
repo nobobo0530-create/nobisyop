@@ -5686,8 +5686,31 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
 
   const salesPreview = [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
   const kobotsuPreview = [...data.inventory]
-    .sort((a,b)=>(a.purchaseDate||'')>(b.purchaseDate||'')?1:-1)
+    .sort((a,b) => {
+      const dc = (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : (a.purchaseDate||'') < (b.purchaseDate||'') ? -1 : 0;
+      if (dc !== 0) return dc;
+      // 同日はbundleGroupでまとめる（同グループが隣接するよう）
+      const ag = a.bundleGroup || a.id, bg = b.bundleGroup || b.id;
+      return ag > bg ? 1 : ag < bg ? -1 : 0;
+    })
     .map(item => ({ item, sale: data.sales.find(s=>s.inventoryId===item.id) }));
+
+  // まとめ仕入れグループ → 色マップ（表示専用）
+  const BUNDLE_PALETTE = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#84cc16','#f97316','#ec4899','#64748b'];
+  const bundleColorMap = (() => {
+    const map = {};
+    let ci = 0;
+    kobotsuPreview.forEach(({item}) => {
+      if (item.bundleGroup && !map[item.bundleGroup]) {
+        map[item.bundleGroup] = { color: BUNDLE_PALETTE[ci % BUNDLE_PALETTE.length], count: 0 };
+        ci++;
+      }
+      if (item.bundleGroup) map[item.bundleGroup].count++;
+    });
+    return map;
+  })();
+  const getBundleStyle = (item) => bundleColorMap[item.bundleGroup] || null;
+
   const thStyle = {padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'};
   const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
 
@@ -5853,11 +5876,23 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 </tr>
               </thead>
               <tbody>
-                {kobotsuPreview.slice(0,10).map(({item,sale},i) => (
-                  <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
+                {kobotsuPreview.slice(0,10).map(({item,sale},i) => {
+                  const bs = getBundleStyle(item);
+                  return (
+                  <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',
+                    background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
+                    borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent'}}>
                     <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                     <td style={tdStyle()}>{item.category||'−'}</td>
-                    <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
+                    <td style={tdStyle({maxWidth:140,overflow:'hidden',textOverflow:'ellipsis'})}>
+                      {bs && (
+                        <span style={{display:'inline-block',background:bs.color,color:'white',borderRadius:4,
+                          padding:'1px 5px',fontSize:9,fontWeight:700,marginRight:5,verticalAlign:'middle',flexShrink:0}}>
+                          📦まとめ{bs.count}点
+                        </span>
+                      )}
+                      {item.brand} {item.productName}
+                    </td>
                     <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
                     <td style={tdStyle({color:'#555',fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
                       <div style={{color: item.purchaseStore ? '#555' : '#dc2626', fontWeight: item.purchaseStore ? 400 : 700}}>{item.purchaseStore||'⚠️未入力'}</div>
@@ -5870,7 +5905,8 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                     <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
                     <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             {kobotsuPreview.length > 10 && (
@@ -5919,11 +5955,23 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   </tr>
                 </thead>
                 <tbody>
-                  {kobotsuPreview.map(({item,sale},i) => (
-                    <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
-                      <td style={tdStyle({color:'#555'})}>{item.purchaseDate}</td>
+                  {kobotsuPreview.map(({item,sale},i) => {
+                    const bs = getBundleStyle(item);
+                    return (
+                    <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',
+                      background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
+                      borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent'}}>
+                      <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                       <td style={tdStyle()}>{item.category||'−'}</td>
-                      <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
+                      <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>
+                        {bs && (
+                          <span style={{display:'inline-block',background:bs.color,color:'white',borderRadius:4,
+                            padding:'1px 5px',fontSize:9,fontWeight:700,marginRight:5,verticalAlign:'middle'}}>
+                            📦まとめ{bs.count}点
+                          </span>
+                        )}
+                        {item.brand} {item.productName}
+                      </td>
                       <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
                       <td style={tdStyle({color:'#555',fontSize:11,maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>
                         <div>{item.purchaseStore||'−'}</div>
@@ -5936,7 +5984,8 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
                       <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
