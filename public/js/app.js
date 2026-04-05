@@ -3499,6 +3499,7 @@ const SalesTab = () => {
   const [batchLoading, setBatchLoading] = React.useState(false); // {done,total} or false
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
+  const [dupConfirm, setDupConfirm] = React.useState(null); // {existingSale, reason, onConfirm}
   const apiKey = data.settings?.apiKey || '';
 
   // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
@@ -3693,11 +3694,21 @@ const SalesTab = () => {
             if (score > bestScore) { bestScore = score; bestItem = inv; }
           });
           const matchedItem = bestScore > 0.25 ? bestItem : null;
+          // 重複チェック（商品ID or 在庫ID一致で既存売上があるか）
+          let dupSale = null;
+          if (ex.product_id) {
+            dupSale = (data.sales||[]).find(s => s.platformId && s.platformId === ex.product_id) || null;
+          }
+          if (!dupSale && matchedItem) {
+            dupSale = (data.sales||[]).find(s => s.inventoryId === matchedItem.id) || null;
+          }
           allRows.push({
             extracted: ex,
             matchedItem,
             inventoryId: matchedItem?.id || '',
-            skip: false,
+            skip: !!dupSale,      // 重複候補は最初からチェックを外す
+            isDuplicate: !!dupSale,
+            duplicateSale: dupSale || null,
             mode: matchedItem ? 'match' : 'new', // 在庫なし→即「新規仕入れ登録」モード
             newForm: (() => {
               const g = guessFromTitle(ex.product_name);
@@ -3847,54 +3858,79 @@ const SalesTab = () => {
     return Math.max(0, Math.floor(diff / 86400000));
   };
 
+  // 重複売上チェック（商品ID一致 or 同在庫の売上登録済み）
+  const findDuplicateSale = ({ inventoryId, platformId, salePrice, saleDate }) => {
+    for (const s of data.sales || []) {
+      if (editingSale && s.id === editingSale.id) continue;
+      // 商品IDが一致（最強シグナル）
+      if (platformId && platformId.trim() && s.platformId && s.platformId === platformId.trim()) {
+        return { sale: s, reason: '商品IDが一致しています' };
+      }
+      // 同じ在庫に対して売上が既に登録されている
+      if (inventoryId && s.inventoryId === inventoryId) {
+        const priceDiff = (salePrice && s.salePrice)
+          ? Math.abs(s.salePrice - salePrice) / Math.max(s.salePrice, 1) : 1;
+        const reason = priceDiff < 0.05
+          ? '同じ商品・ほぼ同額の売上が登録済みです'
+          : '同じ在庫商品の売上が既に登録されています';
+        return { sale: s, reason };
+      }
+    }
+    return null;
+  };
+
   const handleSave = () => {
     if (!form.inventoryId) { toast('商品を選択してください'); return; }
     if (!form.salePrice) { toast('販売価格を入力してください'); return; }
 
-    const listDate  = form.listDate || selectedItem?.listDate || '';
-    const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
-    const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
+    const doSave = () => {
+      const listDate  = form.listDate || selectedItem?.listDate || '';
+      const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
+      const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
 
-    // 在庫の仕入れ値も更新（フォームで明示入力された場合）
-    const updatedInventory = (form.purchasePrice !== '' && selectedItem)
-      ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, purchasePrice: Number(form.purchasePrice) } : i)
-      : data.inventory;
+      // 在庫の仕入れ値も更新（フォームで明示入力された場合）
+      const updatedInventory = (form.purchasePrice !== '' && selectedItem)
+        ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, purchasePrice: Number(form.purchasePrice) } : i)
+        : data.inventory;
 
-    if (editingSale) {
-      // ── 編集 ──
-      const updated = {
-        ...editingSale,
-        ...form,
+      if (editingSale) {
+        // ── 編集 ──
+        const updated = {
+          ...editingSale, ...form,
+          salePrice: Number(form.salePrice), shipping: Number(form.shipping),
+          purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
+          platformId: form.platformId || '', updatedAt: new Date().toISOString(),
+        };
+        setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
+        toast('✅ 売上を更新しました');
+      } else {
+        // ── 新規 ──
+        const newSale = {
+          id: Date.now().toString(), ...form, userId: currentUser,
+          salePrice: Number(form.salePrice), shipping: Number(form.shipping),
+          purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
+          platformId: form.platformId || '', createdAt: new Date().toISOString(),
+        };
+        setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
+        toast('✅ 売上を記録しました');
+      }
+      closeForm();
+    };
+
+    // 新規登録時のみ重複チェック
+    if (!editingSale) {
+      const dup = findDuplicateSale({
+        inventoryId: form.inventoryId,
+        platformId: form.platformId,
         salePrice: Number(form.salePrice),
-        shipping: Number(form.shipping),
-        purchasePrice: purchasePriceVal,
-        profit,
-        listDate,
-        turnoverDays,
-        platformId: form.platformId || '',
-        updatedAt: new Date().toISOString(),
-      };
-      setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
-      toast('✅ 売上を更新しました');
-    } else {
-      // ── 新規 ──
-      const newSale = {
-        id: Date.now().toString(),
-        ...form,
-        userId: currentUser,
-        salePrice: Number(form.salePrice),
-        shipping: Number(form.shipping),
-        purchasePrice: purchasePriceVal,
-        profit,
-        listDate,
-        turnoverDays,
-        platformId: form.platformId || '',
-        createdAt: new Date().toISOString(),
-      };
-      setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
-      toast('✅ 売上を記録しました');
+        saleDate: form.saleDate,
+      });
+      if (dup) {
+        setDupConfirm({ existingSale: dup.sale, reason: dup.reason, onConfirm: doSave });
+        return;
+      }
     }
-    closeForm();
+    doSave();
   };
 
   const handleDelete = (saleId) => {
@@ -4219,6 +4255,53 @@ const SalesTab = () => {
         );
       })()}
 
+      {/* 重複確認モーダル（単体登録時） */}
+      {dupConfirm && (
+        <div className="modal-overlay" onClick={() => setDupConfirm(null)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:400}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:16,color:'#d97706'}}>⚠️ 重複の可能性</div>
+              <button onClick={() => setDupConfirm(null)}
+                style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+            </div>
+            <div style={{fontSize:13,color:'#444',marginBottom:14}}>
+              {dupConfirm.reason}
+            </div>
+            {/* 既存レコード情報 */}
+            <div style={{background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:10,padding:'10px 12px',marginBottom:16,fontSize:12}}>
+              <div style={{fontWeight:700,color:'#92400e',marginBottom:6}}>📋 登録済みの売上</div>
+              <div style={{color:'#555',display:'flex',flexDirection:'column',gap:3}}>
+                {(() => {
+                  const s = dupConfirm.existingSale;
+                  const inv = data.inventory.find(i => i.id === s.inventoryId);
+                  return (
+                    <>
+                      {inv && <span>🏷️ {inv.brand} {inv.productName}</span>}
+                      <span>販売価格：¥{formatMoney(s.salePrice)}</span>
+                      <span>📅 {s.saleDate}</span>
+                      <span>🛒 {s.platform || 'フリマ'}</span>
+                      {s.platformId && <span>ID: {s.platformId}</span>}
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={() => setDupConfirm(null)}
+                style={{flex:1,padding:'12px',borderRadius:10,border:'1px solid #e5e7eb',
+                  background:'white',color:'#555',fontWeight:600,fontSize:14,cursor:'pointer'}}>
+                キャンセル
+              </button>
+              <button onClick={() => { setDupConfirm(null); dupConfirm.onConfirm(); }}
+                style={{flex:2,padding:'12px',borderRadius:10,border:'none',
+                  background:'#d97706',color:'white',fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                それでも登録する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* バッチ取込レビューモーダル */}
       {batchRows && (
         <div className="modal-overlay" onClick={() => setBatchRows(null)}>
@@ -4233,7 +4316,12 @@ const SalesTab = () => {
                   style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
               </div>
               <div style={{fontSize:12,color:'#888'}}>
-                {batchRows.filter(r=>!r.skip&&(r.inventoryId||r.mode==='new')).length}件を登録 · チェックを外すとスキップ
+                {batchRows.filter(r=>!r.skip&&(r.inventoryId||r.mode==='new')).length}件を登録
+                {batchRows.filter(r=>r.isDuplicate).length > 0 && (
+                  <span style={{marginLeft:6,color:'#d97706',fontWeight:700}}>
+                    · ⚠️ 重複候補{batchRows.filter(r=>r.isDuplicate).length}件（チェック外し済み）
+                  </span>
+                )}
               </div>
             </div>
 
@@ -4244,24 +4332,46 @@ const SalesTab = () => {
                 const nf = row.newForm;
                 return (
                   <div key={idx} style={{padding:'12px 0',borderBottom:'1px solid #f0f0f0',
-                    opacity: row.skip ? 0.35 : 1, transition:'opacity 0.2s'}}>
+                    opacity: row.skip ? 0.4 : 1, transition:'opacity 0.2s'}}>
                     <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
                       {/* チェックボックス */}
                       <input type="checkbox" checked={!row.skip}
                         onChange={e => updateBatchRow(idx, {skip:!e.target.checked})}
                         style={{marginTop:2,width:18,height:18,flexShrink:0,accentColor:'var(--color-primary)',cursor:'pointer'}}/>
                       <div style={{flex:1,minWidth:0}}>
-                        {/* 商品名 */}
-                        <div style={{fontSize:12,fontWeight:700,color:'#111',marginBottom:3,
-                          overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ex.product_name}</div>
-                        {/* 金額サマリー */}
+                        {/* 商品名 + 重複バッジ */}
+                        <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3,flexWrap:'wrap'}}>
+                          <div style={{fontSize:12,fontWeight:700,color:'#111',
+                            overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,minWidth:0}}>{ex.product_name}</div>
+                          {row.isDuplicate && (
+                            <span style={{fontSize:10,fontWeight:700,color:'#d97706',background:'#fef3c7',
+                              border:'1px solid #fcd34d',borderRadius:99,padding:'2px 8px',flexShrink:0,whiteSpace:'nowrap'}}>
+                              ⚠️ 重複候補
+                            </span>
+                          )}
+                        </div>
+                        {/* 重複詳細（既存レコード情報） */}
+                        {row.isDuplicate && row.duplicateSale && (
+                          <div style={{fontSize:10,color:'#b45309',background:'#fffbeb',border:'1px solid #fcd34d',
+                            borderRadius:8,padding:'5px 8px',marginBottom:6}}>
+                            <span style={{fontWeight:700}}>登録済み：</span>
+                            {row.duplicateSale.saleDate} ·&nbsp;
+                            販売価格 ¥{formatMoney(row.duplicateSale.salePrice)} ·&nbsp;
+                            {row.duplicateSale.platform || 'フリマ'}
+                            {row.duplicateSale.platformId ? ` · ID:${row.duplicateSale.platformId}` : ''}
+                            <span style={{display:'block',marginTop:2,color:'#999'}}>
+                              ※チェックを入れると重複登録されます
+                            </span>
+                          </div>
+                        )}
+                        {/* 金額サマリー（ラベル付き） */}
                         <div style={{display:'flex',gap:6,fontSize:11,color:'#666',flexWrap:'wrap',marginBottom:8}}>
-                          <span style={{fontWeight:700,color:'#111'}}>¥{formatMoney(ex.sale_price)}</span>
-                          {ex.platform_fee != null && <span>手数料¥{formatMoney(ex.platform_fee)}</span>}
-                          {ex.shipping != null && <span>送料¥{formatMoney(ex.shipping)}</span>}
+                          {ex.sale_price != null && <span style={{fontWeight:700,color:'#0369a1'}}>販売価格：¥{formatMoney(ex.sale_price)}</span>}
+                          {ex.platform_fee != null && <span>手数料：¥{formatMoney(ex.platform_fee)}</span>}
+                          {ex.shipping != null && <span>送料：¥{formatMoney(ex.shipping)}</span>}
                           {ex.profit != null && (
                             <span style={{fontWeight:700,color:ex.profit>=0?'#16a34a':'#dc2626'}}>
-                              利益{ex.profit>=0?'+':''}¥{formatMoney(ex.profit)}
+                              利益：{ex.profit>=0?'+':''}¥{formatMoney(ex.profit)}
                             </span>
                           )}
                           {ex.sale_date && <span style={{color:'#bbb'}}>📅{ex.sale_date}</span>}
