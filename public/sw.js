@@ -1,5 +1,5 @@
-// v9: hooks violation fix（useRef/useEffect を IIFE外へ移動）
-const CACHE_NAME = 'nobushop-v9';
+// v10: 売上分割機能追加
+const CACHE_NAME = 'nobushop-v10';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
