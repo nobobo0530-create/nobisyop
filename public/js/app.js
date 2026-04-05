@@ -1217,6 +1217,15 @@ const PurchaseTab = () => {
   const multiInputRef = React.useRef();
   const tagPhotoRef = React.useRef();
 
+  // ── まとめ仕入れ（仕入れ分割）────────────────────────────
+  const BUNDLE_LABELS = ['A','B','C','D','E','F'];
+  const initBundleItems = (n) => Array.from({length: n}, (_,i) =>
+    ({ id: String(i), label: `商品${BUNDLE_LABELS[i]||i+1}`, productName: '', purchasePrice: '' })
+  );
+  const [bundlePurchase, setBundlePurchase] = React.useState(false);
+  const [bundleItems, setBundleItems] = React.useState(initBundleItems(2));
+  const [bundleSplitMethod, setBundleSplitMethod] = React.useState('equal');
+
   // ── 下書き自動保存 ──
   const DRAFT_KEY = 'nobushop_purchase_draft';
   const [draftBanner, setDraftBanner] = React.useState(null);
@@ -1789,6 +1798,7 @@ const PurchaseTab = () => {
     setScanMode('product_only');
     setRegistrationMode('unlisted');
     setSeoCategoryInput(''); setEditingItem(null);
+    setBundlePurchase(false); setBundleItems(initBundleItems(2)); setBundleSplitMethod('equal');
     setForm({
       productName: '', brand: '', category: '', color: '',
       brandReading: '', categoryKeywords: '', colorDisplay: '',
@@ -1848,6 +1858,44 @@ const PurchaseTab = () => {
       const updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
       setData({ ...data, inventory: updated });
       toast('✅ 商品情報を更新しました！');
+      resetForm();
+      return;
+    }
+
+    // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
+    if (bundlePurchase) {
+      const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
+      if (filledItems.length < 2) { toast('まとめ仕入れは2件以上の金額を入力してください'); return; }
+      const purchaseStoreType = (() => {
+        const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+        return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';
+      })();
+      const bundleGroupId = `bundle_${Date.now()}`;
+      const ts = Date.now();
+      const newItems = bundleItems.map((bi, idx) => {
+        const bPrice = Number(bi.purchasePrice) || 0;
+        return {
+          id: `${ts}_bundle_${idx}`,
+          ...form,
+          userId: currentUser,
+          productName: bi.productName.trim() || `${form.productName || '商品'} [${bi.label}]`,
+          purchasePrice: bPrice,
+          purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
+          size: computedSize,
+          purchaseType, purchaseTypeSource, purchaseStoreType,
+          aiTypeDetection: aiTypeDetection || null,
+          listPrice: Number(form.listPrice) || 0,
+          photos: idx === 0 ? photoRefs : [],
+          mgmtNo: idx === 0 ? mgmtNo : null,
+          status: registrationMode === 'listed' ? 'listed' : 'unlisted',
+          bundleGroup: bundleGroupId,
+          bundleLabel: bi.label,
+          descriptionText: idx === 0 ? (generatedDesc || '') : '',
+          createdAt: new Date(ts + idx).toISOString(),
+        };
+      });
+      setData({ ...data, inventory: [...data.inventory, ...newItems] });
+      toast(`✅ まとめ仕入れ ${newItems.length}件を登録しました！`);
       resetForm();
       return;
     }
@@ -2728,6 +2776,122 @@ const PurchaseTab = () => {
               </div>
             )}
 
+            {/* ── まとめ仕入れ（分割登録） ── */}
+            <div style={{marginTop:16,paddingTop:16,borderTop:'1.5px dashed #e5e7eb'}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom: bundlePurchase ? 12 : 0}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:14}}>📦 まとめ仕入れ</div>
+                  <div style={{fontSize:11,color:'#999',marginTop:1}}>複数商品を1つの仕入れから分割登録</div>
+                </div>
+                <button onClick={() => setBundlePurchase(v => !v)}
+                  style={{padding:'7px 16px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
+                    background: bundlePurchase ? '#1e293b' : '#f3f4f6',
+                    color: bundlePurchase ? 'white' : '#555',
+                    WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
+                  {bundlePurchase ? 'ON' : 'OFF'}
+                </button>
+              </div>
+
+              {bundlePurchase && (() => {
+                const totalBudget = totalPurchaseTaxIn || 0;
+                const allocated = bundleItems.reduce((s, bi) => s + (Number(bi.purchasePrice) || 0), 0);
+                const remaining = totalBudget - allocated;
+
+                const applyEqual = () => {
+                  const n = bundleItems.length;
+                  const base = Math.floor(totalBudget / n);
+                  const rem  = totalBudget - base * n;
+                  setBundleItems(prev => prev.map((bi, i) => ({
+                    ...bi, purchasePrice: String(i === n-1 ? base + rem : base)
+                  })));
+                };
+                const setBundleCount = (n) => {
+                  const newItems = initBundleItems(n);
+                  if (bundleSplitMethod === 'equal') {
+                    const base = Math.floor(totalBudget / n);
+                    const rem  = totalBudget - base * n;
+                    setBundleItems(newItems.map((bi, i) => ({ ...bi, purchasePrice: String(i === n-1 ? base + rem : base) })));
+                  } else {
+                    setBundleItems(newItems);
+                  }
+                };
+
+                return (
+                  <>
+                    {/* 分割数 */}
+                    <div style={{marginBottom:10}}>
+                      <div style={{fontSize:11,color:'#888',fontWeight:700,marginBottom:6}}>分割数</div>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {[2,3,4].map(n => (
+                          <button key={n} onClick={() => setBundleCount(n)}
+                            style={{padding:'6px 16px',borderRadius:99,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,
+                              background: bundleItems.length===n ? '#1e293b' : '#f3f4f6',
+                              color: bundleItems.length===n ? 'white' : '#555',
+                              WebkitTapHighlightColor:'transparent'}}>
+                            {n}件
+                          </button>
+                        ))}
+                        <button onClick={() => setBundleCount(bundleItems.length + 1)}
+                          style={{padding:'6px 14px',borderRadius:99,border:'1.5px dashed #d1d5db',background:'white',
+                            fontSize:13,cursor:'pointer',color:'#666',fontWeight:700}}>＋</button>
+                        {bundleItems.length > 2 && (
+                          <button onClick={() => setBundleCount(bundleItems.length - 1)}
+                            style={{padding:'6px 14px',borderRadius:99,border:'1.5px dashed #fca5a5',background:'white',
+                              fontSize:13,cursor:'pointer',color:'#dc2626',fontWeight:700}}>－</button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 分割方法 */}
+                    <div style={{display:'flex',gap:6,marginBottom:12}}>
+                      {[['equal','均等分割'],['manual','手動分割']].map(([m,l]) => (
+                        <button key={m} onClick={() => { setBundleSplitMethod(m); if (m==='equal') applyEqual(); }}
+                          style={{flex:1,padding:'7px 0',borderRadius:99,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,
+                            background: bundleSplitMethod===m ? '#E84040' : '#f3f4f6',
+                            color: bundleSplitMethod===m ? 'white' : '#777',
+                            WebkitTapHighlightColor:'transparent'}}>
+                          {l}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* 各アイテム入力 */}
+                    {bundleItems.map((bi, idx) => (
+                      <div key={bi.id} style={{background:'#f8fafc',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #e2e8f0'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                          <span style={{fontWeight:800,fontSize:13,color:'white',background:'#475569',
+                            borderRadius:99,padding:'2px 10px',flexShrink:0}}>{bi.label}</span>
+                          <input value={bi.productName} placeholder={`${form.productName || '商品名'} [${bi.label}]`}
+                            onChange={e => setBundleItems(prev => prev.map((b,i) => i===idx ? {...b,productName:e.target.value} : b))}
+                            style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12,background:'white'}}/>
+                        </div>
+                        <div style={{display:'flex',alignItems:'center',gap:6}}>
+                          <span style={{fontSize:12,color:'#666',flexShrink:0}}>仕入れ値</span>
+                          <input type="number" value={bi.purchasePrice} placeholder="0"
+                            onChange={e => setBundleItems(prev => prev.map((b,i) => i===idx ? {...b,purchasePrice:e.target.value} : b))}
+                            style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:14,fontWeight:700,background:'white',textAlign:'right'}}/>
+                          <span style={{fontSize:12,color:'#666'}}>円</span>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* 配分サマリー */}
+                    <div style={{background: Math.abs(remaining)<=1 ? '#f0fdf4' : '#fef3c7',
+                      border:`1px solid ${Math.abs(remaining)<=1 ? '#bbf7d0' : '#fcd34d'}`,
+                      borderRadius:8,padding:'8px 12px',fontSize:12,
+                      display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                      <span style={{color:'#555'}}>
+                        配分済：<b>¥{allocated.toLocaleString()}</b> / 合計：¥{totalBudget.toLocaleString()}
+                      </span>
+                      <span style={{fontWeight:700, color: Math.abs(remaining)<=1 ? '#16a34a' : '#d97706'}}>
+                        {Math.abs(remaining)<=1 ? '✅ 一致' : `差額：¥${remaining.toLocaleString()}`}
+                      </span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
           </div>
         )}
       </div>
@@ -3500,6 +3664,14 @@ const SalesTab = () => {
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
   const [dupConfirm, setDupConfirm] = React.useState(null); // {existingSale, reason, onConfirm}
+  // ── まとめ販売（売上分割）────────────────────────────────
+  const SALE_BUNDLE_LABELS = ['A','B','C','D','E','F'];
+  const initSaleBundleItems = (n) => Array.from({length:n}, (_,i) =>
+    ({ id: String(i), label:`商品${SALE_BUNDLE_LABELS[i]||i+1}`, inventoryId:'', salePrice:'' })
+  );
+  const [bundleSale, setBundleSale] = React.useState(false);
+  const [bundleSaleItems, setBundleSaleItems] = React.useState(initSaleBundleItems(2));
+  const [bundleSaleSplitMethod, setBundleSaleSplitMethod] = React.useState('equal');
   const apiKey = data.settings?.apiKey || '';
 
   // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
@@ -3874,7 +4046,10 @@ const SalesTab = () => {
     setShowForm(true);
   };
 
-  const closeForm = () => { setShowForm(false); setEditingSale(null); setForm(emptyForm); };
+  const closeForm = () => {
+    setShowForm(false); setEditingSale(null); setForm(emptyForm);
+    setBundleSale(false); setBundleSaleItems(initSaleBundleItems(2)); setBundleSaleSplitMethod('equal');
+  };
 
   const selectedItem = data.inventory.find(i => i.id === form.inventoryId);
   // フォームに仕入れ値が入力されていればそちらを優先
@@ -3956,6 +4131,46 @@ const SalesTab = () => {
   };
 
   const handleSave = () => {
+    // ── まとめ販売（複数アイテムを一括登録）────────────────
+    if (bundleSale && !editingSale) {
+      const filled = bundleSaleItems.filter(bi => bi.inventoryId && bi.salePrice !== '');
+      if (filled.length < 2) { toast('まとめ販売は2件以上の商品と価格を入力してください'); return; }
+      const totalShip = Number(form.shipping) || 0;
+      const shipBase  = Math.floor(totalShip / filled.length);
+      const shipRem   = totalShip - shipBase * filled.length;
+      const ts = Date.now();
+      const newSales = filled.map((bi, idx) => {
+        const inv = data.inventory.find(i => i.id === bi.inventoryId);
+        const sp  = Number(bi.salePrice);
+        const ship= idx === filled.length-1 ? shipBase + shipRem : shipBase;
+        const pp  = inv?.purchasePrice || 0;
+        return {
+          id: `sale_${ts}_${idx}`,
+          inventoryId: bi.inventoryId,
+          userId: currentUser,
+          platform: form.platform,
+          salePrice: sp, feeRate: form.feeRate, shipping: ship,
+          saleDate: form.saleDate, platformId: form.platformId || '',
+          purchasePrice: pp,
+          profit: Math.round(sp * (1 - form.feeRate) - ship - pp),
+          listDate: inv?.listDate || '',
+          turnoverDays: (inv?.listDate && form.saleDate)
+            ? Math.max(0, Math.floor((new Date(form.saleDate) - new Date(inv.listDate)) / 86400000))
+            : null,
+          bundleGroup: `bundle_sale_${ts}`,
+          bundleLabel: bi.label,
+          createdAt: new Date(ts + idx).toISOString(),
+        };
+      });
+      const updatedInv = data.inventory.map(i =>
+        filled.some(bi => bi.inventoryId === i.id) ? { ...i, status: 'sold' } : i
+      );
+      setData({ ...data, inventory: updatedInv, sales: [...data.sales, ...newSales] });
+      toast(`✅ まとめ販売 ${newSales.length}件の売上を登録しました`);
+      closeForm();
+      return;
+    }
+
     if (!form.inventoryId) { toast('商品を選択してください'); return; }
     if (!form.salePrice) { toast('販売価格を入力してください'); return; }
 
@@ -4683,6 +4898,122 @@ const SalesTab = () => {
               {ssReading ? <><span className="spinner"/><span>読み取り中...</span></> : '📸 メルカリのスクショから自動入力'}
             </button>
 
+            {/* ── まとめ販売（売上分割）── */}
+            {!editingSale && (
+              <div style={{marginBottom:14,paddingBottom:14,borderBottom:'1.5px dashed #e5e7eb'}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom: bundleSale ? 12 : 0}}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:13}}>🛒 まとめ販売（分割登録）</div>
+                    <div style={{fontSize:11,color:'#999',marginTop:1}}>複数商品を1回の売上に一括登録</div>
+                  </div>
+                  <button onClick={() => setBundleSale(v => !v)}
+                    style={{padding:'6px 14px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
+                      background: bundleSale ? '#1e293b' : '#f3f4f6',
+                      color: bundleSale ? 'white' : '#555',
+                      WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
+                    {bundleSale ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                {bundleSale && (() => {
+                  const totalEntered = bundleSaleItems.reduce((s,bi) => s + (Number(bi.salePrice)||0), 0);
+                  const applyEqualSale = (items) => {
+                    const total = Number(form.salePrice) || 0;
+                    if (!total) return items;
+                    const n = items.length;
+                    const base = Math.floor(total / n);
+                    const rem  = total - base * n;
+                    return items.map((bi,i) => ({ ...bi, salePrice: String(i===n-1 ? base+rem : base) }));
+                  };
+                  const setSaleCount = (n) => {
+                    const items = initSaleBundleItems(n);
+                    setBundleSaleItems(bundleSaleSplitMethod==='equal' ? applyEqualSale(items) : items);
+                  };
+                  return (
+                    <>
+                      {/* 合計参照 */}
+                      <div style={{fontSize:11,color:'#888',marginBottom:8}}>
+                        合計販売価格欄（下）に入力しておくと均等分割で自動計算されます
+                      </div>
+                      {/* 分割数 */}
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+                        {[2,3,4].map(n => (
+                          <button key={n} onClick={() => setSaleCount(n)}
+                            style={{padding:'5px 14px',borderRadius:99,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,
+                              background: bundleSaleItems.length===n ? '#1e293b' : '#f3f4f6',
+                              color: bundleSaleItems.length===n ? 'white' : '#555',
+                              WebkitTapHighlightColor:'transparent'}}>
+                            {n}件
+                          </button>
+                        ))}
+                        <button onClick={() => setSaleCount(bundleSaleItems.length+1)}
+                          style={{padding:'5px 12px',borderRadius:99,border:'1.5px dashed #d1d5db',background:'white',fontSize:13,cursor:'pointer',color:'#666',fontWeight:700}}>＋</button>
+                        {bundleSaleItems.length > 2 && (
+                          <button onClick={() => setSaleCount(bundleSaleItems.length-1)}
+                            style={{padding:'5px 12px',borderRadius:99,border:'1.5px dashed #fca5a5',background:'white',fontSize:13,cursor:'pointer',color:'#dc2626',fontWeight:700}}>－</button>
+                        )}
+                      </div>
+                      {/* 分割方法 */}
+                      <div style={{display:'flex',gap:6,marginBottom:10}}>
+                        {[['equal','均等'],['manual','手動']].map(([m,l]) => (
+                          <button key={m} onClick={() => {
+                            setBundleSaleSplitMethod(m);
+                            if (m==='equal') setBundleSaleItems(prev => applyEqualSale(prev));
+                          }}
+                            style={{flex:1,padding:'6px 0',borderRadius:99,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,
+                              background: bundleSaleSplitMethod===m ? '#E84040' : '#f3f4f6',
+                              color: bundleSaleSplitMethod===m ? 'white' : '#777',
+                              WebkitTapHighlightColor:'transparent'}}>
+                            {l}分割
+                          </button>
+                        ))}
+                      </div>
+                      {/* 各アイテム */}
+                      {bundleSaleItems.map((bi, idx) => (
+                        <div key={bi.id} style={{background:'#f8fafc',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #e2e8f0'}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+                            <span style={{fontWeight:800,fontSize:12,color:'white',background:'#475569',
+                              borderRadius:99,padding:'2px 10px',flexShrink:0}}>{bi.label}</span>
+                            <input value={bi.label === `商品${SALE_BUNDLE_LABELS[idx]||idx+1}` ? '' : bi.label.replace(/^商品[A-F]/,'')}
+                              placeholder={`商品名メモ（任意）`}
+                              onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b,label:`商品${SALE_BUNDLE_LABELS[idx]||idx+1}${e.target.value}`} : b))}
+                              style={{flex:1,padding:'5px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,background:'white'}}/>
+                          </div>
+                          <div style={{marginBottom:6}}>
+                            <select value={bi.inventoryId}
+                              onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b,inventoryId:e.target.value} : b))}
+                              style={{width:'100%',padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12,background:'white',color:'#333'}}>
+                              <option value="">在庫から商品を選択...</option>
+                              {data.inventory.filter(i => i.status !== 'sold').map(i => (
+                                <option key={i.id} value={i.id}>{i.brand} {i.productName}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div style={{display:'flex',alignItems:'center',gap:6}}>
+                            <span style={{fontSize:12,color:'#666',flexShrink:0}}>販売価格</span>
+                            <input type="number" value={bi.salePrice} placeholder="0"
+                              onChange={e => setBundleSaleItems(prev => prev.map((b,i) => i===idx ? {...b,salePrice:e.target.value} : b))}
+                              style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:14,fontWeight:700,background:'white',textAlign:'right'}}/>
+                            <span style={{fontSize:12,color:'#666'}}>円</span>
+                          </div>
+                        </div>
+                      ))}
+                      {/* 合計表示 */}
+                      {totalEntered > 0 && (
+                        <div style={{fontSize:12,color:'#555',background:'#f0fdf4',border:'1px solid #bbf7d0',
+                          borderRadius:8,padding:'6px 12px',display:'flex',justifyContent:'space-between'}}>
+                          <span>分割合計：<b>¥{totalEntered.toLocaleString()}</b></span>
+                          {form.salePrice && <span style={{color:'#999'}}>/ 参考合計 ¥{Number(form.salePrice).toLocaleString()}</span>}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* 通常モードの商品選択（まとめ販売OFFのみ表示） */}
+            {!bundleSale && (
             <div style={{marginBottom:12}}>
               <label className="field-label">商品選択</label>
               <select className="input-field" value={form.inventoryId} onChange={e => {
@@ -4697,6 +5028,7 @@ const SalesTab = () => {
                 })}
               </select>
             </div>
+            )}
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
