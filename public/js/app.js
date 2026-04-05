@@ -5211,28 +5211,40 @@ const SalesTab = () => {
               )}
             </div>
 
-            {/* ── フル仕入れ登録モーダル（分割登録内から起動）── */}
+            {/* ── 商品新規作成＆紐付けモーダル（分割売上専用）── */}
             {bundleSaleInlineForm && (() => {
               const inf = bundleSaleInlineForm;
               const setInf = (key, val) => setBundleSaleInlineForm(prev => ({...prev, [key]: val}));
+              // このスロットの売上データ（読み取り専用・連動元）
+              const slotBi = bundleSaleItems[inf.idx] || {};
+              const slotSalePrice = Number(slotBi.salePrice) || 0;
+              const slotShipping  = Number(slotBi.shipping)  || 0;
+              const slotLabel     = SALE_BUNDLE_LABELS[inf.idx] ? `商品${SALE_BUNDLE_LABELS[inf.idx]}` : `商品${inf.idx+1}`;
+              // リアルタイム利益プレビュー
+              const purchaseAmt = Number(inf.itemPriceTaxIn) || 0;
+              const estProfit   = slotSalePrice > 0
+                ? Math.round(slotSalePrice * (1 - (Number(form.feeRate)||0.10)) - slotShipping - purchaseAmt)
+                : null;
+
               const saveInlineInv = () => {
                 if (!inf.productName.trim()) { toast('商品名を入力してください'); return; }
-                if (!inf.itemPriceTaxIn) { toast('仕入れ価格を入力してください'); return; }
+                if (!inf.itemPriceTaxIn)     { toast('仕入れ価格を入力してください'); return; }
                 const newItem = {
                   id: Date.now().toString(),
-                  productName: inf.productName.trim(),
-                  brand: inf.brand.trim(),
-                  category: inf.category,
-                  color: inf.color,
-                  condition: inf.condition,
+                  productName:  inf.productName.trim(),
+                  brand:        inf.brand.trim(),
+                  category:     inf.category,
+                  color:        inf.color,
+                  condition:    inf.condition,
                   conditionDetail: '',
                   purchaseDate: inf.purchaseDate,
-                  purchaseStore: inf.purchaseStore,
-                  paymentMethod: inf.paymentMethod,
-                  purchasePrice: Number(inf.itemPriceTaxIn) || 0,
-                  purchaseCost: { totalTaxIn: Number(inf.itemPriceTaxIn)||0, totalTaxEx: Number(inf.itemPriceTaxIn)||0 },
-                  listPrice: Number(inf.listPrice) || 0,
-                  listDate: inf.listDate,
+                  purchaseStore:inf.purchaseStore,
+                  paymentMethod:inf.paymentMethod,
+                  purchasePrice: purchaseAmt,
+                  purchaseCost: { totalTaxIn: purchaseAmt, totalTaxEx: purchaseAmt },
+                  // 売上コンテキストから自動連携（重複入力なし）
+                  listPrice: slotSalePrice,   // 販売価格 = 出品価格
+                  listDate:  form.saleDate,   // 売上日 = 出品日（回転日数計算に使用）
                   notes: inf.notes,
                   status: 'listed',
                   userId: currentUser,
@@ -5242,24 +5254,45 @@ const SalesTab = () => {
                 setData({ ...data, inventory: [...data.inventory, newItem] });
                 setBundleSaleItems(prev => prev.map((b,i) => i===inf.idx ? {...b, inventoryId: newItem.id} : b));
                 setBundleSaleInlineForm(null);
-                toast('✅ 仕入れを登録して商品に反映しました');
+                toast(`✅ ${slotLabel}の商品を作成して紐付けました`);
               };
+
               return (
-                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:300,display:'flex',alignItems:'flex-end',backdropFilter:'blur(4px)'}}>
-                  <div style={{background:'white',borderRadius:'24px 24px 0 0',width:'100%',maxHeight:'90vh',overflowY:'auto',
-                    padding:'8px 20px 0',paddingBottom:'calc(20px + env(safe-area-inset-bottom))'}}>
-                    <div style={{width:40,height:4,background:'#e0e0e0',borderRadius:2,margin:'0 auto 12px'}}/>
+                <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',zIndex:300,display:'flex',alignItems:'flex-end',backdropFilter:'blur(4px)'}}>
+                  <div style={{background:'white',borderRadius:'24px 24px 0 0',width:'100%',maxHeight:'92vh',overflowY:'auto',
+                    padding:'8px 20px 0',paddingBottom:'calc(24px + env(safe-area-inset-bottom))'}}>
+                    <div style={{width:40,height:4,background:'#e0e0e0',borderRadius:2,margin:'0 auto 14px'}}/>
+
                     {/* ヘッダー */}
-                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+                    <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:14}}>
                       <div>
-                        <div style={{fontWeight:800,fontSize:16}}>📝 新規仕入れ登録</div>
-                        <div style={{fontSize:11,color:'#888'}}>登録後は自動で{bundleSaleInlineForm.idx!==null ? `商品${SALE_BUNDLE_LABELS[bundleSaleInlineForm.idx]||bundleSaleInlineForm.idx+1}` : ''}に反映されます</div>
+                        <div style={{fontWeight:800,fontSize:16,color:'#1e293b'}}>📦 {slotLabel}の商品を新規作成</div>
+                        <div style={{fontSize:12,color:'#64748b',marginTop:2}}>仕入れ情報だけ入力 → 売上情報は自動連携</div>
                       </div>
                       <button onClick={() => setBundleSaleInlineForm(null)}
-                        style={{padding:'6px 14px',borderRadius:99,border:'1px solid #e0e0e0',background:'white',fontSize:13,cursor:'pointer',color:'#555',fontWeight:600}}>
+                        style={{padding:'6px 14px',borderRadius:99,border:'1px solid #e0e0e0',background:'white',
+                          fontSize:13,cursor:'pointer',color:'#555',fontWeight:600,flexShrink:0,marginLeft:8}}>
                         閉じる
                       </button>
                     </div>
+
+                    {/* 売上コンテキスト（自動連携・読み取り専用） */}
+                    <div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:12,padding:'10px 14px',marginBottom:16}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em'}}>
+                        🔗 売上情報（自動連携済み・入力不要）
+                      </div>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4,fontSize:12}}>
+                        <div><span style={{color:'#888'}}>販売価格：</span><b style={{color:'#1e293b'}}>¥{slotSalePrice.toLocaleString()}</b></div>
+                        <div><span style={{color:'#888'}}>送料：</span><b style={{color:'#1e293b'}}>¥{slotShipping.toLocaleString()}</b></div>
+                        <div><span style={{color:'#888'}}>売上日：</span><b style={{color:'#1e293b'}}>{form.saleDate}</b></div>
+                        <div><span style={{color:'#888'}}>プラットフォーム：</span><b style={{color:'#1e293b'}}>{form.platform}</b></div>
+                      </div>
+                      <div style={{marginTop:6,fontSize:11,color:'#0369a1'}}>
+                        ※ 出品価格・出品日は売上情報から自動セットされます
+                      </div>
+                    </div>
+
+                    {/* ── 入力が必要な仕入れ情報 ── */}
 
                     {/* 商品名 */}
                     <div style={{marginBottom:12}}>
@@ -5293,7 +5326,7 @@ const SalesTab = () => {
                     </div>
 
                     {/* 状態ランク */}
-                    <div style={{marginBottom:12}}>
+                    <div style={{marginBottom:14}}>
                       <label className="field-label">状態ランク</label>
                       <div style={{display:'flex',gap:8}}>
                         {['S','A','B','C'].map(c => (
@@ -5309,64 +5342,81 @@ const SalesTab = () => {
                       </div>
                     </div>
 
-                    <hr style={{borderColor:'#f0f0f0',margin:'12px 0'}}/>
+                    <hr style={{borderColor:'#f0f0f0',margin:'4px 0 14px'}}/>
 
-                    {/* 仕入れ日・仕入れ先 */}
+                    {/* 仕入れ日・支払方法 */}
                     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
                       <div>
                         <label className="field-label">仕入れ日</label>
-                        <input type="date" className="input-field" value={inf.purchaseDate} onChange={e => setInf('purchaseDate', e.target.value)}/>
+                        <input type="date" className="input-field" value={inf.purchaseDate}
+                          onChange={e => setInf('purchaseDate', e.target.value)}/>
                       </div>
                       <div>
                         <label className="field-label">支払方法</label>
-                        <select className="input-field" value={inf.paymentMethod} onChange={e => setInf('paymentMethod', e.target.value)}>
+                        <select className="input-field" value={inf.paymentMethod}
+                          onChange={e => setInf('paymentMethod', e.target.value)}>
                           {['現金','クレカ','PayPay','メルペイ','その他'].map(m => <option key={m} value={m}>{m}</option>)}
                         </select>
                       </div>
                     </div>
+
+                    {/* 仕入れ先 */}
                     <div style={{marginBottom:12}}>
                       <label className="field-label">仕入れ先</label>
                       <input className="input-field" value={inf.purchaseStore}
-                        onChange={e => setInf('purchaseStore', e.target.value)} placeholder="例: ブックオフ 渋谷店"/>
+                        onChange={e => setInf('purchaseStore', e.target.value)}
+                        placeholder="例: ブックオフ 渋谷店"/>
                     </div>
 
-                    {/* 仕入れ価格 */}
+                    {/* 仕入れ価格（必須）+ リアルタイム利益プレビュー */}
                     <div style={{marginBottom:12}}>
                       <label className="field-label">仕入れ価格（税込） <span style={{color:'#E84040'}}>*必須</span></label>
-                      <div style={{display:'flex',alignItems:'center',gap:8}}>
-                        <input type="number" className="input-field" style={{flex:1,textAlign:'right',fontWeight:700,fontSize:18}}
-                          value={inf.itemPriceTaxIn} onChange={e => setInf('itemPriceTaxIn', e.target.value)} placeholder="0"/>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                        <input type="number" className="input-field"
+                          style={{flex:1,textAlign:'right',fontWeight:700,fontSize:20}}
+                          value={inf.itemPriceTaxIn}
+                          onChange={e => setInf('itemPriceTaxIn', e.target.value)}
+                          placeholder="0"/>
                         <span style={{fontSize:14,color:'#666',flexShrink:0}}>円</span>
                       </div>
-                    </div>
-
-                    <hr style={{borderColor:'#f0f0f0',margin:'12px 0'}}/>
-
-                    {/* 出品価格・出品日 */}
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
-                      <div>
-                        <label className="field-label">出品価格（円）</label>
-                        <input type="number" className="input-field" value={inf.listPrice}
-                          onChange={e => setInf('listPrice', e.target.value)} placeholder="0"/>
-                      </div>
-                      <div>
-                        <label className="field-label">出品日</label>
-                        <input type="date" className="input-field" value={inf.listDate} onChange={e => setInf('listDate', e.target.value)}/>
-                      </div>
+                      {/* 利益プレビュー */}
+                      {slotSalePrice > 0 && (
+                        <div style={{background: estProfit > 0 ? '#f0fdf4' : estProfit === 0 ? '#fafafa' : '#fef2f2',
+                          border:`1px solid ${estProfit > 0 ? '#bbf7d0' : estProfit === 0 ? '#e5e7eb' : '#fecaca'}`,
+                          borderRadius:8,padding:'8px 12px',fontSize:12}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                            <span style={{color:'#555'}}>概算利益</span>
+                            <span style={{fontWeight:800,fontSize:15,
+                              color: estProfit > 0 ? '#16a34a' : estProfit === 0 ? '#555' : '#dc2626'}}>
+                              {purchaseAmt > 0
+                                ? `¥${(estProfit||0).toLocaleString()}`
+                                : '仕入れ価格を入力'}
+                            </span>
+                          </div>
+                          {purchaseAmt > 0 && (
+                            <div style={{color:'#888',marginTop:3}}>
+                              ¥{slotSalePrice.toLocaleString()} × {Math.round((1-(Number(form.feeRate)||0.10))*100)}% − 送料¥{slotShipping.toLocaleString()} − 仕入¥{purchaseAmt.toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {/* メモ */}
                     <div style={{marginBottom:20}}>
-                      <label className="field-label">メモ</label>
+                      <label className="field-label">メモ（省略可）</label>
                       <textarea className="input-field" value={inf.notes}
                         onChange={e => setInf('notes', e.target.value)}
-                        placeholder="状態詳細・特記事項など" style={{minHeight:80}}/>
+                        placeholder="状態詳細・特記事項など" style={{minHeight:72}}/>
                     </div>
 
                     {/* 登録ボタン */}
-                    <button className="btn-primary" style={{width:'100%',marginBottom:12}} onClick={saveInlineInv}>
-                      💾 仕入れを登録して選択する
+                    <button className="btn-primary" style={{width:'100%',marginBottom:8}} onClick={saveInlineInv}>
+                      ✅ {slotLabel}の商品を作成して紐付ける
                     </button>
+                    <div style={{textAlign:'center',fontSize:11,color:'#94a3b8',marginBottom:8}}>
+                      出品価格・出品日・販売価格・送料は売上情報から自動連携されます
+                    </div>
                   </div>
                 </div>
               );
