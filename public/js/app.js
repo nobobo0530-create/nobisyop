@@ -3654,7 +3654,7 @@ const SalesTab = () => {
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
   const [monthDetail, setMonthDetail] = React.useState(null); // 月次詳細モーダル用 "YYYY-MM"
-  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '', purchasePrice: '' };
+  const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '', purchasePrice: '', purchaseDate: '', purchaseStore: '' };
   const [form, setForm] = React.useState(emptyForm);
   const [ssReading, setSsReading] = React.useState(false);
   const [ssCandidate, setSsCandidate] = React.useState(null); // {item, extracted}
@@ -3970,7 +3970,7 @@ const SalesTab = () => {
           brand: nf.brand || '',
           productName: nf.productName || ex.product_name || '',
           purchasePrice,
-          purchaseDate: nf.purchaseDate || ex.sale_date || '',
+          purchaseDate: nf.purchaseDate || '',  // 売上スクショから仕入れ日は設定しない
           purchaseStore: nf.purchaseStore || '',
           category: nf.category || '',
           listDate,
@@ -4042,6 +4042,8 @@ const SalesTab = () => {
       platformId: sale.platformId || '',
       purchasePrice: sale.purchasePrice != null ? String(sale.purchasePrice)
         : (item?.purchasePrice != null ? String(item.purchasePrice) : ''),
+      purchaseDate:  item?.purchaseDate  || '',  // 在庫から引き継ぎ
+      purchaseStore: item?.purchaseStore || '',  // 在庫から引き継ぎ
     });
     setShowForm(true);
   };
@@ -4179,9 +4181,14 @@ const SalesTab = () => {
       const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
       const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
 
-      // 在庫の仕入れ値も更新（フォームで明示入力された場合）
-      const updatedInventory = (form.purchasePrice !== '' && selectedItem)
-        ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, purchasePrice: Number(form.purchasePrice) } : i)
+      // 在庫の仕入れ情報を更新（仕入れ値・仕入れ日・仕入れ先）
+      const invPatch = selectedItem ? {
+        ...(form.purchasePrice !== '' ? { purchasePrice: Number(form.purchasePrice) } : {}),
+        ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
+        ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+      } : null;
+      const updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
+        ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, ...invPatch } : i)
         : data.inventory;
 
       if (editingSale) {
@@ -4832,13 +4839,15 @@ const SalesTab = () => {
                       ? Math.round(ex.platform_fee / ex.sale_price * 1000) / 1000
                       : (fees[platform] ?? 0.10);
                     setForm({
-                      inventoryId: item.id,
+                      inventoryId:   item.id,
                       platform,
-                      salePrice: String(ex.sale_price || ''),
+                      salePrice:     String(ex.sale_price || ''),
                       feeRate,
-                      shipping: String(ex.shipping != null ? ex.shipping : CONFIG.ESTIMATED_SHIPPING),
-                      saleDate: ex.sale_date || today(),
-                      platformId: ex.product_id || '',
+                      shipping:      String(ex.shipping != null ? ex.shipping : CONFIG.ESTIMATED_SHIPPING),
+                      saleDate:      ex.sale_date || today(),
+                      platformId:    ex.product_id || '',
+                      purchaseDate:  item.purchaseDate  || '',  // 在庫から引き継ぐ（売上SSからは設定しない）
+                      purchaseStore: item.purchaseStore || '',  // 在庫から引き継ぐ
                     });
                     setSsCandidate(null);
                     setShowForm(true);
@@ -5019,7 +5028,12 @@ const SalesTab = () => {
               <select className="input-field" value={form.inventoryId} onChange={e => {
                 const iid = e.target.value;
                 const inv = data.inventory.find(i => i.id === iid);
-                setForm(prev => ({ ...prev, inventoryId: iid, listDate: prev.listDate || inv?.listDate || '' }));
+                setForm(prev => ({
+                  ...prev, inventoryId: iid,
+                  listDate:      prev.listDate      || inv?.listDate      || '',
+                  purchaseDate:  inv?.purchaseDate  || '',   // 在庫から仕入れ日を引き継ぎ
+                  purchaseStore: inv?.purchaseStore || '',   // 在庫から仕入れ先を引き継ぎ
+                }));
               }}>
                 <option value="">商品を選択...</option>
                 {data.inventory.map(i => {
@@ -5029,6 +5043,46 @@ const SalesTab = () => {
               </select>
             </div>
             )}
+
+            {/* 仕入れ情報（古物台帳対応）*/}
+            {(form.inventoryId || editingSale) && !bundleSale && (() => {
+              const missingDate  = !form.purchaseDate;
+              const missingStore = !form.purchaseStore;
+              const hasWarning   = missingDate || missingStore;
+              return (
+                <div style={{
+                  background: hasWarning ? '#fff7ed' : '#f8fafc',
+                  border:`1px solid ${hasWarning ? '#fcd34d' : '#e2e8f0'}`,
+                  borderRadius:10, padding:'10px 12px', marginBottom:12,
+                }}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+                    <span style={{fontWeight:700,fontSize:12}}>📋 仕入れ情報</span>
+                    {hasWarning && (
+                      <span style={{fontSize:10,color:'#d97706',fontWeight:600}}>
+                        ⚠️ {[missingDate&&'仕入れ日',missingStore&&'仕入れ先'].filter(Boolean).join('・')}が未入力（古物台帳に反映されません）
+                      </span>
+                    )}
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                    <div>
+                      <label style={{fontSize:10,color:'#888',fontWeight:700,display:'block',marginBottom:2}}>仕入れ日</label>
+                      <input type="date" value={form.purchaseDate || ''}
+                        onChange={e => setF('purchaseDate', e.target.value)}
+                        style={{width:'100%',padding:'6px 8px',borderRadius:8,fontSize:12,background:'white',boxSizing:'border-box',
+                          border:`1px solid ${missingDate ? '#fcd34d' : '#e2e8f0'}`}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:10,color:'#888',fontWeight:700,display:'block',marginBottom:2}}>仕入れ先</label>
+                      <input value={form.purchaseStore || ''}
+                        onChange={e => setF('purchaseStore', e.target.value)}
+                        placeholder="例: セカンドストリート"
+                        style={{width:'100%',padding:'6px 8px',borderRadius:8,fontSize:12,background:'white',boxSizing:'border-box',
+                          border:`1px solid ${missingStore ? '#fcd34d' : '#e2e8f0'}`}}/>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
@@ -5398,12 +5452,12 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
               <tbody>
                 {kobotsuPreview.slice(0,10).map(({item,sale},i) => (
                   <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',background: i%2===0?'white':'#fafafa'}}>
-                    <td style={tdStyle({color:'#555'})}>{item.purchaseDate}</td>
+                    <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                     <td style={tdStyle()}>{item.category||'−'}</td>
                     <td style={tdStyle({maxWidth:130,overflow:'hidden',textOverflow:'ellipsis'})}>{item.brand} {item.productName}</td>
                     <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
                     <td style={tdStyle({color:'#555',fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
-                      <div>{item.purchaseStore||'−'}</div>
+                      <div style={{color: item.purchaseStore ? '#555' : '#dc2626', fontWeight: item.purchaseStore ? 400 : 700}}>{item.purchaseStore||'⚠️未入力'}</div>
                       {resolveCompanyName(item) && <div style={{fontSize:10,color:'#aaa'}}>{resolveCompanyName(item)}</div>}
                     </td>
                     <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
