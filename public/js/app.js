@@ -1941,6 +1941,10 @@ const PurchaseTab = () => {
     });
   };
 
+  // 保存後に売上登録へ遷移するフラグ
+  const postSaveNavToSale = React.useRef(false);
+  const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
+
   const handleSave = () => {
     if (!form.productName) { toast('商品名を入力してください'); return; }
     if (!totalPurchaseTaxIn) { toast('仕入れ価格を入力してください'); return; }
@@ -1983,7 +1987,11 @@ const PurchaseTab = () => {
       const updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
       setData({ ...data, inventory: updated });
       toast('✅ 商品情報を更新しました！');
+      const savedId = editingItem.id;
+      const goSell = postSaveNavToSale.current;
+      postSaveNavToSale.current = false;
       resetForm();
+      if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
       return;
     }
 
@@ -2047,8 +2055,11 @@ const PurchaseTab = () => {
     };
     setData({ ...data, inventory: [...data.inventory, newItem] });
     toast('✅ 仕入れを登録しました！');
+    const goSellNew = postSaveNavToSale.current;
+    postSaveNavToSale.current = false;
     setLastSavedItem(newItem);
     resetForm();
+    if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
   };
 
   const setF = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
@@ -3254,6 +3265,14 @@ const PurchaseTab = () => {
           <button className="btn-primary" style={{width:'100%',padding:16,fontSize:17}}
             onClick={handleSave}>
             {editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
+          </button>
+          <button
+            onClick={handleSaveAndSell}
+            style={{width:'100%',marginTop:8,padding:14,fontSize:15,fontWeight:700,
+              border:'none',borderRadius:12,cursor:'pointer',touchAction:'manipulation',
+              background:'linear-gradient(135deg,#16a34a,#15803d)',color:'white',
+              display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+            💰 {editingItem ? '保存して' : '登録して'}そのまま売上登録する
           </button>
         </div>
       )}
