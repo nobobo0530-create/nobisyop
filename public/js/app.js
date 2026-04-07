@@ -2017,14 +2017,20 @@ const PurchaseTab = () => {
             </div>
           </div>
           <button
+            onClick={() => { setTab('inventory'); setLastSavedItem(null); }}
+            style={{flexShrink:0,padding:'7px 12px',borderRadius:99,background:'#e0f2fe',color:'#0369a1',
+              border:'none',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',touchAction:'manipulation'}}>
+            📋 在庫へ
+          </button>
+          <button
             onClick={() => {
               setPendingSaleItemId(lastSavedItem.id);
               setTab('sales');
               setLastSavedItem(null);
             }}
-            style={{flexShrink:0,padding:'7px 14px',borderRadius:99,background:'#E84040',color:'white',
-              border:'none',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>
-            💰 売上を記録
+            style={{flexShrink:0,padding:'7px 12px',borderRadius:99,background:'#E84040',color:'white',
+              border:'none',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',touchAction:'manipulation'}}>
+            💰 売上記録
           </button>
           <button onClick={() => setLastSavedItem(null)}
             style={{flexShrink:0,background:'none',border:'none',fontSize:18,color:'#999',cursor:'pointer',padding:'0 4px',lineHeight:1}}>
@@ -2032,11 +2038,23 @@ const PurchaseTab = () => {
           </button>
         </div>
       )}
-      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-        <h1 style={{margin:0}}>{editingItem ? '✏️ 商品を編集' : '📦 仕入れ登録'}</h1>
+      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+          {!editingItem && (
+            <button onClick={() => setTab('inventory')}
+              style={{background:'rgba(255,255,255,0.2)',color:'white',border:'1px solid rgba(255,255,255,0.4)',
+                borderRadius:8,padding:'5px 10px',fontSize:12,fontWeight:700,cursor:'pointer',
+                whiteSpace:'nowrap',flexShrink:0,touchAction:'manipulation'}}>
+              ← 在庫
+            </button>
+          )}
+          <h1 style={{margin:0,fontSize:18,fontWeight:800,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+            {editingItem ? '✏️ 商品を編集' : '📦 仕入れ登録'}
+          </h1>
+        </div>
         {editingItem && (
           <button onClick={resetForm}
-            style={{background:'rgba(255,255,255,0.2)',color:'white',border:'1px solid rgba(255,255,255,0.5)',borderRadius:8,padding:'4px 12px',fontSize:13,cursor:'pointer'}}>
+            style={{background:'rgba(255,255,255,0.2)',color:'white',border:'1px solid rgba(255,255,255,0.5)',borderRadius:8,padding:'4px 12px',fontSize:13,cursor:'pointer',flexShrink:0}}>
             ✕ キャンセル
           </button>
         )}
@@ -3237,19 +3255,29 @@ const InventoryTab = () => {
 
   return (
     <div className="fade-in">
-      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-        <h1>📋 在庫一覧</h1>
-        {!bulkMode ? (
-          <button onClick={() => setBulkMode(true)}
-            style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 12px',fontSize:13,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
-            まとめて削除
-          </button>
-        ) : (
-          <button onClick={exitBulkMode}
-            style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 12px',fontSize:13,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
-            キャンセル
-          </button>
-        )}
+      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12}}>
+        <h1 style={{margin:0,fontSize:18,fontWeight:800}}>📋 在庫一覧</h1>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexShrink:0}}>
+          {!bulkMode && (
+            <button onClick={() => setTab('purchase')}
+              style={{background:'white',color:'var(--color-primary)',border:'2px solid var(--color-primary)',
+                borderRadius:10,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer',
+                whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+              ＋ 新規登録
+            </button>
+          )}
+          {!bulkMode ? (
+            <button onClick={() => setBulkMode(true)}
+              style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
+              まとめて削除
+            </button>
+          ) : (
+            <button onClick={exitBulkMode}
+              style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+              キャンセル
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 検索バー */}
@@ -8133,7 +8161,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`}
 // ============================================================
 const App = () => {
   const [fullData, setFullDataRaw] = React.useState(loadData);   // 全ユーザーの全データ
-  const [tab, setTab]            = React.useState('home');
+  const [tab, setTab]            = React.useState('inventory');
   const [editingItem, setEditingItem] = React.useState(null);
   const [pendingSaleItemId, setPendingSaleItemId] = React.useState(null); // 売上記録を促すinventoryId
   const [dbStatus, setDbStatus]  = React.useState('init');
@@ -8363,7 +8391,6 @@ const App = () => {
   };
   const tabs = [
     { id: 'home',      label: 'ホーム' },
-    { id: 'purchase',  label: '仕入れ' },
     { id: 'inventory', label: '在庫'   },
     { id: 'sales',     label: '売上'   },
     { id: 'other',     label: 'その他' },
