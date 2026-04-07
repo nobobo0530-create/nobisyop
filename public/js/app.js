@@ -4071,6 +4071,7 @@ const SalesTab = () => {
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
   const [dupConfirm, setDupConfirm] = React.useState(null); // {existingSale, reason, onConfirm}
+  const [saleStoreCustom, setSaleStoreCustom] = React.useState(null); // null=選択, string=手入力
   // ── 売上入力 下書き保存 ───────────────────────────────────
   const SALE_DRAFT_KEY = 'nobushop_sale_draft';
   const [saleDraftBanner, setSaleDraftBanner] = React.useState(null);
@@ -4080,12 +4081,26 @@ const SalesTab = () => {
     } catch(_) {}
   }, []);
   const clearSaleDraft = () => { try { localStorage.removeItem(SALE_DRAFT_KEY); } catch(_) {} };
-  // フォーム変化時に自動保存（新規のみ）
+  // フォーム変化時に自動保存（新規のみ・有意な入力がある場合のみ）
   React.useEffect(() => {
     if (!showForm || editingSale) return;
-    if (!form.inventoryId && !form.salePrice && !form.saleDate) return; // 空のままなら保存しない
+    if (!form.inventoryId && !form.salePrice) return; // 商品・価格が未入力なら保存しない
     saveSaleDraft(form, bundleSale, bundleSaleItems, bundleSaleSplitMethod);
   }, [form, bundleSale, bundleSaleItems, bundleSaleSplitMethod, showForm, editingSale]);
+  // タブ切り替え・アプリ切り替え時にも強制保存（フリーズ対策）
+  React.useEffect(() => {
+    const forceSave = () => {
+      if (showForm && !editingSale && (form.inventoryId || form.salePrice)) {
+        saveSaleDraft(form, bundleSale, bundleSaleItems, bundleSaleSplitMethod);
+      }
+    };
+    document.addEventListener('visibilitychange', forceSave);
+    window.addEventListener('pagehide', forceSave);
+    return () => {
+      document.removeEventListener('visibilitychange', forceSave);
+      window.removeEventListener('pagehide', forceSave);
+    };
+  }, [form, bundleSale, bundleSaleItems, bundleSaleSplitMethod, showForm, editingSale, saveSaleDraft]);
   // ── まとめ販売（売上分割）────────────────────────────────
   const SALE_BUNDLE_LABELS = ['A','B','C','D','E','F'];
   const initSaleBundleItems = (n) => Array.from({length:n}, (_,i) =>
@@ -4555,13 +4570,17 @@ const SalesTab = () => {
   const closeForm = () => {
     setShowForm(false); setEditingSale(null); setForm(emptyForm);
     setBundleSale(false); setBundleSaleItems(initSaleBundleItems(2)); setBundleSaleSplitMethod('equal'); setBundleSaleInlineForm(null);
+    setSaleStoreCustom(null);
   };
 
   const selectedItem = data.inventory.find(i => i.id === form.inventoryId);
-  // フォームに仕入れ値が入力されていればそちらを優先
-  const effectivePurchasePrice = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
+  // フォームに仕入れ値が入力されていればそちらを優先（NaN防止）
+  const effectivePurchasePrice = (() => {
+    const raw = form.purchasePrice !== '' ? Number(form.purchasePrice) : Number(selectedItem?.purchasePrice);
+    return (isNaN(raw) || raw == null) ? 0 : raw;
+  })();
   const profit = selectedItem
-    ? Math.round(Number(form.salePrice) * (1 - form.feeRate) - Number(form.shipping) - effectivePurchasePrice)
+    ? Math.round(Number(form.salePrice || 0) * (1 - (form.feeRate || 0)) - Number(form.shipping || 0) - effectivePurchasePrice)
     : 0;
   // 回転日数（出品日→売却日）
   const calcTurnoverDays = (listDate, saleDate) => {
@@ -5917,6 +5936,7 @@ const SalesTab = () => {
                   purchaseDate:  inv?.purchaseDate  || '',   // 在庫から仕入れ日を引き継ぎ
                   purchaseStore: inv?.purchaseStore || '',   // 在庫から仕入れ先を引き継ぎ
                 }));
+                setSaleStoreCustom(null); // 仕入れ先選択をリセット
               }}>
                 <option value="">商品を選択...</option>
                 {data.inventory.map(i => {
@@ -5956,11 +5976,48 @@ const SalesTab = () => {
                     </div>
                     <div>
                       <label style={{fontSize:10,color:'#888',fontWeight:700,display:'block',marginBottom:2}}>仕入れ先</label>
-                      <input value={form.purchaseStore || ''}
-                        onChange={e => setF('purchaseStore', e.target.value)}
-                        placeholder="例: セカンドストリート"
-                        style={{width:'100%',padding:'6px 8px',borderRadius:8,fontSize:12,background:'white',boxSizing:'border-box',
-                          border:`1px solid ${missingStore ? '#fcd34d' : '#e2e8f0'}`}}/>
+                      {(() => {
+                        const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+                        // 全仕入れ先候補（店舗＋電脳＋過去の在庫の仕入れ先）
+                        const allStores = [
+                          ...(master.normalStores||[]),
+                          ...(master.yahooStores||[]),
+                          ...(data.settings?.yahooStores||[]).map(s=>s.storeName).filter(Boolean),
+                          ...data.inventory.map(i => i.purchaseStore).filter(Boolean),
+                        ].filter((v,i,a) => v && a.indexOf(v) === i)
+                         .sort((a,b) => a.localeCompare(b,'ja'));
+                        // 現在値が候補にない = カスタム入力中
+                        const isCustom = saleStoreCustom !== null ||
+                          (form.purchaseStore && !allStores.includes(form.purchaseStore));
+                        return (
+                          <>
+                            <select
+                              value={isCustom ? '__custom__' : (form.purchaseStore || '')}
+                              onChange={e => {
+                                if (e.target.value === '__custom__') {
+                                  setSaleStoreCustom(form.purchaseStore || '');
+                                } else {
+                                  setSaleStoreCustom(null);
+                                  setF('purchaseStore', e.target.value);
+                                }
+                              }}
+                              style={{width:'100%',padding:'6px 8px',borderRadius:8,fontSize:12,background:'white',
+                                boxSizing:'border-box',border:`1px solid ${missingStore ? '#fcd34d' : '#e2e8f0'}`}}>
+                              <option value="">選択してください</option>
+                              {allStores.map(s => <option key={s} value={s}>{s}</option>)}
+                              <option value="__custom__">＋ その他（手入力）</option>
+                            </select>
+                            {isCustom && (
+                              <input
+                                value={saleStoreCustom !== null ? saleStoreCustom : (form.purchaseStore || '')}
+                                onChange={e => { setSaleStoreCustom(e.target.value); setF('purchaseStore', e.target.value); }}
+                                placeholder="仕入れ先を入力"
+                                style={{marginTop:4,width:'100%',padding:'6px 8px',borderRadius:8,fontSize:12,
+                                  background:'white',boxSizing:'border-box',border:`1px solid ${missingStore?'#fcd34d':'#e2e8f0'}`}}/>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -6047,20 +6104,26 @@ const SalesTab = () => {
             </div>
 
             {!bundleSale && form.salePrice && selectedItem && (() => {
-              const profitRate = Number(form.salePrice) > 0 ? Math.round(profit / Number(form.salePrice) * 100) : 0;
+              const sp = Number(form.salePrice) || 0;
+              const safeProfit = isNaN(profit) ? 0 : profit;
+              const profitRate = sp > 0 ? Math.round(safeProfit / sp * 100) : 0;
+              const ppDisplay = (() => {
+                const n = Number(effectivePurchasePrice);
+                return isNaN(n) ? '未入力' : formatMoney(n);
+              })();
               return (
-                <div style={{background: profit >= 0 ? '#f0fdf4' : '#fef2f2',border:`1px solid ${profit >= 0 ? '#bbf7d0' : '#fecaca'}`,borderRadius:10,padding:12,marginBottom:16}}>
+                <div style={{background: safeProfit >= 0 ? '#f0fdf4' : '#fef2f2',border:`1px solid ${safeProfit >= 0 ? '#bbf7d0' : '#fecaca'}`,borderRadius:10,padding:12,marginBottom:16}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                     <div>
                       <div style={{fontSize:12,color:'#666',marginBottom:4}}>純利益</div>
-                      <div style={{fontSize:22,fontWeight:700,color: profit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(profit)}</div>
+                      <div style={{fontSize:22,fontWeight:700,color: safeProfit >= 0 ? '#16a34a' : '#dc2626'}}>¥{formatMoney(safeProfit)}</div>
                     </div>
                     <div style={{textAlign:'right'}}>
                       <div style={{fontSize:12,color:'#666',marginBottom:4}}>利益率</div>
-                      <div style={{fontSize:22,fontWeight:700,color: profit >= 0 ? '#16a34a' : '#dc2626'}}>{profitRate}%</div>
+                      <div style={{fontSize:22,fontWeight:700,color: safeProfit >= 0 ? '#16a34a' : '#dc2626'}}>{profitRate}%</div>
                     </div>
                   </div>
-                  <div style={{fontSize:11,color:'#999',marginTop:6}}>仕入れ ¥{formatMoney(selectedItem.purchasePrice)} / 手数料 ¥{Math.round(Number(form.salePrice) * form.feeRate).toLocaleString()} / 送料 ¥{Number(form.shipping).toLocaleString()}</div>
+                  <div style={{fontSize:11,color:'#999',marginTop:6}}>仕入れ ¥{ppDisplay} / 手数料 ¥{Math.round(sp * (form.feeRate||0)).toLocaleString()} / 送料 ¥{Number(form.shipping||0).toLocaleString()}</div>
                 </div>
               );
             })()}
