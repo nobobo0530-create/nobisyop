@@ -427,6 +427,8 @@ const getInitialData = () => ({
         'セカンドストリート','オフハウス','萬屋','万代','万SAI堂',
         'ブックオフ','四次元ポケット','タイヨードー','タック',
       ],
+      // チェーン別店舗一覧 { [chainName]: string[] }
+      storeLocations: {},
       // 電脳仕入れ時に表示（オークション・ECサイト）
       yahooStores: [
         'ヤフオクストア','エンパワーヤフーショップ','オークション代行クイックドゥ',
@@ -1310,6 +1312,8 @@ const PurchaseTab = () => {
   const [showDesc, setShowDesc] = React.useState(false);
   const [purchaseType, setPurchaseType] = React.useState('store'); // 'store' | 'online'
   const [storeCustomText, setStoreCustomText] = React.useState(null); // null=選択モード, string=手入力モード
+  const [storeChain, setStoreChain] = React.useState('');       // 選択中チェーン名
+  const [branchInput, setBranchInput] = React.useState('');     // 支店テキスト入力
   const [scanMode, setScanMode] = React.useState('product_only'); // 'product_only' | 'with_price'
   const [tagReading, setTagReading] = React.useState(false);
   const [tagReadResult, setTagReadResult] = React.useState(null);
@@ -1432,6 +1436,24 @@ const PurchaseTab = () => {
     ];
     const isCustomStore = !!editingItem.purchaseStore && !allKnownStores.includes(editingItem.purchaseStore);
     setStoreCustomText(isCustomStore ? editingItem.purchaseStore : null);
+    // 支店名の復元（"チェーン名 支店名" 形式を分解）
+    {
+      const chains = [...(master.normalStores||[])];
+      const locs = master.storeLocations || {};
+      const foundChain = chains.find(c =>
+        editingItem.purchaseStore === c ||
+        editingItem.purchaseStore?.startsWith(c + ' ')
+      );
+      if (foundChain) {
+        setStoreChain(foundChain);
+        const branch = editingItem.purchaseStore === foundChain
+          ? '' : editingItem.purchaseStore.slice(foundChain.length + 1);
+        setBranchInput(branch);
+      } else {
+        setStoreChain('');
+        setBranchInput('');
+      }
+    }
     // 保存済み説明文を復元
     if (editingItem.descriptionText) {
       setGeneratedDesc(editingItem.descriptionText);
@@ -2666,13 +2688,11 @@ const PurchaseTab = () => {
                 {/* ── 統合仕入れ先マスタ選択 ── */}
                 {(() => {
                   const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-                  // 設定に登録されたヤフオクストア（詳細オブジェクト）
                   const settingsYahooStores = data.settings?.yahooStores || [];
                   const yahooNames = new Set([
                     ...(master.yahooStores||[]),
                     ...settingsYahooStores.map(s => s.storeName),
                   ]);
-                  // 仕入れ方法に応じてリストを切り替え（storeMaster + settings.yahooStores を統合・あいうえお順）
                   const storeList = (purchaseType === 'online'
                     ? [
                         ...(master.yahooStores||[]),
@@ -2682,40 +2702,133 @@ const PurchaseTab = () => {
                   ).filter((v,i,a) => v && a.indexOf(v) === i)
                    .sort((a,b) => a.localeCompare(b, 'ja'));
 
-                  const handleSelect = (val) => {
-                    if (val === '__custom__') {
-                      setStoreCustomText('');
-                      setF('purchaseStore', '');
-                      setF('sellerLicense', '');
-                      setF('sellerCompanyName', '');
-                    } else {
-                      setStoreCustomText(null);
-                      setF('purchaseStore', val);
-                      // settings.yahooStores から許可証番号・法人名を自動入力
-                      const foundYahoo = settingsYahooStores.find(s => s.storeName === val);
-                      if (foundYahoo) {
-                        setF('sellerLicense', foundYahoo.license || '');
-                        setF('sellerCompanyName', foundYahoo.companyName || '');
-                      } else if (yahooNames.has(val)) {
+                  // ── 電脳仕入れ：従来UI ──
+                  if (purchaseType === 'online') {
+                    const handleSelect = (val) => {
+                      if (val === '__custom__') {
+                        setStoreCustomText('');
+                        setF('purchaseStore', '');
                         setF('sellerLicense', '');
                         setF('sellerCompanyName', '');
                       } else {
-                        setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
-                        setF('sellerCompanyName', '');
+                        setStoreCustomText(null);
+                        setF('purchaseStore', val);
+                        const foundYahoo = settingsYahooStores.find(s => s.storeName === val);
+                        if (foundYahoo) {
+                          setF('sellerLicense', foundYahoo.license || '');
+                          setF('sellerCompanyName', foundYahoo.companyName || '');
+                        } else if (yahooNames.has(val)) {
+                          setF('sellerLicense', '');
+                          setF('sellerCompanyName', '');
+                        } else {
+                          setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
+                          setF('sellerCompanyName', '');
+                        }
+                      }
+                    };
+                    return (
+                      <>
+                        <select className="input-field"
+                          value={storeCustomText !== null ? '__custom__' : (form.purchaseStore || '')}
+                          onChange={e => handleSelect(e.target.value)}>
+                          <option value="">選択してください</option>
+                          {storeList.map(s => <option key={s} value={s}>{s}</option>)}
+                          <option value="__custom__">＋ その他（手入力）</option>
+                        </select>
+                        {storeCustomText !== null && (
+                          <div style={{marginTop:6,display:'flex',gap:6}}>
+                            <input className="input-field" style={{flex:1,marginBottom:0}}
+                              value={storeCustomText}
+                              onChange={e => { setStoreCustomText(e.target.value); setF('purchaseStore', e.target.value); }}
+                              placeholder="仕入れ先名を入力"/>
+                            <button
+                              onClick={() => {
+                                const name = storeCustomText.trim();
+                                if (!name) return;
+                                const newMaster = {
+                                  ...master,
+                                  yahooStores: [...new Set([...(master.yahooStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
+                                };
+                                setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
+                                setF('purchaseStore', name);
+                                setStoreCustomText(null);
+                                toast('✅ 電脳仕入れ先を追加しました');
+                              }}
+                              style={{padding:'10px 14px',border:'none',borderRadius:10,background:'var(--color-primary)',
+                                color:'white',fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
+                              追加
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  }
+
+                  // ── 店舗仕入れ：2段階UI（チェーン → 支店） ──
+                  const locs = master.storeLocations || {};
+                  // チェーン選択
+                  const handleChainSelect = (val) => {
+                    if (val === '__custom__') {
+                      setStoreCustomText('');
+                      setStoreChain('__custom__');
+                      setBranchInput('');
+                      setF('purchaseStore', '');
+                    } else {
+                      setStoreCustomText(null);
+                      setStoreChain(val);
+                      setBranchInput('');
+                      // 支店登録がないチェーンはそのまま仕入れ先に
+                      setF('purchaseStore', val);
+                      setF('sellerLicense', (data.settings?.storeLicenses||{})[val] || '');
+                      setF('sellerCompanyName', '');
+                    }
+                  };
+
+                  // 支店を選択 or 追加して登録
+                  const selectBranch = (branchName, addToMaster = false) => {
+                    const full = storeChain + ' ' + branchName;
+                    setF('purchaseStore', full);
+                    setBranchInput(branchName);
+                    if (addToMaster && storeChain && storeChain !== '__custom__') {
+                      const existing = locs[storeChain] || [];
+                      if (!existing.includes(branchName)) {
+                        const newLocs = {
+                          ...locs,
+                          [storeChain]: [...existing, branchName].sort((a,b) => a.localeCompare(b,'ja')),
+                        };
+                        setData(prev => ({...prev, settings: {...prev.settings,
+                          storeMaster: {...prev.settings.storeMaster, storeLocations: newLocs}}}));
+                        toast('✅ 店舗名を登録しました');
                       }
                     }
                   };
 
+                  // 現チェーンの支店リスト
+                  const chainBranches = (storeChain && storeChain !== '__custom__') ? (locs[storeChain] || []) : [];
+                  // サジェスト（入力テキストで絞り込み）
+                  const suggestions = branchInput
+                    ? chainBranches.filter(b => b.includes(branchInput) && b !== branchInput)
+                    : [];
+
+                  // 表示用：現在のpurchaseStoreからチェーン部分を除いた支店名
+                  const displayChainVal = storeChain === '__custom__'
+                    ? '__custom__'
+                    : (storeChain || (
+                        storeList.find(c => form.purchaseStore === c || form.purchaseStore?.startsWith(c + ' ')) || ''
+                      ));
+
                   return (
                     <>
+                      {/* チェーン選択 */}
                       <select className="input-field"
-                        value={storeCustomText !== null ? '__custom__' : (form.purchaseStore || '')}
-                        onChange={e => handleSelect(e.target.value)}>
+                        value={storeCustomText !== null ? '__custom__' : (displayChainVal || '')}
+                        onChange={e => handleChainSelect(e.target.value)}>
                         <option value="">選択してください</option>
                         {storeList.map(s => <option key={s} value={s}>{s}</option>)}
                         <option value="__custom__">＋ その他（手入力）</option>
                       </select>
 
+                      {/* チェーン手入力 */}
                       {storeCustomText !== null && (
                         <div style={{marginTop:6,display:'flex',gap:6}}>
                           <input className="input-field" style={{flex:1,marginBottom:0}}
@@ -2726,21 +2839,84 @@ const PurchaseTab = () => {
                             onClick={() => {
                               const name = storeCustomText.trim();
                               if (!name) return;
-                              // 店舗 or 電脳、適切なリストに追加（あいうえお順）
-                              const listKey = purchaseType === 'online' ? 'yahooStores' : 'normalStores';
                               const newMaster = {
                                 ...master,
-                                [listKey]: [...new Set([...(master[listKey]||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
+                                normalStores: [...new Set([...(master.normalStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
                               };
                               setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
                               setF('purchaseStore', name);
+                              setStoreChain(name);
                               setStoreCustomText(null);
-                              toast(`✅ ${purchaseType === 'online' ? '電脳' : '店舗'}仕入れ先を追加しました`);
+                              toast('✅ 店舗仕入れ先を追加しました');
                             }}
                             style={{padding:'10px 14px',border:'none',borderRadius:10,background:'var(--color-primary)',
                               color:'white',fontWeight:700,fontSize:13,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}>
                             追加
                           </button>
+                        </div>
+                      )}
+
+                      {/* 支店選択UI（チェーンが選択済みかつ手入力モードでない） */}
+                      {storeChain && storeChain !== '__custom__' && storeCustomText === null && (
+                        <div style={{marginTop:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10,padding:'10px 12px'}}>
+                          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8,textTransform:'uppercase',letterSpacing:'0.05em'}}>
+                            店舗（支店）名
+                          </div>
+
+                          {/* 登録済み支店チップ */}
+                          {chainBranches.length > 0 && (
+                            <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>
+                              {chainBranches.map(b => (
+                                <button key={b}
+                                  onClick={() => selectBranch(b, false)}
+                                  style={{
+                                    padding:'5px 10px',border:'1.5px solid',fontSize:12,fontWeight:600,borderRadius:8,cursor:'pointer',
+                                    whiteSpace:'nowrap',
+                                    borderColor: branchInput === b ? 'var(--color-primary)' : '#cbd5e1',
+                                    background: branchInput === b ? 'rgba(232,64,64,0.08)' : 'white',
+                                    color: branchInput === b ? 'var(--color-primary)' : '#334155',
+                                  }}>
+                                  {b}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* 支店テキスト入力 + サジェスト */}
+                          <div style={{position:'relative'}}>
+                            <input className="input-field" style={{marginBottom:0}}
+                              value={branchInput}
+                              onChange={e => {
+                                setBranchInput(e.target.value);
+                                setF('purchaseStore', storeChain + (e.target.value ? ' ' + e.target.value : ''));
+                              }}
+                              placeholder="例：八戸根城店（手入力または選択）"/>
+                            {suggestions.length > 0 && (
+                              <div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',
+                                border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',
+                                zIndex:10,overflow:'hidden',marginTop:2}}>
+                                {suggestions.map(s => (
+                                  <button key={s}
+                                    onClick={() => selectBranch(s, false)}
+                                    style={{width:'100%',textAlign:'left',padding:'10px 12px',border:'none',
+                                      background:'white',fontSize:13,cursor:'pointer',borderBottom:'1px solid #f1f5f9'}}>
+                                    {s}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ＋ 追加ボタン（手入力して未登録の場合） */}
+                          {branchInput.trim() && !chainBranches.includes(branchInput.trim()) && (
+                            <button
+                              onClick={() => selectBranch(branchInput.trim(), true)}
+                              style={{marginTop:6,width:'100%',padding:'8px',border:'1.5px dashed var(--color-primary)',
+                                borderRadius:8,background:'rgba(232,64,64,0.04)',color:'var(--color-primary)',
+                                fontSize:12,fontWeight:700,cursor:'pointer'}}>
+                              ＋「{branchInput.trim()}」を新しい店舗として登録
+                            </button>
+                          )}
                         </div>
                       )}
                     </>
