@@ -1241,6 +1241,32 @@ const HomeTab = () => {
 };
 
 // ============================================================
+// 状態ランクテンプレート文
+// ============================================================
+const CONDITION_TEMPLATES = {
+  S: '未使用に近い美品です。\n※あくまで新品ではないことをご理解ください',
+  A: '中古品ではございますが、美品に近い商品です。\n目立つ傷や汚れなどございません。\n※中古品にご理解ください。',
+  B: '多少の使用感ございますが、大きなダメージ、汚れなどございません。\n※写真もよくご確認の上、中古品にご理解ください。',
+  C: 'やや気になるダメージや汚れが見られます。\n※写真もよくご確認の上、状態にご理解ください。',
+  D: '全体的に傷や汚れなど使用感の見られる商品です。\n※写真もよくご確認の上、状態にご理解ください。',
+};
+
+// カタカナカラー → 日本語漢字マッピング
+const COLOR_JP_MAP = {
+  'ブラック':'黒', 'ネイビー':'紺', 'ホワイト':'白', 'レッド':'赤',
+  'ブルー':'青', 'グリーン':'緑', 'イエロー':'黄', 'グレー':'灰',
+  'ブラウン':'茶', 'パープル':'紫', 'ゴールド':'金', 'シルバー':'銀',
+  'オレンジ':'橙', 'ボルドー':'えんじ', 'ワインレッド':'えんじ',
+  'キャメル':'駱駝色', 'ベージュ':'ベージュ',
+};
+const normalizeColor = (colorStr) => {
+  if (!colorStr) return colorStr;
+  if (colorStr.includes('/')) return colorStr; // 既に変換済み
+  const jp = COLOR_JP_MAP[colorStr.trim()];
+  return (jp && jp !== colorStr.trim()) ? `${colorStr} / ${jp}` : colorStr;
+};
+
+// ============================================================
 // 仕入れ登録タブ
 // ============================================================
 const PurchaseTab = () => {
@@ -1559,7 +1585,7 @@ const PurchaseTab = () => {
         englishTitle: result.english_title ? result.english_title.slice(0, 40) : (prev.englishTitle || ''),
         brand: result.brand || '',
         category: result.category || '',
-        color: result.color || '',
+        color: normalizeColor(result.color || ''),
         brandReading: result.brand_reading || '',
         categoryKeywords: result.category_keywords || '',
         seoCategories: result.category_keywords
@@ -1821,6 +1847,7 @@ const PurchaseTab = () => {
       '【ブランド】',
       ...brandLines,
       '',
+      ...(form.modelNumber ? ['【型番・モデル】', form.modelNumber, ''] : []),
       '【カテゴリー】',
       categoryText,
       '',
@@ -2473,12 +2500,20 @@ const PurchaseTab = () => {
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
               <div>
                 <label className="field-label">カラー</label>
-                <input className="input-field" value={form.color} onChange={e => setF('color', e.target.value)} placeholder="カラー"/>
+                <input className="input-field" value={form.color}
+                  onChange={e => setF('color', e.target.value)}
+                  onBlur={e => setF('color', normalizeColor(e.target.value))}
+                  placeholder="カラー（例：ブラック / 黒）"/>
               </div>
               <div>
                 <label className="field-label">状態ランク</label>
-                <select className="input-field" value={form.condition} onChange={e => setF('condition', e.target.value)}>
-                  {['S','A','B','C'].map(c => <option key={c} value={c}>{c}ランク</option>)}
+                <select className="input-field" value={form.condition}
+                  onChange={e => {
+                    const v = e.target.value;
+                    setF('condition', v);
+                    if (CONDITION_TEMPLATES[v]) setF('conditionDetail', CONDITION_TEMPLATES[v]);
+                  }}>
+                  {['S','A','B','C','D'].map(c => <option key={c} value={c}>{c}ランク</option>)}
                 </select>
               </div>
             </div>
