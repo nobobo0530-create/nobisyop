@@ -3895,6 +3895,21 @@ const SalesTab = () => {
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
   const [dupConfirm, setDupConfirm] = React.useState(null); // {existingSale, reason, onConfirm}
+  // ── 売上入力 下書き保存 ───────────────────────────────────
+  const SALE_DRAFT_KEY = 'nobushop_sale_draft';
+  const [saleDraftBanner, setSaleDraftBanner] = React.useState(null);
+  const saveSaleDraft = React.useCallback((f, bundle, items, splitMethod) => {
+    try {
+      localStorage.setItem(SALE_DRAFT_KEY, JSON.stringify({ form: f, bundleSale: bundle, bundleSaleItems: items, bundleSaleSplitMethod: splitMethod, savedAt: new Date().toISOString() }));
+    } catch(_) {}
+  }, []);
+  const clearSaleDraft = () => { try { localStorage.removeItem(SALE_DRAFT_KEY); } catch(_) {} };
+  // フォーム変化時に自動保存（新規のみ）
+  React.useEffect(() => {
+    if (!showForm || editingSale) return;
+    if (!form.inventoryId && !form.salePrice && !form.saleDate) return; // 空のままなら保存しない
+    saveSaleDraft(form, bundleSale, bundleSaleItems, bundleSaleSplitMethod);
+  }, [form, bundleSale, bundleSaleItems, bundleSaleSplitMethod, showForm, editingSale]);
   // ── まとめ販売（売上分割）────────────────────────────────
   const SALE_BUNDLE_LABELS = ['A','B','C','D','E','F'];
   const initSaleBundleItems = (n) => Array.from({length:n}, (_,i) =>
@@ -4297,6 +4312,15 @@ const SalesTab = () => {
   const openNew = () => {
     setEditingSale(null);
     setForm(emptyForm);
+    // 下書きチェック
+    try {
+      const raw = localStorage.getItem(SALE_DRAFT_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.form?.inventoryId || parsed?.form?.salePrice) setSaleDraftBanner(parsed);
+        else setSaleDraftBanner(null);
+      } else { setSaleDraftBanner(null); }
+    } catch(_) { setSaleDraftBanner(null); }
     setShowForm(true);
   };
 
@@ -4473,6 +4497,7 @@ const SalesTab = () => {
         ? data.sales.filter(s => s.id !== editingSale.id)
         : data.sales;
       setData({ ...data, inventory: updatedInv, sales: [...baseSales, ...newSales] });
+      clearSaleDraft();
       toast(`✅ まとめ販売 ${newSales.length}件の売上を${editingSale ? '再登録' : '登録'}しました`);
       closeForm();
       return;
@@ -4505,6 +4530,7 @@ const SalesTab = () => {
           platformId: form.platformId || '', updatedAt: new Date().toISOString(),
         };
         setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
+        clearSaleDraft();
         toast('✅ 売上を更新しました');
       } else {
         // ── 新規 ──
@@ -4515,6 +4541,7 @@ const SalesTab = () => {
           platformId: form.platformId || '', createdAt: new Date().toISOString(),
         };
         setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
+        clearSaleDraft();
         toast('✅ 売上を記録しました');
       }
       closeForm();
@@ -5274,11 +5301,32 @@ const SalesTab = () => {
       {/* 売上登録・編集モーダル */}
       {showForm && (
         <div className="modal-overlay" onClick={closeForm}>
-          <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+          <div className="modal-content slide-up" style={{paddingBottom:'calc(24px + env(safe-area-inset-bottom))'}} onClick={e => e.stopPropagation()}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
               <div style={{fontWeight:700,fontSize:17}}>{editingSale ? '✏️ 売上を編集' : '売上登録'}</div>
               <button onClick={closeForm} style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
             </div>
+
+            {/* 下書き復元バナー */}
+            {saleDraftBanner && !editingSale && (
+              <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:'10px 14px',marginBottom:14,fontSize:13}}>
+                <div style={{fontWeight:600,color:'#166534',marginBottom:6}}>
+                  📝 前回の入力途中データがあります（{saleDraftBanner.savedAt ? new Date(saleDraftBanner.savedAt).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''}）
+                </div>
+                <div style={{display:'flex',gap:8}}>
+                  <button style={{flex:1,background:'#16a34a',color:'white',border:'none',borderRadius:8,padding:'8px',fontSize:13,fontWeight:600,cursor:'pointer'}}
+                    onClick={() => {
+                      setForm(saleDraftBanner.form || emptyForm);
+                      if (saleDraftBanner.bundleSale) setBundleSale(true);
+                      if (saleDraftBanner.bundleSaleItems) setBundleSaleItems(saleDraftBanner.bundleSaleItems);
+                      if (saleDraftBanner.bundleSaleSplitMethod) setBundleSaleSplitMethod(saleDraftBanner.bundleSaleSplitMethod);
+                      setSaleDraftBanner(null);
+                    }}>復元する</button>
+                  <button style={{flex:1,background:'white',color:'#dc2626',border:'1px solid #fca5a5',borderRadius:8,padding:'8px',fontSize:13,fontWeight:600,cursor:'pointer'}}
+                    onClick={() => { clearSaleDraft(); setSaleDraftBanner(null); }}>破棄</button>
+                </div>
+              </div>
+            )}
 
             {/* 編集時：商品写真の変更リンク */}
             {editingSale && (() => {
@@ -5841,7 +5889,7 @@ const SalesTab = () => {
               );
             })()}
 
-            <button className="btn-primary" style={{width:'100%'}} onClick={handleSave}>
+            <button className="btn-primary" style={{width:'100%',touchAction:'manipulation'}} onClick={handleSave}>
               {bundleSale
                 ? `💾 ${bundleSaleItems.filter(bi=>bi.inventoryId&&bi.salePrice!=='').length}件に分割して${editingSale?'再登録':'登録'}する`
                 : editingSale ? '💾 売上を更新する' : '💾 売上を記録する'}
