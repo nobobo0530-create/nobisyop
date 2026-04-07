@@ -4460,8 +4460,12 @@ const SalesTab = () => {
 
   return (
     <div className="fade-in">
-      <div className="header">
-        <h1>💰 売上記録</h1>
+      <div className="header" style={{position:'sticky',top:0,zIndex:50,display:'flex',justifyContent:'space-between',alignItems:'center',paddingRight:12}}>
+        <h1 style={{margin:0,fontSize:20,fontWeight:800,letterSpacing:'-0.02em'}}>💰 売上記録</h1>
+        <button className="btn-primary" style={{padding:'8px 16px',fontSize:14,fontWeight:700,borderRadius:12,flexShrink:0,touchAction:'manipulation'}}
+          onClick={openNew}>
+          ＋ 登録
+        </button>
       </div>
 
       <div style={{padding:'12px 16px'}}>
@@ -4471,11 +4475,6 @@ const SalesTab = () => {
             <div style={{color:'#92400e'}}>「売上登録」から記録してください</div>
           </div>
         )}
-
-        <button className="btn-primary" style={{width:'100%',marginBottom:8}}
-          onClick={openNew}>
-          ＋ 売上を登録する
-        </button>
 
         {/* 販売履歴一括取込ボタン */}
         <button onClick={() => { if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; } batchInputRef.current?.click(); }}
@@ -5753,7 +5752,8 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
   const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
-  const [showAllKobotsu, setShowAllKobotsu]   = React.useState(false); // 古物台帳全件表示モーダル
+  const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
+  const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
   const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
 
   const spreadsheetId = settings.googleSpreadsheetId || '';
@@ -6024,16 +6024,19 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 {kobotsuPreview.slice(0,10).map(({item,sale},i) => {
                   const bs = getBundleStyle(item);
                   return (
-                  <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',
-                    background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
-                    borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent'}}>
+                  <tr key={item.id}
+                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : undefined}
+                    style={{borderBottom:'1px solid #f3f3f3',
+                      background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
+                      borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
+                      cursor: bs ? 'pointer' : 'default'}}>
                     <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                     <td style={tdStyle()}>{item.category||'−'}</td>
                     <td style={tdStyle({maxWidth:140,overflow:'hidden',textOverflow:'ellipsis'})}>
                       {bs && (
                         <span style={{display:'inline-block',background:bs.color,color:'white',borderRadius:4,
                           padding:'1px 5px',fontSize:9,fontWeight:700,marginRight:5,verticalAlign:'middle',flexShrink:0}}>
-                          📦まとめ{bs.count}点
+                          📦まとめ{bs.count}点 ›
                         </span>
                       )}
                       {item.brand} {item.productName}
@@ -6067,6 +6070,108 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       </div>
 
       {/* ── 古物台帳 全件表示モーダル ── */}
+      {/* ── まとめ仕入れ詳細モーダル ── */}
+      {expandedBundleGroup && (() => {
+        const bundleItems = kobotsuPreview.filter(({item}) => item.bundleGroup === expandedBundleGroup);
+        const bs = getBundleStyle(bundleItems[0]?.item);
+        const totalPP = bundleItems.reduce((s, {item}) => s + (item.purchasePrice||0), 0);
+        const soldCount = bundleItems.filter(({sale}) => !!sale).length;
+        const totalSP   = bundleItems.reduce((s, {sale}) => s + (sale?.salePrice||0), 0);
+        const FIELDS = [
+          ['品名', ({item}) => [item.brand, item.productName].filter(Boolean).join(' ') || '−'],
+          ['品目（カテゴリ）', ({item}) => item.category||'−'],
+          ['カラー', ({item}) => item.color||'−'],
+          ['状態ランク', ({item}) => item.condition||'−'],
+          ['仕入れ日', ({item}) => item.purchaseDate||'⚠️未入力'],
+          ['仕入れ先', ({item}) => item.purchaseStore||'⚠️未入力'],
+          ['仕入れ価格', ({item}) => item.purchasePrice ? `¥${formatMoney(item.purchasePrice)}` : '−'],
+          ['出品価格（定価）', ({item}) => item.listPrice ? `¥${formatMoney(item.listPrice)}` : '−'],
+          ['売却日', ({sale}) => sale?.saleDate||'未売却'],
+          ['販売価格', ({sale}) => sale?.salePrice ? `¥${formatMoney(sale.salePrice)}` : '−'],
+          ['純利益', ({sale,item}) => {
+            if (!sale) return '−';
+            const profit = sale.profit ?? Math.round(sale.salePrice*(1-(sale.feeRate||0.1)) - (sale.shipping||0) - (item.purchasePrice||0));
+            return `¥${formatMoney(profit)}`;
+          }],
+          ['販路', ({sale}) => sale?.platform||'−'],
+          ['メモ', ({item}) => item.notes||'−'],
+        ];
+        return (
+          <div className="modal-overlay" onClick={() => setExpandedBundleGroup(null)}>
+            <div className="modal-content slide-up" onClick={e => e.stopPropagation()}
+              style={{maxHeight:'90vh',display:'flex',flexDirection:'column',padding:0,overflow:'hidden'}}>
+              {/* ヘッダー */}
+              <div style={{
+                background: bs ? `linear-gradient(135deg, ${bs.color}dd, ${bs.color}99)` : '#374151',
+                padding:'14px 18px',borderRadius:'20px 20px 0 0',flexShrink:0,
+              }}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div style={{fontWeight:800,fontSize:16,color:'white'}}>📦 まとめ仕入れ詳細</div>
+                  <button onClick={() => setExpandedBundleGroup(null)}
+                    style={{background:'rgba(255,255,255,0.2)',border:'none',borderRadius:99,width:30,height:30,
+                      fontSize:18,cursor:'pointer',color:'white',display:'flex',alignItems:'center',justifyContent:'center',touchAction:'manipulation'}}>×</button>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                  {[
+                    ['点数', `${bundleItems.length}点`, 'white'],
+                    ['仕入れ総額', `¥${formatMoney(totalPP)}`, '#fde68a'],
+                    ['売却済', `${soldCount}/${bundleItems.length}件`, totalSP>0 ? '#86efac' : 'rgba(255,255,255,0.7)'],
+                  ].map(([l,v,c]) => (
+                    <div key={l} style={{background:'rgba(255,255,255,0.15)',borderRadius:10,padding:'8px 10px',textAlign:'center'}}>
+                      <div style={{fontSize:10,color:'rgba(255,255,255,0.6)',fontWeight:700,marginBottom:3}}>{l}</div>
+                      <div style={{fontSize:14,fontWeight:800,color:c}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* アイテムリスト */}
+              <div style={{overflowY:'auto',flex:1,padding:'12px 16px',WebkitOverflowScrolling:'touch'}}>
+                {bundleItems.map(({item,sale},idx) => (
+                  <div key={item.id} style={{
+                    marginBottom:12,borderRadius:14,overflow:'hidden',
+                    border: `2px solid ${bs?.color||'#e5e5e5'}22`,
+                    boxShadow:'0 1px 4px rgba(0,0,0,0.06)',
+                  }}>
+                    {/* アイテムヘッダー */}
+                    <div style={{background: bs ? `${bs.color}18` : '#f9fafb', padding:'8px 12px',
+                      borderBottom:`1px solid ${bs?.color||'#e5e5e5'}33`,
+                      display:'flex',alignItems:'center',gap:8}}>
+                      <div style={{width:22,height:22,borderRadius:99,background:bs?.color||'#6b7280',
+                        color:'white',fontSize:11,fontWeight:800,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                        {idx+1}
+                      </div>
+                      <div style={{flex:1,fontWeight:700,fontSize:13,color:'#111',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        {item.brand && <span style={{color:'#999',fontSize:11,marginRight:4}}>{item.brand}</span>}
+                        {item.productName||'商品名未入力'}
+                      </div>
+                      {sale ? (
+                        <span style={{fontSize:11,background:'#d1fae5',color:'#065f46',borderRadius:99,padding:'2px 8px',fontWeight:700,flexShrink:0}}>売却済</span>
+                      ) : (
+                        <span style={{fontSize:11,background:'#f3f4f6',color:'#6b7280',borderRadius:99,padding:'2px 8px',fontWeight:700,flexShrink:0}}>未売却</span>
+                      )}
+                    </div>
+                    {/* 詳細フィールド */}
+                    <div style={{padding:'10px 12px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px 10px',background:'white'}}>
+                      {FIELDS.map(([label, getter]) => {
+                        const val = getter({item,sale});
+                        if (val === '−' || val === null) return null;
+                        const isWarning = val?.toString().startsWith('⚠️');
+                        return (
+                          <div key={label} style={{minWidth:0}}>
+                            <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em'}}>{label}</div>
+                            <div style={{fontSize:12,fontWeight:600,color: isWarning ? '#dc2626' : '#111',marginTop:1,wordBreak:'break-all'}}>{val}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showAllKobotsu && (
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:1000,display:'flex',flexDirection:'column'}}
           onClick={e => { if (e.target === e.currentTarget) setShowAllKobotsu(false); }}>
@@ -6103,16 +6208,19 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   {kobotsuPreview.map(({item,sale},i) => {
                     const bs = getBundleStyle(item);
                     return (
-                    <tr key={item.id} style={{borderBottom:'1px solid #f3f3f3',
-                      background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
-                      borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent'}}>
+                    <tr key={item.id}
+                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : undefined}
+                      style={{borderBottom:'1px solid #f3f3f3',
+                        background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
+                        borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
+                        cursor: bs ? 'pointer' : 'default'}}>
                       <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                       <td style={tdStyle()}>{item.category||'−'}</td>
                       <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>
                         {bs && (
                           <span style={{display:'inline-block',background:bs.color,color:'white',borderRadius:4,
                             padding:'1px 5px',fontSize:9,fontWeight:700,marginRight:5,verticalAlign:'middle'}}>
-                            📦まとめ{bs.count}点
+                            📦まとめ{bs.count}点 ›
                           </span>
                         )}
                         {item.brand} {item.productName}
