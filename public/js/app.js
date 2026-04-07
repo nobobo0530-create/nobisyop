@@ -771,6 +771,13 @@ const HomeTab = () => {
   const selectedMonthLabel = isCurrentMonthView ? '今月'
     : `${selDate.getFullYear()}年${selDate.getMonth()+1}月`;
 
+  // ── 在庫フロー集計 ──
+  const unlistedCount = (data.inventory||[]).filter(i => i.status === 'unlisted').length;
+  const listedCount   = (data.inventory||[]).filter(i => i.status === 'listed').length;
+  const soldInvIds    = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
+  const recordedInvIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
+  const unrecordedSoldCount = [...soldInvIds].filter(id => !recordedInvIds.has(id)).length;
+
   // ── 孤立売上を除外（在庫に紐づかない売上は集計しない）──
   const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
   const validSales = (data.sales||[]).filter(s => !s.inventoryId || _invIdSet.has(s.inventoryId));
@@ -894,6 +901,74 @@ const HomeTab = () => {
       </div>
 
       <div style={{padding:'14px 16px',display:'flex',flexDirection:'column',gap:10}}>
+
+        {/* ── 売上未記録アラート ── */}
+        {unrecordedSoldCount > 0 && (
+          <div onClick={() => setTab('sales')}
+            style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:14,padding:'12px 16px',
+              display:'flex',alignItems:'center',gap:12,cursor:'pointer',touchAction:'manipulation'}}>
+            <div style={{fontSize:24,lineHeight:1}}>⚠️</div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#c2410c'}}>売上未記録が {unrecordedSoldCount}件 あります</div>
+              <div style={{fontSize:11,color:'#ea580c',marginTop:2}}>タップして売上を記録しましょう →</div>
+            </div>
+          </div>
+        )}
+
+        {/* ── 在庫フロー（仕入れ→在庫→売上）── */}
+        <div style={{...C.card,padding:'14px 16px'}}>
+          <div style={{fontSize:11,color:'#999',fontWeight:600,marginBottom:12}}>📦 在庫フロー</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr auto 1fr',alignItems:'center',gap:4}}>
+            {/* 未出品 */}
+            <div onClick={() => setTab('inventory')}
+              style={{textAlign:'center',background:'#f9fafb',borderRadius:12,padding:'10px 6px',cursor:'pointer',touchAction:'manipulation'}}>
+              <div style={{fontSize:9,color:'#6b7280',fontWeight:600,marginBottom:4}}>未出品</div>
+              <div style={{fontSize:22,fontWeight:800,color:'#374151'}}>{unlistedCount}</div>
+              <div style={{fontSize:9,color:'#9ca3af',marginTop:2}}>件</div>
+            </div>
+            <div style={{fontSize:16,color:'#d1d5db',fontWeight:300}}>▶</div>
+            {/* 出品中 */}
+            <div onClick={() => setTab('inventory')}
+              style={{textAlign:'center',background:'#eff6ff',borderRadius:12,padding:'10px 6px',cursor:'pointer',touchAction:'manipulation'}}>
+              <div style={{fontSize:9,color:'#2563eb',fontWeight:600,marginBottom:4}}>出品中</div>
+              <div style={{fontSize:22,fontWeight:800,color:'#1d4ed8'}}>{listedCount}</div>
+              <div style={{fontSize:9,color:'#60a5fa',marginTop:2}}>件</div>
+            </div>
+            <div style={{fontSize:16,color:'#d1d5db',fontWeight:300}}>▶</div>
+            {/* 今月売上 */}
+            <div onClick={() => setTab('sales')}
+              style={{textAlign:'center',background:'#f0fdf4',borderRadius:12,padding:'10px 6px',cursor:'pointer',touchAction:'manipulation'}}>
+              <div style={{fontSize:9,color:'#16a34a',fontWeight:600,marginBottom:4}}>今月売上</div>
+              <div style={{fontSize:22,fontWeight:800,color:'#15803d'}}>{monthlySales.length}</div>
+              <div style={{fontSize:9,color:'#4ade80',marginTop:2}}>件</div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── クイックアクション ── */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+          <button onClick={() => setTab('purchase')} touchAction="manipulation"
+            style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
+              display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
+            <div style={{fontSize:20}}>📥</div>
+            <div style={{fontSize:11,fontWeight:700,color:'#333'}}>仕入れ登録</div>
+          </button>
+          <button onClick={() => setTab('sales')} touchAction="manipulation"
+            style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
+              display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
+            <div style={{fontSize:20}}>💰</div>
+            <div style={{fontSize:11,fontWeight:700,color:'#333'}}>売上記録</div>
+          </button>
+          <button onClick={() => setTab('inventory')} touchAction="manipulation"
+            style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
+              display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
+            <div style={{fontSize:20}}>🗄️</div>
+            <div style={{fontSize:11,fontWeight:700,color:'#333'}}>在庫確認</div>
+          </button>
+        </div>
 
         {/* ── 今月の目標進捗 ── */}
         <div style={C.card}>
@@ -8138,6 +8213,12 @@ const App = () => {
   // APIキー未設定時のバナー
   const showApiWarning = !data.settings?.apiKey && tab !== 'other';
 
+  // ── ナビバッジ用集計 ──
+  const navBadgeInventory = (data.inventory||[]).filter(i => i.status === 'listed').length;
+  const _soldNavIds = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
+  const _recordedNavIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
+  const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
+
   return (
     <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId }}>
       <ToastProvider>
@@ -8216,14 +8297,33 @@ const App = () => {
 
           {/* ボトムナビ */}
           <nav className="bottom-nav">
-            {tabs.map(t => (
-              <div key={t.id} className={`bottom-nav-item ${tab === t.id ? 'active' : ''}`}
-                onClick={() => setTab(t.id)}>
-                {tab === t.id && <div className="nav-icon-bg"/>}
-                <div className="nav-icon">{NAV_ICONS[t.id]}</div>
-                <div className="nav-label">{t.label}</div>
-              </div>
-            ))}
+            {tabs.map(t => {
+              const badge = t.id === 'inventory' ? navBadgeInventory
+                          : t.id === 'sales'     ? navBadgeSales
+                          : 0;
+              return (
+                <div key={t.id} className={`bottom-nav-item ${tab === t.id ? 'active' : ''}`}
+                  onClick={() => setTab(t.id)}>
+                  {tab === t.id && <div className="nav-icon-bg"/>}
+                  <div style={{position:'relative',display:'inline-flex',alignItems:'center',justifyContent:'center'}}>
+                    <div className="nav-icon">{NAV_ICONS[t.id]}</div>
+                    {badge > 0 && (
+                      <div style={{
+                        position:'absolute',top:-4,right:-6,
+                        background: t.id === 'sales' ? '#f97316' : '#2563eb',
+                        color:'white',borderRadius:99,
+                        fontSize:9,fontWeight:700,
+                        minWidth:14,height:14,
+                        display:'flex',alignItems:'center',justifyContent:'center',
+                        padding:'0 3px',lineHeight:1,
+                        border:'1.5px solid white',
+                      }}>{badge > 99 ? '99+' : badge}</div>
+                    )}
+                  </div>
+                  <div className="nav-label">{t.label}</div>
+                </div>
+              );
+            })}
           </nav>
         </div>
       </ToastProvider>
