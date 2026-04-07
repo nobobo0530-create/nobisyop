@@ -947,21 +947,21 @@ const HomeTab = () => {
 
         {/* ── クイックアクション ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-          <button onClick={() => setTab('purchase')} touchAction="manipulation"
+          <button onClick={() => setTab('purchase')}
             style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
               display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
               boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
             <div style={{fontSize:20}}>📥</div>
             <div style={{fontSize:11,fontWeight:700,color:'#333'}}>仕入れ登録</div>
           </button>
-          <button onClick={() => setTab('sales')} touchAction="manipulation"
+          <button onClick={() => setTab('sales')}
             style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
               display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
               boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
             <div style={{fontSize:20}}>💰</div>
             <div style={{fontSize:11,fontWeight:700,color:'#333'}}>売上記録</div>
           </button>
-          <button onClick={() => setTab('inventory')} touchAction="manipulation"
+          <button onClick={() => setTab('inventory')}
             style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
               display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
               boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
