@@ -3386,14 +3386,23 @@ const InventoryTab = () => {
               const isChecked = checkedIds.has(item.id);
               const alert = alertLevel(item);
               const estProfit = (item.listPrice||0) - (item.purchasePrice||0);
+              const isSold = item.status === 'sold';
+              const saleRecord = isSold ? (data.sales||[]).find(s => s.inventoryId === item.id) : null;
+              const soldProfit = saleRecord?.profit ?? null;
+              const isProfitable = soldProfit !== null ? soldProfit >= 0 : null;
               return (
                 <div key={item.id} className="card"
                   style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
-                    background: isChecked ? '#fef2f2' : alert?.level==='danger' ? '#fff8f8' : 'white',
+                    background: isChecked ? '#fef2f2'
+                              : isSold ? '#f8f8f8'
+                              : alert?.level==='danger' ? '#fff8f8' : 'white',
                     border: isChecked ? '1.5px solid #fca5a5'
+                          : isSold ? '1.5px solid #e0e0e0'
                           : alert?.level==='danger' ? '1.5px solid #fecaca'
                           : alert?.level==='warn'   ? '1.5px solid #fde68a'
                           : '1.5px solid transparent',
+                    borderLeft: isSold ? '4px solid #7c3aed' : undefined,
+                    opacity: isSold ? 0.85 : 1,
                     transition:'all 0.15s'}}
                   onClick={bulkMode ? (e) => toggleCheck(item.id, e) : () => setSelected(item)}>
                   {bulkMode && (
@@ -3404,16 +3413,36 @@ const InventoryTab = () => {
                   )}
                   <div style={{position:'relative',flexShrink:0}}>
                     <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
-                    <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
-                      style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
-                      {statusLabel[item.status] || '未出品'}
-                    </span>
+                    {/* 売却済はサムネイル上にオーバーレイ */}
+                    {isSold && (
+                      <div style={{position:'absolute',inset:0,borderRadius:10,
+                        background:'rgba(124,58,237,0.15)',
+                        display:'flex',alignItems:'center',justifyContent:'center'}}>
+                        <span style={{fontSize:9,fontWeight:800,color:'white',
+                          background:'#7c3aed',borderRadius:4,padding:'2px 5px',letterSpacing:'0.04em'}}>
+                          SOLD
+                        </span>
+                      </div>
+                    )}
+                    {!isSold && (
+                      <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
+                        style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
+                        {statusLabel[item.status] || '未出品'}
+                      </span>
+                    )}
                   </div>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:11,color:'#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}</div>
-                    <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:4}}>{item.productName}</div>
+                    <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}</div>
+                    <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       {conditionTag(item.condition)}
+                      {/* 売却済バッジ＋売却日 */}
+                      {isSold && (
+                        <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                          background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe'}}>
+                          ✅ 売却済{saleRecord?.saleDate ? ` ${saleRecord.saleDate.slice(5)}` : ''}
+                        </span>
+                      )}
                       {/* 出品準備度バッジ（未出品のみ） */}
                       {item.status === 'unlisted' && (() => {
                         const done = [
@@ -3439,7 +3468,7 @@ const InventoryTab = () => {
                         );
                       })()}
                       {/* 経過日数・アラートバッジ */}
-                      {alert && (
+                      {alert && !isSold && (
                         <span style={{
                           fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
                           background: alert.level==='danger' ? '#fef2f2' : alert.level==='warn' ? '#fffbeb' : '#f0fdf4',
@@ -3452,17 +3481,39 @@ const InventoryTab = () => {
                     </div>
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
-                    <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
-                    <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
-                    {item.listPrice > 0 && (
-                      <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
-                    )}
-                    {/* 推定利益（未出品・出品中のみ） */}
-                    {item.status !== 'sold' && estProfit !== 0 && (
-                      <div style={{fontSize:10,fontWeight:700,marginTop:2,
-                        color: estProfit > 0 ? '#16a34a' : '#dc2626'}}>
-                        {estProfit > 0 ? '+' : ''}¥{formatMoney(estProfit)}
-                      </div>
+                    {isSold ? (
+                      /* 売却済：実績データを表示 */
+                      <>
+                        <div style={{fontSize:11,color:'#9ca3af',marginBottom:2}}>売上</div>
+                        <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
+                          {saleRecord ? `¥${formatMoney(saleRecord.salePrice)}` : '−'}
+                        </div>
+                        {soldProfit !== null && (
+                          <div style={{
+                            fontSize:12,fontWeight:800,marginTop:3,
+                            color: isProfitable ? '#16a34a' : '#dc2626',
+                            background: isProfitable ? '#f0fdf4' : '#fef2f2',
+                            borderRadius:6,padding:'2px 6px',display:'inline-block',
+                          }}>
+                            {isProfitable?'+':''}¥{formatMoney(soldProfit)}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      /* 未出品・出品中：仕入れ＋出品価格＋推定利益 */
+                      <>
+                        <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
+                        <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
+                        {item.listPrice > 0 && (
+                          <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
+                        )}
+                        {estProfit !== 0 && (
+                          <div style={{fontSize:10,fontWeight:700,marginTop:2,
+                            color: estProfit > 0 ? '#16a34a' : '#dc2626'}}>
+                            {estProfit > 0 ? '+' : ''}¥{formatMoney(estProfit)}
+                          </div>
+                        )}
+                      </>
                     )}
                     {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                   </div>
