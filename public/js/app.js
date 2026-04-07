@@ -4527,8 +4527,9 @@ const SalesTab = () => {
       inventoryId,
       platform,
       feeRate,
-      salePrice:     inv?.listPrice   ? String(inv.listPrice)   : '',
+      salePrice:     inv?.listPrice    ? String(inv.listPrice)    : '',
       purchasePrice: inv?.purchasePrice ? String(inv.purchasePrice) : '',
+      listDate:      inv?.listDate     || '',   // 在庫の出品日を反映
       purchaseDate:  inv?.purchaseDate  || '',
       purchaseStore: inv?.purchaseStore || '',
     });
@@ -5932,7 +5933,7 @@ const SalesTab = () => {
                 const inv = data.inventory.find(i => i.id === iid);
                 setForm(prev => ({
                   ...prev, inventoryId: iid,
-                  listDate:      prev.listDate      || inv?.listDate      || '',
+                  listDate:      inv?.listDate      || '',   // 在庫の出品日を常に反映
                   purchaseDate:  inv?.purchaseDate  || '',   // 在庫から仕入れ日を引き継ぎ
                   purchaseStore: inv?.purchaseStore || '',   // 在庫から仕入れ先を引き継ぎ
                 }));
