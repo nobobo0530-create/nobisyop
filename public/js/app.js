@@ -1603,7 +1603,7 @@ const PurchaseTab = () => {
       setAiResult(result);
       setForm(prev => ({
         ...prev,
-        productName: result.product_name || '',
+        productName: result.product_name || prev.productName || '',
         englishTitle: result.english_title ? result.english_title.slice(0, 40) : (prev.englishTitle || ''),
         brand: result.brand || '',
         category: result.category || '',
@@ -1642,6 +1642,8 @@ const PurchaseTab = () => {
         if (typeResult.confidence >= 70) {
           setPurchaseType(typeResult.type);
           setPurchaseTypeSource('ai');
+          // 電脳仕入れと判定された場合はPayPayを自動セット
+          if (typeResult.type === 'online') setF('paymentMethod', 'PayPay');
         }
       }
       // 購入日の自動入力
@@ -1666,6 +1668,7 @@ const PurchaseTab = () => {
           if (result.item_price || result.item_shipping) {
             setPurchaseType('online');
             setPurchaseTypeSource('ai');
+            setF('paymentMethod', 'PayPay');
           }
         }
       }
@@ -2633,7 +2636,13 @@ const PurchaseTab = () => {
               <div style={{display:'flex',gap:8,marginBottom:12}}>
                 {[['store','🏪 店舗仕入れ'],['online','💻 電脳仕入れ']].map(([type, label]) => (
                   <button key={type} type="button"
-                    onClick={() => { setPurchaseType(type); setPurchaseTypeSource('manual'); setTagReadResult(null); }}
+                    onClick={() => {
+                      setPurchaseType(type);
+                      setPurchaseTypeSource('manual');
+                      setTagReadResult(null);
+                      // 電脳仕入れ選択時は決済方法をPayPayに自動セット
+                      if (type === 'online') setF('paymentMethod', 'PayPay');
+                    }}
                     style={{
                       flex:1, padding:'10px 8px', borderRadius:8, border:'2px solid',
                       borderColor: purchaseType === type ? 'var(--color-primary)' : '#e0e0e0',
