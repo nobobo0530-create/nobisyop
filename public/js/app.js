@@ -2769,7 +2769,7 @@ const PurchaseTab = () => {
                                   ...master,
                                   yahooStores: [...new Set([...(master.yahooStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
                                 };
-                                setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
+                                setData({ ...data, settings: { ...data.settings, storeMaster: newMaster } });
                                 setF('purchaseStore', name);
                                 setStoreCustomText(null);
                                 toast('✅ 電脳仕入れ先を追加しました');
@@ -2816,8 +2816,8 @@ const PurchaseTab = () => {
                           ...locs,
                           [storeChain]: [...existing, branchName].sort((a,b) => a.localeCompare(b,'ja')),
                         };
-                        setData(prev => ({...prev, settings: {...prev.settings,
-                          storeMaster: {...prev.settings.storeMaster, storeLocations: newLocs}}}));
+                        setData({ ...data, settings: { ...data.settings,
+                          storeMaster: { ...data.settings.storeMaster, storeLocations: newLocs } } });
                         toast('✅ 店舗名を登録しました');
                       }
                     }
@@ -2863,7 +2863,7 @@ const PurchaseTab = () => {
                                 ...master,
                                 normalStores: [...new Set([...(master.normalStores||[]), name])].sort((a,b)=>a.localeCompare(b,'ja')),
                               };
-                              setData(prev => ({...prev, settings: {...prev.settings, storeMaster: newMaster}}));
+                              setData({ ...data, settings: { ...data.settings, storeMaster: newMaster } });
                               setF('purchaseStore', name);
                               setStoreChain(name);
                               setStoreCustomText(null);
