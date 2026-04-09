@@ -1238,15 +1238,21 @@ const PurchaseTab = () => {
   const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch(_) {} };
 
   // ── 編集モード専用：フォーム変化時に自動下書き保存（タブ切替・クラッシュ対策）──
+  // ★ deps から editingItem を除外: editingItem が変わった直後は form がまだ古い値のため、
+  //    誤った空フォームを下書き保存してしまうバグを防ぐ。
+  //    form が変化したとき（=editingItemのロード完了後）だけ保存する。
   React.useEffect(() => {
     if (!editingItem) return;
+    // フォームが初期化済みかチェック（productNameが一致しないときは初期化前 → スキップ）
+    if (!form.productName && editingItem.productName) return;
     try {
       localStorage.setItem(
         EDIT_DRAFT_PREFIX + editingItem.id,
         JSON.stringify({ form, purchaseType, registrationMode, savedAt: new Date().toISOString() })
       );
     } catch(_) {}
-  }, [form, editingItem, purchaseType, registrationMode]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, purchaseType, registrationMode]); // ← editingItem を deps に入れない（競合防止）
 
   // 編集モード：バックグラウンド移行時も強制保存
   React.useEffect(() => {
