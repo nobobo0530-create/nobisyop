@@ -1897,6 +1897,9 @@ const PurchaseTab = () => {
           ...form,
           userId: currentUser,
           productName: bi.productName.trim() || `${form.productName || '商品'} [${bi.label}]`,
+          // 分割新規商品はブランド・出品日を未選択（まだ確定していないため）
+          brand: '',
+          listDate: '',
           purchasePrice: bPrice,
           purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
           size: computedSize,
@@ -1905,7 +1908,7 @@ const PurchaseTab = () => {
           listPrice: Number(form.listPrice) || 0,
           photos: idx === 0 ? photoRefs : [],
           mgmtNo: idx === 0 ? mgmtNo : null,
-          status: registrationMode === 'listed' ? 'listed' : 'unlisted',
+          status: 'unlisted', // 分割新規商品は必ず「未出品」からスタート
           bundleGroup: bundleGroupId,
           bundleLabel: bi.label,
           descriptionText: idx === 0 ? (generatedDesc || '') : '',
@@ -5050,11 +5053,19 @@ const SalesTab = () => {
           );
         })()}
 
-        {/* 売上一覧 */}
+        {/* 売上記録一覧（仕入れ日順） */}
         {validSales.length > 0 && (
           <>
-            <div className="section-title">売上履歴</div>
-            {[...validSales].reverse().map(s => {
+            <div className="section-title">売上記録一覧</div>
+            {[...validSales].sort((a, b) => {
+              const ia = data.inventory.find(i => i.id === a.inventoryId) || {};
+              const ib = data.inventory.find(i => i.id === b.inventoryId) || {};
+              const da = ia.purchaseDate || a.purchaseDate || '';
+              const db = ib.purchaseDate || b.purchaseDate || '';
+              // 仕入れ日の昇順（古い仕入れ順）。同日は売却日の昇順
+              if (da !== db) return da < db ? -1 : 1;
+              return (a.saleDate||'') < (b.saleDate||'') ? -1 : 1;
+            }).map(s => {
               const item = data.inventory.find(i => i.id === s.inventoryId);
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               const isProfit = (s.profit || 0) >= 0;
