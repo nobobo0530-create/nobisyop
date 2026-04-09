@@ -3531,7 +3531,9 @@ const InventoryTab = () => {
   // アラートレベル（未出品・出品中のみ）
   const alertLevel = (item) => {
     if (item.status === 'sold') return null;
-    const d = daysSince(item.purchaseDate);
+    // 出品中 → 出品日からの経過日数 / 未出品 → 仕入れ日からの経過日数
+    const baseDate = item.status === 'listed' ? item.listDate : item.purchaseDate;
+    const d = daysSince(baseDate);
     if (d === null) return null;
     if (d >= 60) return { level: 'danger', label: '値下げ推奨', days: d };
     if (d >= 30) return { level: 'warn',   label: '値下げ検討', days: d };
