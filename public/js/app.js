@@ -1450,6 +1450,7 @@ const PurchaseTab = () => {
       showOptionalFee:   (editingItem.purchaseCost?.optionalFeeTaxIn > 0) || false,
     });
     setPurchaseType(editingItem.purchaseType || 'store');
+    setRegistrationMode(editingItem.status === 'listed' ? 'listed' : 'unlisted');
     // 仕入れ先マスタとの照合（storeMaster + settings.yahooStores の両方を確認）
     const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
     const allKnownStores = [
@@ -6318,7 +6319,13 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
     tc.requestAccessToken({ prompt: gToken ? '' : 'consent' });
   };
 
-  const salesPreview = [...data.sales].sort((a,b)=>(a.saleDate||'')>(b.saleDate||'')?1:-1);
+  const salesPreview = [...data.sales].sort((a,b) => {
+    const ia = data.inventory.find(i=>i.id===a.inventoryId)||{};
+    const ib = data.inventory.find(i=>i.id===b.inventoryId)||{};
+    const da = ia.purchaseDate || a.purchaseDate || '';
+    const db = ib.purchaseDate || b.purchaseDate || '';
+    return da > db ? 1 : da < db ? -1 : 0;
+  });
   const kobotsuPreview = [...data.inventory]
     .sort((a,b) => {
       const dc = (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : (a.purchaseDate||'') < (b.purchaseDate||'') ? -1 : 0;
@@ -6448,11 +6455,11 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>売上記録がありません</div>
         ) : (
           <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-            <table style={{fontSize:12,borderCollapse:'collapse',minWidth:520}}>
+            <table style={{fontSize:11,borderCollapse:'collapse',minWidth:480}}>
               <thead>
                 <tr style={{background:'#f8f8f8'}}>
-                  {['ブランド','品名','仕入日','仕入先','仕入単価','出品日','販売日','販路','売上','純利益','利益率'].map(h=>(
-                    <th key={h} style={thStyle}>{h}</th>
+                  {['仕入日','ブランド','品名','仕入先','仕入単価','販売日','販路','売上','純利益','利益率'].map(h=>(
+                    <th key={h} style={{...thStyle,fontSize:10}}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -6468,6 +6475,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const brand = item.brand || s.brand || '';
                   const productName = item.productName || s.productName || s.memo || '−';
                   const store = item.purchaseStore || s.purchaseStore || '';
+                  const td = (extra={}) => ({padding:'4px 6px',whiteSpace:'nowrap',...extra});
                   const canEdit = typeof setPendingEditSaleId === 'function' && typeof setTab === 'function';
                   return (
                     <tr key={s.id}
@@ -6475,25 +6483,24 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       style={{borderBottom:'1px solid #f3f3f3', cursor: canEdit ? 'pointer' : 'default'}}
                       onMouseEnter={canEdit ? e => e.currentTarget.style.background='#f0f9ff' : undefined}
                       onMouseLeave={canEdit ? e => e.currentTarget.style.background='' : undefined}>
-                      <td style={tdStyle({maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
+                      <td style={td({color:'#777',fontSize:10})}>{item.purchaseDate||s.purchaseDate||'−'}</td>
+                      <td style={td({maxWidth:70,overflow:'hidden',textOverflow:'ellipsis'})}>
                         {brand
-                          ? <span style={{color:'#888',fontWeight:700,textTransform:'uppercase'}}>{brand}</span>
-                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:10}}>⚠️未入力</span>}
+                          ? <span style={{color:'#888',fontWeight:700,textTransform:'uppercase',fontSize:10}}>{brand}</span>
+                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:9}}>⚠️</span>}
                       </td>
-                      <td style={tdStyle({fontWeight:600,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis'})}>{productName}</td>
-                      <td style={tdStyle({color:'#777'})}>{item.purchaseDate||'−'}</td>
-                      <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>
+                      <td style={td({fontWeight:600,maxWidth:110,overflow:'hidden',textOverflow:'ellipsis'})}>{productName}</td>
+                      <td style={td({maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
                         {store
-                          ? <span style={{color:'#555'}}>{store}</span>
-                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:10}}>⚠️未入力</span>}
+                          ? <span style={{color:'#555',fontSize:10}}>{store}</span>
+                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:9}}>⚠️</span>}
                       </td>
-                      <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice||s.purchasePrice||0)}</td>
-                      <td style={tdStyle({color:'#777'})}>{item.listDate||'−'}</td>
-                      <td style={tdStyle({color:'#555'})}>{s.saleDate}</td>
-                      <td style={tdStyle()}>{s.platform}</td>
-                      <td style={tdStyle({fontWeight:700})}>¥{formatMoney(sp)}</td>
-                      <td style={tdStyle({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
-                      <td style={tdStyle({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
+                      <td style={td({fontWeight:600})}>¥{formatMoney(item.purchasePrice||s.purchasePrice||0)}</td>
+                      <td style={td({color:'#555',fontSize:10})}>{s.saleDate}</td>
+                      <td style={td({fontSize:10})}>{s.platform}</td>
+                      <td style={td({fontWeight:700})}>¥{formatMoney(sp)}</td>
+                      <td style={td({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
+                      <td style={td({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
                     </tr>
                   );
                 })}
