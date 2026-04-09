@@ -9114,12 +9114,21 @@ const App = () => {
             return result;
           };
 
+          // 設定: フィールド単位でマージ（空欄よりも入力済みを優先）
+          // ローカルが持つ値はローカル優先、ローカルが空の場合はクラウドを使用
+          const mergeSettings = (local, cloud) => {
+            const base = { ...(cloud || {}), ...(local || {}) };
+            // 空欄のフィールドはクラウド側の値で補完
+            for (const [k, v] of Object.entries(cloud || {})) {
+              if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
+            }
+            return base;
+          };
           const mergedData = {
             ...cloudData,
             inventory: mergeByLastWrite(localData.inventory, cloudData.inventory),
             sales:     mergeByLastWrite(localData.sales,     cloudData.sales),
-            // 設定はローカル優先（クラウドにまだ反映されていない設定変更を守る）
-            settings: localData.settings || cloudData.settings,
+            settings:  mergeSettings(localData.settings, cloudData.settings),
           };
           const cleanedMerged = cleanOrphans(mergedData);
           dataRef.current = cleanedMerged;
