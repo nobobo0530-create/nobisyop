@@ -987,22 +987,44 @@ const HomeTab = () => {
               const item = (data.inventory||[]).find(inv => inv.id === s.inventoryId) || {};
               const name = item.productName || s.productName || s.memo || '商品';
               const brand = item.brand || s.brand || '';
+              const profit = s.profit || 0;
               return (
                 <div key={s.id}
-                  style={{display:'flex',alignItems:'center',gap:10,
-                    paddingTop: i>0 ? 9 : 0,
-                    marginTop: i>0 ? 9 : 0,
+                  style={{display:'flex',alignItems:'flex-start',gap:10,
+                    paddingTop: i>0 ? 10 : 0,
+                    marginTop: i>0 ? 10 : 0,
                     borderTop: i>0 ? '1px solid #f3f4f6' : 'none'}}>
-                  <div style={{flex:1,minWidth:0}}>
-                    {brand && <span style={{fontSize:10,color:'#9ca3af',fontWeight:600,marginRight:4}}>{brand}</span>}
-                    <span style={{fontSize:12,fontWeight:600,color:'#1a1a1a',
-                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
-                    <div style={{fontSize:10,color:'#9ca3af',marginTop:1}}>{s.saleDate} · {s.platform}</div>
+                  {/* 左：商品情報 */}
+                  <div style={{flex:1,minWidth:0,overflow:'hidden'}}>
+                    {brand && (
+                      <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,
+                        overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+                        marginBottom:2}}>
+                        {brand}
+                      </div>
+                    )}
+                    <div style={{
+                      fontSize:13,fontWeight:600,color:'#1a1a1a',
+                      lineHeight:1.4,
+                      display:'-webkit-box',
+                      WebkitLineClamp:2,
+                      WebkitBoxOrient:'vertical',
+                      overflow:'hidden',
+                    }}>
+                      {name}
+                    </div>
+                    <div style={{fontSize:10,color:'#9ca3af',marginTop:3}}>
+                      {s.saleDate} · {s.platform}
+                    </div>
                   </div>
-                  <div style={{textAlign:'right',flexShrink:0}}>
-                    <div style={{fontSize:12,fontWeight:700,color:'#1a1a1a'}}>¥{formatMoney(s.salePrice||0)}</div>
-                    <div style={{fontSize:11,fontWeight:700,color:(s.profit||0)>=0?'#16a34a':'#dc2626'}}>
-                      {(s.profit||0)>=0?'+':''}{formatMoney(s.profit||0)}
+                  {/* 右：金額（固定幅） */}
+                  <div style={{textAlign:'right',flexShrink:0,minWidth:72}}>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1a1a1a',whiteSpace:'nowrap'}}>
+                      ¥{formatMoney(s.salePrice||0)}
+                    </div>
+                    <div style={{fontSize:12,fontWeight:700,whiteSpace:'nowrap',marginTop:2,
+                      color: profit>=0 ? '#16a34a' : '#dc2626'}}>
+                      {profit>=0?'+':''}{formatMoney(profit)}
                     </div>
                   </div>
                 </div>
