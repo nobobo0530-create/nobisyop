@@ -8454,6 +8454,69 @@ const OtherTab = () => {
               })()}
             </div>
 
+            {/* ── まとめ仕入れデータ一括補正 ── */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📦 まとめ仕入れデータ補正</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:12}}>
+                まとめ仕入れで分割登録された商品の出品日・ブランドを一括リセットします。<br/>
+                ブランド・出品日はあとから各商品ページで個別入力できます。
+              </div>
+              {(() => {
+                const bundleInvItems = data.inventory.filter(i => i.bundleGroup);
+                const needsFix = bundleInvItems.filter(i => i.brand || i.listDate);
+                const alreadyDone = bundleInvItems.length > 0 && needsFix.length === 0;
+                return (
+                  <>
+                    <div style={{background:'#f8fafc',borderRadius:8,padding:'8px 12px',marginBottom:12,fontSize:12}}>
+                      <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                        <span style={{color:'#555'}}>まとめ仕入れ由来の商品</span>
+                        <b>{bundleInvItems.length}件</b>
+                      </div>
+                      <div style={{display:'flex',justifyContent:'space-between'}}>
+                        <span style={{color: needsFix.length > 0 ? '#d97706' : '#16a34a'}}>
+                          {needsFix.length > 0 ? '⚠️ 補正対象' : '✅ 補正済み'}
+                        </span>
+                        <b style={{color: needsFix.length > 0 ? '#d97706' : '#16a34a'}}>
+                          {needsFix.length > 0 ? `${needsFix.length}件` : `${bundleInvItems.length}件`}
+                        </b>
+                      </div>
+                    </div>
+                    {needsFix.length > 0 && (
+                      <div style={{fontSize:11,color:'#888',marginBottom:10,lineHeight:1.6}}>
+                        補正内容：<br/>
+                        · ブランド → 空欄にリセット<br/>
+                        · 出品日 → 空欄にリセット<br/>
+                        <span style={{color:'#bbb'}}>（bundleGroupを持つ商品が対象）</span>
+                      </div>
+                    )}
+                    <button
+                      disabled={needsFix.length === 0}
+                      onClick={() => {
+                        if (!window.confirm(
+                          `まとめ仕入れ由来の商品 ${needsFix.length}件の\n` +
+                          `「ブランド」と「出品日」を空欄にリセットします。\n\n` +
+                          `この操作は元に戻せません。よろしいですか？`
+                        )) return;
+                        const newInventory = data.inventory.map(i =>
+                          i.bundleGroup ? { ...i, brand: '', listDate: '' } : i
+                        );
+                        setData({ ...data, inventory: newInventory });
+                        toast(`✅ ${needsFix.length}件のブランド・出品日をリセットしました`);
+                      }}
+                      style={{width:'100%',padding:'12px',borderRadius:10,border:'none',fontWeight:700,
+                        fontSize:14,WebkitTapHighlightColor:'transparent',transition:'all 0.15s',
+                        cursor: needsFix.length > 0 ? 'pointer' : 'default',
+                        background: needsFix.length > 0 ? '#d97706' : '#e5e7eb',
+                        color: needsFix.length > 0 ? 'white' : '#aaa'}}>
+                      {needsFix.length > 0
+                        ? `🔧 ${needsFix.length}件を一括補正する`
+                        : alreadyDone ? '✅ すべて補正済み' : '補正対象なし'}
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
+
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>🎯 目標・ご褒美設定</div>
               <div style={{marginBottom:10}}>
