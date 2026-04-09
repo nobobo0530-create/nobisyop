@@ -4624,9 +4624,15 @@ const SalesTab = () => {
   }, [data.inventory, data.settings]);
 
   // pendingSaleItemId（他タブからの遷移）を受け取ってフォームを開く
+  // ※ 既存売上がある場合は edit モードで開く（重複ダイアログ回避）
   React.useEffect(() => {
     if (pendingSaleItemId) {
-      openNewWithItem(pendingSaleItemId);
+      const existingSale = (data.sales || []).find(s => s.inventoryId === pendingSaleItemId);
+      if (existingSale) {
+        openEdit(existingSale); // 既存売上に仕入れ情報を追記するため編集モードで開く
+      } else {
+        openNewWithItem(pendingSaleItemId);
+      }
       setPendingSaleItemId(null);
     }
   }, [pendingSaleItemId]);
@@ -4716,12 +4722,9 @@ const SalesTab = () => {
         return { sale: s, reason: '商品IDが一致しています', level: 'strong' };
       }
 
-      // ② 同じ在庫ID（強制重複）
-      if (inventoryId && s.inventoryId === inventoryId) {
-        return { sale: s, reason: '同じ在庫商品が既に売上登録済みです', level: 'strong' };
-      }
+      // ※ 同一inventoryId は重複ではなく「更新」として扱う（handleSaveで別途処理）
 
-      // ③ 複合条件（タイトル類似 + ブランド + カテゴリ + 価格 + 送料）
+      // ② 複合条件（タイトル類似 + ブランド + カテゴリ + 価格 + 送料）
       const exInv = data.inventory.find(i => i.id === s.inventoryId);
       if (!exInv) continue;
 
@@ -4872,6 +4875,51 @@ const SalesTab = () => {
 
     // 新規登録時のみ重複チェック
     if (!editingSale) {
+      // ── 同一在庫商品（inventoryId）の既存売上があれば自動的に更新モードへ切替 ──
+      // 重複ではなく「仕入れ情報の後付けマージ」として扱う
+      const sameItemSale = form.inventoryId
+        ? (data.sales || []).find(s => s.inventoryId === form.inventoryId)
+        : null;
+      if (sameItemSale) {
+        // 既存売上を editingSale として設定し、フォームを merge した状態で再保存
+        const listDate = form.listDate || selectedItem?.listDate || sameItemSale.listDate || '';
+        const turnoverDays = calcTurnoverDays(listDate, sameItemSale.saleDate || form.saleDate);
+        const purchasePriceVal = form.purchasePrice !== ''
+          ? Number(form.purchasePrice)
+          : (sameItemSale.purchasePrice ?? selectedItem?.purchasePrice ?? 0);
+        const invPatch = selectedItem ? {
+          ...(form.purchasePrice !== '' ? { purchasePrice: Number(form.purchasePrice) } : {}),
+          ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
+          ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+        } : null;
+        const updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
+          ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, ...invPatch } : i)
+          : data.inventory;
+        // 既存売上レコードに仕入れ情報・出品日をマージ（販売情報は既存を優先）
+        const merged = {
+          ...sameItemSale,
+          purchasePrice: purchasePriceVal,
+          listDate,
+          turnoverDays,
+          ...(form.platformId  ? { platformId:  form.platformId  } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        setSaving(true);
+        try {
+          setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === sameItemSale.id ? merged : s) });
+          clearSaleDraft();
+          toast('✅ 既存の売上記録に仕入れ情報を反映しました');
+          closeForm();
+        } catch(e) {
+          console.error('merge error:', e);
+          setFormError('保存中にエラーが発生しました。もう一度お試しください。');
+        } finally {
+          setSaving(false);
+        }
+        return;
+      }
+
+      // ── 異なる商品の重複チェック ──
       const dup = findDuplicateSale({
         inventoryId: form.inventoryId,
         platformId:  form.platformId,
