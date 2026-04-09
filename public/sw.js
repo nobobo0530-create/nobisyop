@@ -1,102 +1,70 @@
-// v10: 売上分割機能追加
-const CACHE_NAME = 'nobushop-v10';
-const STATIC_ASSETS = [
+// SalesLog Service Worker v20260409i
+// キャッシュ優先戦略 + Google APIはスキップ
+var CACHE = 'nobushop-20260409i';
+
+var PRECACHE = [
   '/',
-  '/index.html',
   '/manifest.json',
+  '/js/app.js?v=20260409i',
+  'https://unpkg.com/react@18/umd/react.production.min.js',
+  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
 ];
 
-// キャッシュしないURLのパターン（外部API等）
-const NO_CACHE_PATTERNS = [
-  '/api/',           // Vercel Serverless Functions
-  'supabase.co',     // Supabase API
-  'anthropic.com',   // Claude API
-  'unpkg.com',       // React CDN
-  'jsdelivr.net',    // Supabase JS CDN
-  'cdn.tailwindcss', // Tailwind CDN
-  'cdnjs.cloudflare',// QRCode CDN
-];
-
-// ネットワークファーストにするURLパターン（常に最新版を優先）
-const NETWORK_FIRST_PATTERNS = [
-  '/index.html',
-  '/js/app.js',
-  '/?',  // クエリ付きindex.html
-];
-
-const shouldSkipCache = (url) =>
-  NO_CACHE_PATTERNS.some(pattern => url.includes(pattern));
-
-const shouldNetworkFirst = (url) =>
-  NETWORK_FIRST_PATTERNS.some(pattern => url.includes(pattern));
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache =>
-      cache.addAll(STATIC_ASSETS).catch(err => console.warn('Cache failed:', err))
-    )
+self.addEventListener('install', function(e) {
+  e.waitUntil(
+    caches.open(CACHE).then(function(c) {
+      return Promise.allSettled(
+        PRECACHE.map(function(url) {
+          return c.add(new Request(url, { mode: 'cors', credentials: 'omit' }))
+            .catch(function(err) { console.warn('[SW] skip:', url, err.message); });
+        })
+      );
+    }).then(function() { return self.skipWaiting(); })
   );
-  self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => {
-        console.log('[SW] 古いキャッシュを削除:', k);
-        return caches.delete(k);
-      }))
-    )
+self.addEventListener('activate', function(e) {
+  e.waitUntil(
+    caches.keys().then(function(keys) {
+      return Promise.all(
+        keys.filter(function(k) { return k !== CACHE; })
+            .map(function(k) { return caches.delete(k); })
+      );
+    }).then(function() { return self.clients.claim(); })
   );
-  self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-  const url = event.request.url;
+self.addEventListener('fetch', function(e) {
+  if (e.request.method !== 'GET') return;
+  var url = e.request.url;
 
-  // 外部API等はキャッシュせずそのままネットワークへ
-  if (shouldSkipCache(url)) {
-    event.respondWith(fetch(event.request));
-    return;
-  }
+  // Google API / 動的エンドポイントはスキップ
+  if (url.includes('accounts.google.com')) return;
+  if (url.includes('googleapis.com')) return;
+  if (url.includes('anthropic.com')) return;
+  if (url.includes('api.remove.bg')) return;
 
-  // index.html / app.js はネットワークファースト（常に最新版を取得）
-  if (shouldNetworkFirst(url)) {
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          if (response.ok && event.request.method === 'GET') {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => {
-          // ネットワーク失敗時はキャッシュにフォールバック
-          return caches.match(event.request).then(cached => {
-            if (cached) return cached;
-            return caches.match('/index.html');
-          });
-        })
-    );
-    return;
-  }
+  // Tailwind CDN はネットワーク優先（動的生成のため）
+  if (url.includes('cdn.tailwindcss.com')) return;
 
-  // その他（アイコン等）はキャッシュファースト
-  event.respondWith(
-    caches.match(event.request).then(cached => {
+  // Babel は初回コンパイル時のみ必要 → キャッシュしない（容量節約）
+  if (url.includes('@babel/standalone')) return;
+
+  e.respondWith(
+    caches.match(e.request).then(function(cached) {
       if (cached) return cached;
-      return fetch(event.request).then(response => {
-        if (response.ok && event.request.method === 'GET') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+      return fetch(e.request).then(function(resp) {
+        if (resp && resp.ok && resp.type !== 'opaque') {
+          var clone = resp.clone();
+          caches.open(CACHE).then(function(c) { c.put(e.request, clone); });
         }
-        return response;
+        return resp;
+      }).catch(function() {
+        // オフライン時はindex.htmlにフォールバック
+        if (e.request.destination === 'document') return caches.match('/');
+        return new Response('', { status: 503 });
       });
-    }).catch(() => {
-      if (event.request.destination === 'document') {
-        return caches.match('/index.html');
-      }
     })
   );
 });

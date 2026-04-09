@@ -9,19 +9,21 @@
   <meta name="theme-color" content="#0a0a0a">
   <title>SalesLog</title>
   <link rel="manifest" href="/manifest.json">
-  <!-- Apple Touch Icon（iPhone ホーム画面） -->
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
-  <!-- Favicon -->
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
   <link rel="shortcut icon" href="/favicon.ico">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- QRコード -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin></script>
+  <!-- React 本番ビルド（開発版の約8倍高速・小さい） -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Google Identity Services（OAuth2） -->
+  <!-- Google OAuth（非同期） -->
   <script src="https://accounts.google.com/gsi/client" async></script>
+
   <style>
     :root {
       --color-primary: #E84040;
@@ -53,13 +55,13 @@
     .fade-in { animation: fadeIn 0.2s ease-out; }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-    /* ── iOS タップ遅延・タッチフリーズ対策 ── */
+    /* iOS タップ遅延・タッチフリーズ対策 */
     button, a, [role="button"], input[type="button"], input[type="submit"] {
       touch-action: manipulation;
       -webkit-tap-highlight-color: transparent;
     }
 
-    /* ── ボタン ── */
+    /* ボタン */
     .btn-primary {
       background: var(--color-primary); color: white; border: none;
       border-radius: 14px; padding: 15px 24px; font-size: 16px; font-weight: 700;
@@ -82,13 +84,13 @@
     }
     .btn-secondary:active { background: #fff0f0; transform: scale(0.97); }
 
-    /* ── カード ── */
+    /* カード */
     .card {
       background: white; border-radius: var(--card-radius);
       box-shadow: var(--card-shadow); overflow: hidden;
     }
 
-    /* ── 入力 ── */
+    /* 入力 */
     .input-field {
       width: 100%; border: 1.5px solid #e8e8e8; border-radius: 12px;
       padding: 13px 14px; font-size: 16px; transition: all 0.15s;
@@ -105,7 +107,7 @@
       text-transform: uppercase; letter-spacing: 0.06em;
     }
 
-    /* ── ボトムナビ ── */
+    /* ボトムナビ */
     .bottom-nav {
       position: fixed; bottom: 0; left: 0; right: 0;
       background: rgba(255,255,255,0.96);
@@ -130,7 +132,7 @@
       background: rgba(232,64,64,0.1); border-radius: 10px;
     }
 
-    /* ── ヘッダー ── */
+    /* ヘッダー */
     .main-content {
       padding-top: env(safe-area-inset-top);
       padding-bottom: calc(64px + env(safe-area-inset-bottom));
@@ -142,7 +144,7 @@
     }
     .header h1 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
 
-    /* ── モーダル ── */
+    /* モーダル */
     .modal-overlay {
       position: fixed; inset: 0; background: rgba(0,0,0,0.4);
       z-index: 200; display: flex; align-items: flex-end;
@@ -159,7 +161,7 @@
       border-radius: 2px; margin: 0 auto 16px;
     }
 
-    /* ── タグ ── */
+    /* タグ */
     .tag { display: inline-block; padding: 3px 9px; border-radius: 7px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
     .tag-s { background: #dcfce7; color: #166534; }
     .tag-a { background: #dbeafe; color: #1e40af; }
@@ -169,7 +171,7 @@
     .tag-sold { background: #ede9fe; color: #5b21b6; }
     .tag-unlisted { background: #f3f4f6; color: #6b7280; }
 
-    /* ── スピナー ── */
+    /* スピナー */
     .spinner {
       width: 20px; height: 20px;
       border: 2px solid rgba(255,255,255,0.3); border-top-color: white;
@@ -177,7 +179,7 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ── 写真グリッド ── */
+    /* 写真グリッド */
     .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .photo-item {
       aspect-ratio: 1; border-radius: 12px; overflow: hidden;
@@ -189,7 +191,7 @@
       align-items: center; justify-content: center; gap: 4px; color: #bbb;
     }
 
-    /* ── KPIカード ── */
+    /* KPIカード */
     .kpi-card {
       background: white; border-radius: 16px; padding: 16px;
       box-shadow: var(--card-shadow);
@@ -200,13 +202,13 @@
 
     textarea.input-field { resize: vertical; min-height: 120px; }
 
-    /* ── ステップインジケーター ── */
+    /* ステップインジケーター */
     .step-indicator { display: flex; gap: 6px; padding: 0 16px 12px; }
     .step { flex: 1; height: 3px; border-radius: 2px; background: #eee; transition: background 0.3s; }
     .step.active { background: var(--color-primary); }
     .step.done { background: #f9a0a0; }
 
-    /* ── トースト ── */
+    /* トースト */
     .toast {
       position: fixed; bottom: calc(76px + env(safe-area-inset-bottom));
       left: 50%; transform: translateX(-50%);
@@ -219,16 +221,192 @@
     @keyframes toastIn { from { opacity:0; transform:translateX(-50%) translateY(14px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
     @keyframes toastOut { from { opacity: 1; } to { opacity: 0; } }
 
-    /* ── セクションタイトル ── */
+    /* セクションタイトル */
     .section-title {
       font-size: 13px; font-weight: 700; color: #aaa;
       text-transform: uppercase; letter-spacing: 0.06em;
       padding: 16px 16px 8px;
     }
+
+    /* ── ローディング画面 ── */
+    #app-loading {
+      position: fixed; inset: 0;
+      background: #0f172a;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 9999;
+      transition: opacity 0.35s ease;
+      padding-top: env(safe-area-inset-top);
+    }
+    #app-loading.hide { opacity: 0; pointer-events: none; }
+    #app-loading .logo {
+      font-size: 30px; font-weight: 900; color: white;
+      letter-spacing: -1.5px; margin-bottom: 6px;
+    }
+    #app-loading .sub {
+      font-size: 11px; color: rgba(255,255,255,0.35);
+      letter-spacing: 0.12em; font-weight: 600; text-transform: uppercase;
+      margin-bottom: 40px;
+    }
+    #app-loading .bar-wrap {
+      width: 120px; height: 3px;
+      background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;
+    }
+    #app-loading .bar {
+      height: 100%; background: #E84040; border-radius: 2px;
+      animation: barPulse 1.4s ease-in-out infinite;
+      transform-origin: left;
+    }
+    @keyframes barPulse {
+      0%   { transform: scaleX(0.1) translateX(0); }
+      50%  { transform: scaleX(1)   translateX(0); }
+      100% { transform: scaleX(0.1) translateX(1000%); }
+    }
+    #app-loading .status {
+      margin-top: 16px; font-size: 11px;
+      color: rgba(255,255,255,0.25); font-weight: 500;
+    }
   </style>
 </head>
 <body>
+
+  <!-- ローディング画面（アプリ起動まで表示） -->
+  <div id="app-loading">
+    <div class="logo">SalesLog</div>
+    <div class="sub">Sales Management</div>
+    <div class="bar-wrap"><div class="bar"></div></div>
+    <div class="status" id="load-status">読み込み中...</div>
+  </div>
+
   <div id="root"></div>
-  <script src="/js/app.js?v=20260409h" type="text/babel"></script>
+
+  <script>
+  // ── Babel コンパイルキャッシュ + 高速起動ローダー ──
+  // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
+  //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
+  (function() {
+    var VERSION = '20260409i';
+    var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
+
+    var loadingEl = document.getElementById('app-loading');
+    var statusEl  = document.getElementById('load-status');
+
+    function setStatus(msg) {
+      if (statusEl) statusEl.textContent = msg;
+    }
+
+    function hideLoading() {
+      if (!loadingEl) return;
+      loadingEl.classList.add('hide');
+      setTimeout(function() {
+        if (loadingEl && loadingEl.parentNode) loadingEl.parentNode.removeChild(loadingEl);
+      }, 400);
+    }
+
+    function execCode(code) {
+      var s = document.createElement('script');
+      s.textContent = code;
+      document.head.appendChild(s);
+      // React が同期レンダリングする少し後にローディングを消す
+      requestAnimationFrame(function() {
+        requestAnimationFrame(hideLoading);
+      });
+    }
+
+    // 古バージョンのキャッシュを削除
+    try {
+      var allKeys = Object.keys(localStorage);
+      for (var i = 0; i < allKeys.length; i++) {
+        var k = allKeys[i];
+        if (k.indexOf('nobushop_compiled_') === 0 && k !== COMPILE_KEY) {
+          localStorage.removeItem(k);
+        }
+      }
+    } catch(e) {}
+
+    // ── 高速パス: キャッシュ済みコンパイル結果を直接実行 ──
+    try {
+      var cached = localStorage.getItem(COMPILE_KEY);
+      if (cached) {
+        setStatus('');
+        execCode(cached);
+        return; // Babel不要 → ここで完了（起動 < 500ms）
+      }
+    } catch(e) {}
+
+    // ── 低速パス（初回のみ）: Babel を動的ロード → コンパイル → キャッシュ ──
+    setStatus('初回セットアップ中...');
+
+    function loadScript(src, onLoad, onError) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.crossOrigin = 'anonymous';
+      s.onload  = onLoad;
+      s.onerror = onError || function() { setStatus('スクリプト読込エラー'); };
+      document.head.appendChild(s);
+    }
+
+    function compileAndRun(src) {
+      setStatus('コンパイル中...');
+      var compiled;
+      try {
+        compiled = Babel.transform(src, {
+          presets: ['react'],
+          sourceType: 'script',
+        }).code;
+      } catch(err) {
+        console.error('[SalesLog] コンパイルエラー:', err);
+        setStatus('コンパイルエラー。再読込してください。');
+        return;
+      }
+
+      // キャッシュ保存（失敗しても動作継続）
+      try {
+        localStorage.setItem(COMPILE_KEY, compiled);
+      } catch(e) {
+        console.warn('[SalesLog] キャッシュ保存失敗（容量不足の可能性）:', e.message);
+      }
+
+      setStatus('');
+      execCode(compiled);
+    }
+
+    // Babel standalone を動的ロード（初回のみ必要）
+    loadScript(
+      'https://unpkg.com/@babel/standalone/babel.min.js',
+      function() {
+        // Babel ロード完了 → ソースを fetch
+        setStatus('ソース取得中...');
+        fetch('/js/app.js?v=' + VERSION)
+          .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+          })
+          .then(compileAndRun)
+          .catch(function(err) {
+            console.error('[SalesLog] fetch エラー:', err);
+            setStatus('読込エラー。再読込してください。');
+          });
+      },
+      function() {
+        setStatus('Babel読込失敗。再読込してください。');
+      }
+    );
+
+    // ── Service Worker 登録 ──
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+          .then(function(reg) {
+            console.log('[SW] 登録成功:', reg.scope);
+          })
+          .catch(function(e) {
+            console.warn('[SW] 登録失敗:', e.message);
+          });
+      });
+    }
+  })();
+  </script>
+
 </body>
 </html>
