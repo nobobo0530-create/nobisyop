@@ -769,105 +769,57 @@ const HomeTab = () => {
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-  // ── 選択中の月（デフォルト: 今月）──
-  const [selectedMonth, setSelectedMonth] = React.useState(currentMonth);
-  const isCurrentMonthView = selectedMonth === currentMonth;
-  const selDate = new Date(selectedMonth + '-01');
-  const selectedMonthLabel = isCurrentMonthView ? '今月'
-    : `${selDate.getFullYear()}年${selDate.getMonth()+1}月`;
-
-  // ── 在庫フロー集計 ──
+  // ── 在庫集計 ──
   const unlistedCount = (data.inventory||[]).filter(i => i.status === 'unlisted').length;
   const listedCount   = (data.inventory||[]).filter(i => i.status === 'listed').length;
   const soldInvIds    = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const recordedInvIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
   const unrecordedSoldCount = [...soldInvIds].filter(id => !recordedInvIds.has(id)).length;
 
-  // ── 孤立売上を除外（在庫に紐づかない売上は集計しない）──
+  // ── 売上集計（有効データのみ）──
   const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
   const validSales = (data.sales||[]).filter(s => !s.inventoryId || _invIdSet.has(s.inventoryId));
-  // 実効仕入れ値（売上レコード or 在庫から取得）
   const getEffectivePP = (s) => {
     if ((s.purchasePrice||0) > 0) return s.purchasePrice;
     return (data.inventory||[]).find(i => i.id === s.inventoryId)?.purchasePrice || 0;
   };
-  // 集計用：販売価格＋仕入れ値の両方が揃っているものだけ（未入力データを除外）
   const summarySales = validSales.filter(s => (s.salePrice||0) > 0 && getEffectivePP(s) > 0);
 
-  // ── 月次データ（選択月ベース）──
-  const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(selectedMonth));
-  const totalProfit = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
-  const inventoryCount = data.inventory.filter(i => i.status !== 'sold').length;
+  // ── 今月データ ──
+  const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(currentMonth));
+  const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
+  const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const profitRate   = totalRevenue > 0 ? Math.round(totalProfit / totalRevenue * 100) : 0;
 
-  // ── 前月比較（選択月の1つ前）──
-  const prevMonthDate = new Date(selDate.getFullYear(), selDate.getMonth() - 1, 1);
+  // ── 前月比 ──
+  const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const prevMonth = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth() + 1).padStart(2, '0')}`;
   const prevMonthProfit = summarySales.filter(s => s.saleDate?.startsWith(prevMonth)).reduce((a, s) => a + (s.profit || 0), 0);
+  const profitDiff  = totalProfit - prevMonthProfit;
+  const profitDiffPct = prevMonthProfit > 0 ? Math.round(profitDiff / prevMonthProfit * 100) : null;
 
-  const monthlyGoal = userProfile?.monthlyGoal || 100000;
-  const rewardPercent = userProfile?.rewardPercent || 10;
-  const milestones = userProfile?.milestones || [];
+  // ── 目標進捗 ──
+  const monthlyGoal  = userProfile?.monthlyGoal || 100000;
+  const progressPct  = monthlyGoal > 0 ? Math.min(100, Math.round(totalProfit / monthlyGoal * 100)) : 0;
+  const remaining    = Math.max(0, monthlyGoal - totalProfit);
+  const daysInMonth  = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 
-  const progressPct = monthlyGoal > 0 ? Math.min(100, Math.round(totalProfit / monthlyGoal * 100)) : 0;
-  const remaining = Math.max(0, monthlyGoal - totalProfit);
-  const rewardBudget = Math.round(totalProfit * rewardPercent / 100);
+  // ── 平均回転日数（今月売上） ──
+  const turnoverList = monthlySales.map(s => s.turnoverDays).filter(d => d != null && d >= 0);
+  const avgTurnover  = turnoverList.length > 0 ? Math.round(turnoverList.reduce((a,b)=>a+b,0)/turnoverList.length) : null;
 
-  // ── 週次データ ──
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  // 今週の月曜日を求める（日=0→-6, 月=1→0, ...）
-  const dow = now.getDay(); // 0=日
-  const diffToMon = dow === 0 ? -6 : 1 - dow;
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() + diffToMon);
-  weekStart.setHours(0, 0, 0, 0);
-  // toISOStringはUTCになるためローカル日付を使う（JSTでズレ防止）
-  const toLocalStr = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const weekStartStr = toLocalStr(weekStart);
-  // 今週の日曜日
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 6);
-  const weekEndStr = toLocalStr(weekEnd);
+  // ── 長期在庫（60日超・未売却）──
+  const longStayItems = (data.inventory||[]).filter(i => {
+    if (i.status === 'sold' || !i.purchaseDate) return false;
+    return Math.floor((now - new Date(i.purchaseDate)) / 86400000) > 60;
+  });
 
-  const weeklySales = summarySales.filter(s => s.saleDate >= weekStartStr && s.saleDate <= weekEndStr);
-  const weeklyProfit = weeklySales.reduce((a, s) => a + (s.profit || 0), 0);
-
-  // 1週間あたりの目標（月目標 ÷ 月の日数 × 7）
-  const weeklyTarget = Math.ceil(monthlyGoal * 7 / daysInMonth);
-  const weeklyRemaining = Math.max(0, weeklyTarget - weeklyProfit);
-  const weeklyPct = weeklyTarget > 0 ? Math.min(100, Math.round(weeklyProfit / weeklyTarget * 100)) : 0;
-  const weeklyAchieved = weeklyProfit >= weeklyTarget;
-
-  // ── 旅行ゲーム ──
-  const currentSpot = [...TRAVEL_SPOTS].reverse().find(s => totalProfit >= s.min) || TRAVEL_SPOTS[0];
-  const nextSpot = TRAVEL_SPOTS.find(s => s.min > totalProfit);
-  const toNextSpot = nextSpot ? nextSpot.min - totalProfit : 0;
-
-  // ── マイルストーン ──
-  const getSalesByMonth = () => {
-    const byMonth = {};
-    summarySales.forEach(s => {
-      const m = s.saleDate?.slice(0,7);
-      if (m) byMonth[m] = (byMonth[m] || 0) + (s.profit || 0);
-    });
-    return byMonth;
-  };
-  const monthlyProfits = getSalesByMonth();
-  const getAchievedCount = (milestone) => {
-    if (!milestone.targetAmount) return 0;
-    return Object.values(monthlyProfits).filter(p => p >= milestone.targetAmount).length;
-  };
-  const nextMilestone = milestones.find(m => getAchievedCount(m) < (m.targetCount || 1));
-
-  // ── 月次グラフ用 ref（IIFE内でhookを呼べないためトップレベルで宣言）──
-  const chartRef = React.useRef();
-  React.useEffect(() => {
-    if (chartRef.current) chartRef.current.scrollLeft = chartRef.current.scrollWidth;
-  }, []);
+  // ── 最近の売上（直近3件）──
+  const recentSales = [...(data.sales||[])].sort((a,b)=>(b.saleDate||'')>(a.saleDate||'')?1:-1).slice(0,3);
 
   // ── 目標編集モーダル ──
   const [editingGoal, setEditingGoal] = React.useState(false);
-  const [goalInput, setGoalInput] = React.useState('');
-
+  const [goalInput, setGoalInput]     = React.useState('');
   const openGoalEdit = () => { setGoalInput(String(monthlyGoal)); setEditingGoal(true); };
   const saveGoal = () => {
     const v = Number(goalInput);
@@ -875,350 +827,223 @@ const HomeTab = () => {
     setEditingGoal(false);
   };
 
-  const C = {
-    card:    { background:'white', borderRadius:16, padding:16, boxShadow:'0 2px 8px rgba(0,0,0,0.08)' },
-    cardSub: { background:'#f5f5f5', borderRadius:10, padding:'8px 12px' },
-  };
-
   return (
-    <div className="fade-in" style={{background:'#f5f5f5',minHeight:'100vh'}}>
+    <div className="fade-in" style={{background:'#f1f5f9',minHeight:'100vh'}}>
 
       {/* ── ヘッダー ── */}
       <div style={{
-        background:'#E84040',
-        padding:'16px 20px 14px',
-        paddingTop:'calc(16px + env(safe-area-inset-top))',
+        background:'#0f172a',
+        padding:'14px 20px 12px',
+        paddingTop:'calc(14px + env(safe-area-inset-top))',
+        display:'flex',justifyContent:'space-between',alignItems:'center',
       }}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
-          <div>
-            <div style={{fontSize:22,fontWeight:800,letterSpacing:'-0.5px',color:'white'}}>SalesLog</div>
-            <div style={{fontSize:11,color:'rgba(255,255,255,0.75)',marginTop:1}}>売上管理アプリ</div>
-          </div>
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:12,color:'rgba(255,255,255,0.8)'}}>
-              {isCurrentMonthView
-                ? `${now.getFullYear()}年${now.getMonth()+1}月`
-                : <span style={{background:'rgba(255,255,255,0.2)',borderRadius:6,padding:'2px 8px'}}>📅 {selectedMonthLabel}</span>
-              }
-            </div>
+        <div>
+          <div style={{fontSize:18,fontWeight:800,letterSpacing:'-0.5px',color:'white'}}>SalesLog</div>
+          <div style={{fontSize:10,color:'rgba(255,255,255,0.4)',marginTop:1,letterSpacing:'0.05em'}}>SALES MANAGEMENT</div>
+        </div>
+        <div style={{textAlign:'right'}}>
+          <div style={{fontSize:12,color:'rgba(255,255,255,0.5)',fontWeight:600}}>
+            {now.getFullYear()}年{now.getMonth()+1}月
           </div>
         </div>
       </div>
 
-      <div style={{padding:'14px 16px',display:'flex',flexDirection:'column',gap:10}}>
+      <div style={{padding:'14px 14px',display:'flex',flexDirection:'column',gap:10}}>
 
-        {/* ── 売上未記録アラート ── */}
+        {/* ── アラート：売上未記録 ── */}
         {unrecordedSoldCount > 0 && (
           <div onClick={() => setTab('sales')}
-            style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:14,padding:'12px 16px',
-              display:'flex',alignItems:'center',gap:12,cursor:'pointer',touchAction:'manipulation'}}>
-            <div style={{fontSize:24,lineHeight:1}}>⚠️</div>
+            style={{background:'#fff7ed',border:'1.5px solid #fb923c',borderRadius:12,padding:'10px 14px',
+              display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
+            <span style={{fontSize:18}}>⚠️</span>
             <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:700,color:'#c2410c'}}>売上未記録が {unrecordedSoldCount}件 あります</div>
-              <div style={{fontSize:11,color:'#ea580c',marginTop:2}}>タップして売上を記録しましょう →</div>
+              <span style={{fontSize:13,fontWeight:700,color:'#c2410c'}}>売上未記録 {unrecordedSoldCount}件</span>
+              <span style={{fontSize:11,color:'#ea580c',marginLeft:6}}>→ タップして記録</span>
             </div>
           </div>
         )}
 
-        {/* ── 在庫フロー（仕入れ→在庫→売上）── */}
-        <div style={{...C.card,padding:'14px 16px'}}>
-          <div style={{fontSize:11,color:'#999',fontWeight:600,marginBottom:12}}>📦 在庫フロー</div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr auto 1fr',alignItems:'center',gap:4}}>
-            {/* 未出品 */}
-            <div onClick={() => setTab('inventory')}
-              style={{textAlign:'center',background:'#f9fafb',borderRadius:12,padding:'10px 6px',cursor:'pointer',touchAction:'manipulation'}}>
-              <div style={{fontSize:9,color:'#6b7280',fontWeight:600,marginBottom:4}}>未出品</div>
-              <div style={{fontSize:22,fontWeight:800,color:'#374151'}}>{unlistedCount}</div>
-              <div style={{fontSize:9,color:'#9ca3af',marginTop:2}}>件</div>
-            </div>
-            <div style={{fontSize:16,color:'#d1d5db',fontWeight:300}}>▶</div>
-            {/* 出品中 */}
-            <div onClick={() => setTab('inventory')}
-              style={{textAlign:'center',background:'#eff6ff',borderRadius:12,padding:'10px 6px',cursor:'pointer',touchAction:'manipulation'}}>
-              <div style={{fontSize:9,color:'#2563eb',fontWeight:600,marginBottom:4}}>出品中</div>
-              <div style={{fontSize:22,fontWeight:800,color:'#1d4ed8'}}>{listedCount}</div>
-              <div style={{fontSize:9,color:'#60a5fa',marginTop:2}}>件</div>
-            </div>
-            <div style={{fontSize:16,color:'#d1d5db',fontWeight:300}}>▶</div>
-            {/* 今月売上 */}
-            <div onClick={() => setTab('sales')}
-              style={{textAlign:'center',background:'#f0fdf4',borderRadius:12,padding:'10px 6px',cursor:'pointer',touchAction:'manipulation'}}>
-              <div style={{fontSize:9,color:'#16a34a',fontWeight:600,marginBottom:4}}>今月売上</div>
-              <div style={{fontSize:22,fontWeight:800,color:'#15803d'}}>{monthlySales.length}</div>
-              <div style={{fontSize:9,color:'#4ade80',marginTop:2}}>件</div>
-            </div>
+        {/* ── HERO: 今月の利益 ── */}
+        <div style={{background:'#0f172a',borderRadius:18,padding:'20px 20px 18px',position:'relative',overflow:'hidden'}}>
+          {/* 装飾ライン */}
+          <div style={{position:'absolute',top:0,right:0,width:120,height:120,
+            background:'rgba(232,64,64,0.12)',borderRadius:'0 0 0 100%',pointerEvents:'none'}}/>
+          <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',fontWeight:600,letterSpacing:'0.08em',marginBottom:6}}>
+            今月の純利益
           </div>
-        </div>
-
-        {/* ── クイックアクション ── */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-          <button onClick={() => setTab('purchase')}
-            style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
-              display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
-              boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
-            <div style={{fontSize:20}}>📥</div>
-            <div style={{fontSize:11,fontWeight:700,color:'#333'}}>仕入れ登録</div>
-          </button>
-          <button onClick={() => setTab('sales')}
-            style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
-              display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
-              boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
-            <div style={{fontSize:20}}>💰</div>
-            <div style={{fontSize:11,fontWeight:700,color:'#333'}}>売上記録</div>
-          </button>
-          <button onClick={() => setTab('inventory')}
-            style={{background:'white',border:'1.5px solid #e5e5e5',borderRadius:14,padding:'12px 6px',
-              display:'flex',flexDirection:'column',alignItems:'center',gap:5,cursor:'pointer',
-              boxShadow:'0 1px 4px rgba(0,0,0,0.06)',touchAction:'manipulation'}}>
-            <div style={{fontSize:20}}>🗄️</div>
-            <div style={{fontSize:11,fontWeight:700,color:'#333'}}>在庫確認</div>
-          </button>
-        </div>
-
-        {/* ── 今月の目標進捗 ── */}
-        <div style={C.card}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-            <div style={{fontSize:12,color:'#999',fontWeight:600}}>{selectedMonthLabel}の目標月利</div>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <div style={{fontSize:12,color:'#E84040',fontWeight:700}}>{progressPct}%</div>
-              <button onClick={openGoalEdit}
-                style={{fontSize:11,color:'#E84040',background:'#fff0f0',border:'1px solid #fca5a5',borderRadius:6,padding:'2px 8px',cursor:'pointer',fontWeight:600}}>
-                変更
-              </button>
-            </div>
+          <div style={{fontSize:44,fontWeight:900,letterSpacing:'-2px',
+            color: totalProfit >= 0 ? '#4ade80' : '#f87171',lineHeight:1,marginBottom:8}}>
+            ¥{formatMoney(totalProfit)}
           </div>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:4}}>
-            <div style={{fontSize:28,fontWeight:800,letterSpacing:'-1px',color: remaining===0?'#16a34a':'#1a1a1a'}}>
-              {remaining === 0 ? '達成 🎉' : `¥${formatMoney(remaining)}`}
-            </div>
-            <div style={{fontSize:11,color:'#999',textAlign:'right',lineHeight:1.6}}>
-              <div>目標 <span style={{color:'#333',fontWeight:600}}>¥{formatMoney(monthlyGoal)}</span></div>
-              <div>利益 <span style={{color:'#16a34a',fontWeight:600}}>¥{formatMoney(totalProfit)}</span></div>
-            </div>
-          </div>
-          <div style={{background:'#f0f0f0',borderRadius:99,height:7,overflow:'hidden',marginTop:4}}>
-            <div style={{
-              height:'100%', borderRadius:99,
-              background: progressPct>=100 ? '#16a34a' : '#E84040',
-              width:`${progressPct}%`,
-              transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)',
-            }}/>
-          </div>
-        </div>
-
-        {/* ── 今週の進捗 ── */}
-        <div style={{...C.card, border: weeklyAchieved ? '1px solid #bbf7d0' : '1px solid #f0f0f0'}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-            <div style={{fontSize:12,color:'#999',fontWeight:600}}>今週の進捗</div>
-            {weeklyAchieved
-              ? <span style={{fontSize:11,background:'#d1fae5',color:'#065f46',borderRadius:20,padding:'2px 8px',fontWeight:700}}>✅ 達成！</span>
-              : <span style={{fontSize:11,background:'#fff0f0',color:'#dc2626',borderRadius:20,padding:'2px 8px',fontWeight:700}}>あと ¥{formatMoney(weeklyRemaining)}</span>
-            }
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}}>
-            <div style={{textAlign:'center'}}>
-              <div style={{fontSize:10,color:'#999',marginBottom:4}}>今週の目標</div>
-              <div style={{fontSize:16,fontWeight:700,color:'#333'}}>¥{formatMoney(weeklyTarget)}</div>
-            </div>
-            <div style={{textAlign:'center',borderLeft:'1px solid #f0f0f0',borderRight:'1px solid #f0f0f0'}}>
-              <div style={{fontSize:10,color:'#999',marginBottom:4}}>今週の利益</div>
-              <div style={{fontSize:16,fontWeight:700,color: weeklyProfit>=weeklyTarget?'#16a34a':'#E84040'}}>¥{formatMoney(weeklyProfit)}</div>
-            </div>
-            <div style={{textAlign:'center'}}>
-              <div style={{fontSize:10,color:'#999',marginBottom:4}}>達成率</div>
-              <div style={{fontSize:16,fontWeight:700,color: weeklyAchieved?'#16a34a':'#333'}}>{weeklyPct}%</div>
-            </div>
-          </div>
-          <div style={{background:'#f0f0f0',borderRadius:99,height:6,overflow:'hidden'}}>
-            <div style={{
-              height:'100%', borderRadius:99,
-              background: weeklyAchieved ? '#16a34a' : '#E84040',
-              width:`${weeklyPct}%`,
-              transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)',
-            }}/>
-          </div>
-          <div style={{fontSize:10,color:'#bbb',marginTop:6,textAlign:'right'}}>
-            {weekStartStr} 〜 {weekEndStr}
-          </div>
-        </div>
-
-        {/* ── 月次利益折れ線グラフ ── */}
-        {(() => {
-          const COL_W = 52, CH = 70, PAD_T = 22, PAD_B = 6;
-          // ドット色：利益額のしきい値で変化（選択中は必ず赤）
-          const dotColor = (p, isSelected) => isSelected ? '#E84040' : p >= 1000000 ? '#16a34a' : p >= 500000 ? '#f59e0b' : '#E84040';
-          // 直近12ヶ月
-          const months = [];
-          for (let i = 11; i >= 0; i--) {
-            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-            const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-            months.push({
-              key,
-              label: i === 0 ? '今月' : i === 1 ? '先月' : `${d.getMonth()+1}月`,
-              profit: monthlyProfits[key] || 0,
-              isCurrent: i === 0,
-            });
-          }
-          const maxP = Math.max(...months.map(m => m.profit), 1);
-          const minP = Math.min(...months.map(m => m.profit), 0);
-          const range = Math.max(maxP - minP, 1);
-          const getY = p => PAD_T + (CH - PAD_T - PAD_B) * (1 - (p - minP) / range);
-          const getX = i => i * COL_W + COL_W / 2;
-          const totalW = months.length * COL_W;
-          // 折れ線パス
-          const linePath = months.map((m, i) => `${i === 0 ? 'M' : 'L'}${getX(i)},${getY(m.profit)}`).join(' ');
-          // グラデーション塗りつぶしパス
-          const fillPath = linePath + ` L${getX(months.length-1)},${CH} L${getX(0)},${CH} Z`;
-          return (
-            <div style={{...C.card, padding:'14px 14px 10px'}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                <div style={{fontSize:12,color:'#999',fontWeight:600}}>📈 月次利益</div>
-                <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                  {/* 今月に戻るボタン（過去月を選択中のみ表示）*/}
-                  {!isCurrentMonthView && (
-                    <button onClick={() => setSelectedMonth(currentMonth)}
-                      style={{fontSize:9,color:'#E84040',background:'#fff0f0',border:'1px solid #fca5a5',
-                        borderRadius:10,padding:'2px 7px',cursor:'pointer',fontWeight:700,touchAction:'manipulation'}}>
-                      今月に戻る
-                    </button>
-                  )}
-                  {/* 凡例 */}
-                  <div style={{display:'flex',gap:8,fontSize:9,color:'#999'}}>
-                    <span><span style={{color:'#16a34a',fontWeight:700}}>●</span> 100万+</span>
-                    <span><span style={{color:'#f59e0b',fontWeight:700}}>●</span> 50万+</span>
-                    <span><span style={{color:'#E84040',fontWeight:700}}>●</span> 〜50万</span>
-                  </div>
-                </div>
-              </div>
-              <div ref={chartRef}
-                style={{overflowX:'auto',WebkitOverflowScrolling:'touch',
-                  scrollbarWidth:'none',msOverflowStyle:'none'}}>
-                <div style={{minWidth:totalW,position:'relative'}}>
-                  {/* SVG折れ線 */}
-                  <svg width={totalW} height={CH} style={{display:'block',overflow:'visible'}}>
-                    {/* ゼロライン */}
-                    {minP < 0 && (
-                      <line x1={0} y1={getY(0)} x2={totalW} y2={getY(0)}
-                        stroke="#e5e5e5" strokeWidth={1} strokeDasharray="3,3"/>
-                    )}
-                    {/* 塗りつぶし */}
-                    <path d={fillPath} fill="#E84040" fillOpacity={0.06}/>
-                    {/* 折れ線 */}
-                    <path d={linePath} fill="none" stroke="#e0e0e0" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"/>
-                    {/* ドット＋利益額ラベル＋タップ領域 */}
-                    {months.map((m, i) => {
-                      const x = getX(i), y = getY(m.profit);
-                      const isSelected = m.key === selectedMonth;
-                      const color = dotColor(m.profit, isSelected);
-                      const labelY = y > PAD_T + 10 ? y - 8 : y + 16;
-                      return (
-                        <g key={m.key} onClick={() => setSelectedMonth(m.key)}
-                          style={{cursor:'pointer'}}>
-                          {/* タップしやすい透明な当たり判定 */}
-                          <rect x={x - COL_W/2} y={0} width={COL_W} height={CH}
-                            fill="transparent"/>
-                          {/* 選択中の列ハイライト */}
-                          {isSelected && (
-                            <rect x={x - COL_W/2 + 4} y={0} width={COL_W - 8} height={CH}
-                              rx={6} fill="#E84040" fillOpacity={0.07}/>
-                          )}
-                          {/* 利益額 */}
-                          {m.profit !== 0 && (
-                            <text x={x} y={labelY} textAnchor="middle"
-                              fontSize={8} fontWeight={isSelected ? 700 : 400} fill={color}>
-                              {m.profit >= 10000 ? `${Math.round(m.profit/10000)}万` : formatMoney(m.profit)}
-                            </text>
-                          )}
-                          {/* ドット（選択中は大きく光る）*/}
-                          {isSelected && <circle cx={x} cy={y} r={9} fill={color} fillOpacity={0.12}/>}
-                          <circle cx={x} cy={y} r={isSelected ? 5 : 3.5}
-                            fill={color} stroke="white" strokeWidth={1.5}/>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                  {/* 月ラベル（タップ可能）*/}
-                  <div style={{display:'flex'}}>
-                    {months.map(m => {
-                      const isSelected = m.key === selectedMonth;
-                      return (
-                        <div key={m.key}
-                          onClick={() => setSelectedMonth(m.key)}
-                          style={{width:COL_W,flexShrink:0,textAlign:'center',
-                            fontSize:10,
-                            color: isSelected ? '#E84040' : '#bbb',
-                            fontWeight: isSelected ? 700 : 400,
-                            marginTop:3, cursor:'pointer',
-                            touchAction:'manipulation',
-                            paddingBottom:4,
-                          }}>
-                          {m.label}
-                          {isSelected && <div style={{width:16,height:2,background:'#E84040',borderRadius:1,margin:'2px auto 0'}}/>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* ── 今月の利益 / 在庫数 ── */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-          <div style={C.card}>
-            <div style={{fontSize:11,color:'#999',marginBottom:6,fontWeight:600}}>{selectedMonthLabel}の利益</div>
-            <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:totalProfit>=0?'#16a34a':'#E84040'}}>
-              ¥{formatMoney(totalProfit)}
-            </div>
+          {/* 前月比 */}
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
+            {profitDiffPct !== null ? (
+              <span style={{fontSize:12,fontWeight:700,
+                color: profitDiff >= 0 ? '#4ade80' : '#f87171',
+                background: profitDiff >= 0 ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
+                borderRadius:99,padding:'2px 10px'}}>
+                {profitDiff >= 0 ? '▲' : '▼'} {Math.abs(profitDiffPct)}% 前月比
+              </span>
+            ) : (
+              <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>前月データなし</span>
+            )}
             {prevMonthProfit > 0 && (
-              <div style={{fontSize:10,color:'#bbb',marginTop:4}}>
-                前月 ¥{formatMoney(prevMonthProfit)}
-              </div>
+              <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>前月 ¥{formatMoney(prevMonthProfit)}</span>
             )}
           </div>
-          <div style={C.card}>
-            <div style={{fontSize:11,color:'#999',marginBottom:6,fontWeight:600}}>在庫数</div>
-            <div style={{fontSize:24,fontWeight:800,letterSpacing:'-0.5px',color:'#1a1a1a'}}>
-              {inventoryCount}<span style={{fontSize:13,color:'#999',marginLeft:2}}>件</span>
+          {/* 目標プログレスバー */}
+          <div style={{marginBottom:6}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
+              <span style={{fontSize:10,color:'rgba(255,255,255,0.4)',fontWeight:600}}>
+                目標 ¥{formatMoney(monthlyGoal)}
+              </span>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:12,fontWeight:800,color: progressPct>=100 ? '#4ade80' : 'white'}}>
+                  {progressPct}%
+                </span>
+                <button onClick={openGoalEdit}
+                  style={{fontSize:10,color:'rgba(255,255,255,0.5)',background:'rgba(255,255,255,0.08)',
+                    border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'2px 8px',
+                    cursor:'pointer',fontWeight:600,touchAction:'manipulation'}}>
+                  変更
+                </button>
+              </div>
+            </div>
+            <div style={{background:'rgba(255,255,255,0.1)',borderRadius:99,height:6,overflow:'hidden'}}>
+              <div style={{height:'100%',borderRadius:99,
+                background: progressPct>=100 ? '#4ade80' : '#E84040',
+                width:`${progressPct}%`,transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)'}}/>
+            </div>
+            {remaining > 0 && (
+              <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginTop:4,textAlign:'right'}}>
+                あと ¥{formatMoney(remaining)} で達成
+              </div>
+            )}
+            {remaining === 0 && (
+              <div style={{fontSize:11,color:'#4ade80',marginTop:4,textAlign:'right',fontWeight:700}}>🎉 今月の目標達成！</div>
+            )}
+          </div>
+        </div>
+
+        {/* ── 在庫ステータス 3分割 ── */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+          {/* 未出品 */}
+          <div onClick={() => setTab('inventory')}
+            style={{background: unlistedCount > 0 ? '#fff7ed' : 'white',
+              borderRadius:14,padding:'14px 10px',textAlign:'center',cursor:'pointer',touchAction:'manipulation',
+              border: unlistedCount > 0 ? '1.5px solid #fed7aa' : '1.5px solid #f0f0f0',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
+            <div style={{fontSize:9,color: unlistedCount>0?'#ea580c':'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>
+              未出品
+            </div>
+            <div style={{fontSize:28,fontWeight:900,color: unlistedCount>0?'#c2410c':'#374151',lineHeight:1,marginBottom:2}}>
+              {unlistedCount}
+            </div>
+            <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
+          </div>
+          {/* 出品中 */}
+          <div onClick={() => setTab('inventory')}
+            style={{background:'white',borderRadius:14,padding:'14px 10px',textAlign:'center',
+              cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #f0f0f0',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
+            <div style={{fontSize:9,color:'#2563eb',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>出品中</div>
+            <div style={{fontSize:28,fontWeight:900,color:'#1d4ed8',lineHeight:1,marginBottom:2}}>{listedCount}</div>
+            <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
+          </div>
+          {/* 今月売上 */}
+          <div onClick={() => setTab('sales')}
+            style={{background:'white',borderRadius:14,padding:'14px 10px',textAlign:'center',
+              cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #f0f0f0',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
+            <div style={{fontSize:9,color:'#16a34a',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月売上</div>
+            <div style={{fontSize:28,fontWeight:900,color:'#15803d',lineHeight:1,marginBottom:2}}>{monthlySales.length}</div>
+            <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
+          </div>
+        </div>
+
+        {/* ── サブ指標 2列 ── */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+          <div style={{background:'white',borderRadius:14,padding:'14px',boxShadow:'0 1px 4px rgba(0,0,0,0.05)',border:'1.5px solid #f0f0f0'}}>
+            <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月 利益率</div>
+            <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,
+              color: profitRate >= 20 ? '#16a34a' : profitRate >= 10 ? '#f59e0b' : '#dc2626'}}>
+              {totalRevenue > 0 ? `${profitRate}%` : '−'}
+            </div>
+          </div>
+          <div style={{background:'white',borderRadius:14,padding:'14px',boxShadow:'0 1px 4px rgba(0,0,0,0.05)',border:'1.5px solid #f0f0f0'}}>
+            <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>平均回転日数</div>
+            <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,color:'#374151'}}>
+              {avgTurnover !== null ? avgTurnover : '−'}
+              {avgTurnover !== null && <span style={{fontSize:13,color:'#9ca3af',fontWeight:500,marginLeft:2}}>日</span>}
             </div>
           </div>
         </div>
 
-        {/* ── ご褒美 ── */}
-        <div style={{...C.card,background:'#fffbeb',border:'1px solid #fde68a'}}>
-          <div style={{fontSize:11,color:'#b45309',fontWeight:600,marginBottom:6}}>🎁 ご褒美予算</div>
-          <div style={{fontSize:24,fontWeight:800,color:'#d97706',letterSpacing:'-0.5px'}}>¥{formatMoney(rewardBudget)}</div>
-          <div style={{fontSize:11,color:'#92400e',marginTop:2}}>利益の{rewardPercent}%</div>
-          {nextMilestone && (
-            <div style={{background:'#fef3c7',borderRadius:8,padding:'7px 10px',marginTop:8,fontSize:11,color:'#b45309'}}>
-              🏆 {nextMilestone.label}まで あと{(nextMilestone.targetCount||1)-getAchievedCount(nextMilestone)}回
-            </div>
-          )}
-        </div>
+        {/* ── 最近の売上 ── */}
+        {recentSales.length > 0 && (
+          <div style={{background:'white',borderRadius:14,padding:'14px',boxShadow:'0 1px 4px rgba(0,0,0,0.05)',border:'1.5px solid #f0f0f0'}}>
+            <div style={{fontSize:10,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:10}}>最近の売上</div>
+            {recentSales.map((s, i) => {
+              const item = (data.inventory||[]).find(inv => inv.id === s.inventoryId) || {};
+              const name = item.productName || s.productName || s.memo || '商品';
+              const brand = item.brand || s.brand || '';
+              return (
+                <div key={s.id}
+                  style={{display:'flex',alignItems:'center',gap:10,
+                    paddingTop: i>0 ? 9 : 0,
+                    marginTop: i>0 ? 9 : 0,
+                    borderTop: i>0 ? '1px solid #f3f4f6' : 'none'}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    {brand && <span style={{fontSize:10,color:'#9ca3af',fontWeight:600,marginRight:4}}>{brand}</span>}
+                    <span style={{fontSize:12,fontWeight:600,color:'#1a1a1a',
+                      overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
+                    <div style={{fontSize:10,color:'#9ca3af',marginTop:1}}>{s.saleDate} · {s.platform}</div>
+                  </div>
+                  <div style={{textAlign:'right',flexShrink:0}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#1a1a1a'}}>¥{formatMoney(s.salePrice||0)}</div>
+                    <div style={{fontSize:11,fontWeight:700,color:(s.profit||0)>=0?'#16a34a':'#dc2626'}}>
+                      {(s.profit||0)>=0?'+':''}{formatMoney(s.profit||0)}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-        {/* ── 旅行ゲーム ── */}
-        <div style={{...C.card,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
-          <div style={{fontSize:11,color:'#2563eb',fontWeight:600,marginBottom:10}}>✈️ 次の旅行</div>
-          <div style={{display:'flex',alignItems:'center',gap:14}}>
-            <div style={{fontSize:40,lineHeight:1}}>{currentSpot.emoji}</div>
+        {/* ── 警告：長期在庫 ── */}
+        {longStayItems.length > 0 && (
+          <div onClick={() => setTab('inventory')}
+            style={{background:'#fef2f2',border:'1.5px solid #fca5a5',borderRadius:12,
+              padding:'10px 14px',display:'flex',alignItems:'center',gap:10,
+              cursor:'pointer',touchAction:'manipulation'}}>
+            <span style={{fontSize:16}}>🕐</span>
             <div style={{flex:1}}>
-              <div style={{fontSize:18,fontWeight:800,color:'#1e3a5f',letterSpacing:'-0.3px'}}>{currentSpot.name}</div>
-              <div style={{fontSize:11,color:'#3b82f6',marginTop:3}}>{currentSpot.desc}</div>
+              <span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>
+                長期在庫 {longStayItems.length}件（60日超）
+              </span>
+              <div style={{fontSize:10,color:'#ef4444',marginTop:1}}>回転率改善のために確認を →</div>
             </div>
           </div>
-          {nextSpot && (
-            <div style={{background:'#dbeafe',borderRadius:8,padding:'7px 10px',marginTop:10,fontSize:11,color:'#1d4ed8'}}>
-              {nextSpot.emoji} 次: {nextSpot.name}まで ¥{formatMoney(toNextSpot)}
-            </div>
-          )}
-        </div>
+        )}
 
-        {/* ── 仕入れボタン ── */}
-        <button className="btn-primary" style={{width:'100%',fontSize:16,padding:'15px',marginTop:2}}
-          onClick={() => setTab('purchase')}>
-          ＋ 新規仕入れ登録
-        </button>
+        {/* ── クイックアクション ── */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:2}}>
+          <button onClick={() => setTab('purchase')}
+            style={{background:'#0f172a',border:'none',borderRadius:14,padding:'14px',
+              display:'flex',alignItems:'center',justifyContent:'center',gap:8,
+              cursor:'pointer',touchAction:'manipulation',boxShadow:'0 2px 8px rgba(15,23,42,0.2)'}}>
+            <span style={{fontSize:18}}>📥</span>
+            <span style={{fontSize:14,fontWeight:700,color:'white'}}>仕入れ登録</span>
+          </button>
+          <button onClick={() => setTab('sales')}
+            style={{background:'#E84040',border:'none',borderRadius:14,padding:'14px',
+              display:'flex',alignItems:'center',justifyContent:'center',gap:8,
+              cursor:'pointer',touchAction:'manipulation',boxShadow:'0 2px 8px rgba(232,64,64,0.3)'}}>
+            <span style={{fontSize:18}}>💰</span>
+            <span style={{fontSize:14,fontWeight:700,color:'white'}}>売上記録</span>
+          </button>
+        </div>
 
       </div>
 
@@ -1231,10 +1056,7 @@ const HomeTab = () => {
             <input type="number" className="input-field" style={{marginBottom:6}}
               value={goalInput} onChange={e => setGoalInput(e.target.value)}
               placeholder="100000" autoFocus/>
-            <div style={{fontSize:11,color:'#999',marginBottom:16}}>
-              週あたりの目標：¥{formatMoney(Math.ceil(Number(goalInput||0) * 7 / daysInMonth))}
-            </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:8}}>
               <button className="btn-secondary" onClick={() => setEditingGoal(false)}>キャンセル</button>
               <button className="btn-primary" onClick={saveGoal}>保存</button>
             </div>
