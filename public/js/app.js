@@ -269,7 +269,10 @@ const loadData = () => {
 };
 
 const saveData = (data) => {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error(e); }
+  // setTimeout(0) で JSON.stringify を非同期化し、大きなデータでもUIをブロックしない
+  setTimeout(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error(e); }
+  }, 0);
 };
 
 // ============================================================
@@ -1351,13 +1354,33 @@ const PurchaseTab = () => {
   React.useEffect(() => {
     if (editingItem) return;
     if (step < 3) return;
+    const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({
         form, purchaseType, generatedDesc, registrationMode,
+        photoRefs,
         savedAt: new Date().toISOString(),
       }));
     } catch(_) {}
-  }, [form, purchaseType, generatedDesc, step, editingItem]);
+  }, [form, purchaseType, generatedDesc, step, editingItem, photos]);
+
+  // バックグラウンド移行時にも強制保存
+  React.useEffect(() => {
+    const saveDraftOnHide = () => {
+      if (document.hidden && !editingItem && step >= 3) {
+        const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
+        try {
+          localStorage.setItem(DRAFT_KEY, JSON.stringify({
+            form, purchaseType, generatedDesc, registrationMode,
+            photoRefs,
+            savedAt: new Date().toISOString(),
+          }));
+        } catch(_) {}
+      }
+    };
+    document.addEventListener('visibilitychange', saveDraftOnHide);
+    return () => document.removeEventListener('visibilitychange', saveDraftOnHide);
+  }, [form, purchaseType, generatedDesc, step, editingItem, photos, registrationMode]);
 
   const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch(_) {} };
 
@@ -1926,6 +1949,7 @@ const PurchaseTab = () => {
     setScanMode('product_only');
     setRegistrationMode('unlisted');
     setSeoCategoryInput(''); setEditingItem(null);
+    setStoreChain(''); setBranchInput('');
     setBundlePurchase(false); setBundleItems(initBundleItems(2)); setBundleSplitMethod('equal');
     setForm({
       productName: '', brand: '', category: '', color: '',
@@ -1949,6 +1973,7 @@ const PurchaseTab = () => {
   const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
 
   const handleSave = () => {
+    try {
     if (!form.productName) { toast('商品名を入力してください'); return; }
     if (!totalPurchaseTaxIn) { toast('仕入れ価格を入力してください'); return; }
     // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
@@ -2063,6 +2088,10 @@ const PurchaseTab = () => {
     setLastSavedItem(newItem);
     resetForm();
     if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
+    } catch(e) {
+      console.error('handleSave error:', e);
+      toast('⚠️ 保存中にエラーが発生しました。もう一度お試しください。');
+    }
   };
 
   const setF = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
@@ -2169,6 +2198,21 @@ const PurchaseTab = () => {
                 setPurchaseType(draftBanner.purchaseType || 'store');
                 setGeneratedDesc(draftBanner.generatedDesc || '');
                 setRegistrationMode(draftBanner.registrationMode || 'unlisted');
+                // 写真も復元（thumbDataUrlをプレビューとして利用）
+                if (draftBanner.photoRefs?.length) {
+                  const restoredPhotos = draftBanner.photoRefs
+                    .filter(r => r.thumbDataUrl)
+                    .map(r => ({
+                      id: r.id,
+                      thumbId: r.thumbId,
+                      thumbDataUrl: r.thumbDataUrl,
+                      previewUrl: r.thumbDataUrl,
+                      thumbUrl: null,
+                      file: null,
+                      fromDraft: true,
+                    }));
+                  setPhotos(restoredPhotos);
+                }
                 setStep(3);
                 setDraftBanner(null);
                 toast('📝 下書きを復元しました');
@@ -8751,7 +8795,7 @@ const App = () => {
   const showApiWarning = !data.settings?.apiKey && tab !== 'other';
 
   // ── ナビバッジ用集計 ──
-  const navBadgeInventory = (data.inventory||[]).filter(i => i.status === 'listed').length;
+  const navBadgeInventory = (data.inventory||[]).filter(i => i.status === 'unlisted').length;
   const _soldNavIds = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const _recordedNavIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
