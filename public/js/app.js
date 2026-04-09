@@ -4128,7 +4128,7 @@ const InventoryTab = () => {
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
-  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId } = React.useContext(AppContext);
+  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
@@ -4619,6 +4619,15 @@ const SalesTab = () => {
       setPendingSaleItemId(null);
     }
   }, [pendingSaleItemId]);
+
+  // pendingEditSaleId（エクスポート画面からの売上編集遷移）
+  React.useEffect(() => {
+    if (pendingEditSaleId) {
+      const sale = (data.sales||[]).find(s => s.id === pendingEditSaleId);
+      if (sale) openEdit(sale);
+      setPendingEditSaleId(null);
+    }
+  }, [pendingEditSaleId]);
 
   const openEdit = (sale) => {
     setEditingSale(sale);
@@ -6227,11 +6236,12 @@ const SalesTab = () => {
 // ============================================================
 // エクスポートパネル（独立コンポーネント）
 // ============================================================
-const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV }) => {
+const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem }) => {
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
   const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
   const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
+  const [showAllSales, setShowAllSales]           = React.useState(false); // 売上管理表全件表示
   const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
   const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
 
@@ -6424,7 +6434,15 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
             <div style={{fontWeight:700,fontSize:15}}>📊 売上管理表</div>
             <div style={{fontSize:12,color:'#999',marginTop:2}}>売上 {data.sales.length}件</div>
           </div>
-          <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportCSV}>CSVのみ</button>
+          <div style={{display:'flex',gap:6}}>
+            {salesPreview.length > 10 && (
+              <button className="btn-secondary" style={{padding:'7px 12px',fontSize:12}}
+                onClick={() => setShowAllSales(v => !v)}>
+                {showAllSales ? '▲ 折りたたむ' : `全件表示（${salesPreview.length}件）`}
+              </button>
+            )}
+            <button className="btn-secondary" style={{padding:'7px 14px',fontSize:13}} onClick={exportCSV}>CSVのみ</button>
+          </div>
         </div>
         {salesPreview.length === 0 ? (
           <div style={{textAlign:'center',color:'#bbb',padding:'16px 0',fontSize:13}}>売上記録がありません</div>
@@ -6439,7 +6457,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 </tr>
               </thead>
               <tbody>
-                {salesPreview.slice(0,10).map(s => {
+                {(showAllSales ? salesPreview : salesPreview.slice(0,10)).map(s => {
                   const item = data.inventory.find(i=>i.id===s.inventoryId)||{};
                   const sp   = s.salePrice||0;
                   const fee  = Math.round(sp*(s.feeRate||0));
@@ -6449,12 +6467,26 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
                   const brand = item.brand || s.brand || '';
                   const productName = item.productName || s.productName || s.memo || '−';
+                  const store = item.purchaseStore || s.purchaseStore || '';
+                  const canEdit = typeof setPendingEditSaleId === 'function' && typeof setTab === 'function';
                   return (
-                    <tr key={s.id} style={{borderBottom:'1px solid #f3f3f3'}}>
-                      <td style={tdStyle({color:'#888',fontWeight:700,textTransform:'uppercase',maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>{brand||'−'}</td>
+                    <tr key={s.id}
+                      onClick={canEdit ? () => { setPendingEditSaleId(s.id); setTab('sales'); } : undefined}
+                      style={{borderBottom:'1px solid #f3f3f3', cursor: canEdit ? 'pointer' : 'default'}}
+                      onMouseEnter={canEdit ? e => e.currentTarget.style.background='#f0f9ff' : undefined}
+                      onMouseLeave={canEdit ? e => e.currentTarget.style.background='' : undefined}>
+                      <td style={tdStyle({maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
+                        {brand
+                          ? <span style={{color:'#888',fontWeight:700,textTransform:'uppercase'}}>{brand}</span>
+                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:10}}>⚠️未入力</span>}
+                      </td>
                       <td style={tdStyle({fontWeight:600,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis'})}>{productName}</td>
                       <td style={tdStyle({color:'#777'})}>{item.purchaseDate||'−'}</td>
-                      <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||s.purchaseStore||'−'}</td>
+                      <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>
+                        {store
+                          ? <span style={{color:'#555'}}>{store}</span>
+                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:10}}>⚠️未入力</span>}
+                      </td>
                       <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice||s.purchasePrice||0)}</td>
                       <td style={tdStyle({color:'#777'})}>{item.listDate||'−'}</td>
                       <td style={tdStyle({color:'#555'})}>{s.saleDate}</td>
@@ -6467,7 +6499,14 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 })}
               </tbody>
             </table>
-            {salesPreview.length > 10 && <div style={{fontSize:11,color:'#aaa',textAlign:'center',marginTop:6}}>…他 {salesPreview.length-10}件（CSVに全件含まれます）</div>}
+            {!showAllSales && salesPreview.length > 10 && (
+              <button type="button" onClick={() => setShowAllSales(true)}
+                style={{display:'block',width:'100%',marginTop:8,padding:'8px',borderRadius:8,
+                  border:'1px dashed #ddd',background:'#fafafa',cursor:'pointer',
+                  fontSize:12,color:'#2563eb',fontWeight:700,textAlign:'center'}}>
+                …他 {salesPreview.length-10}件を全て表示
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -6503,15 +6542,18 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
               <tbody>
                 {kobotsuPreview.slice(0,10).map(({item,sale},i) => {
                   const bs = getBundleStyle(item);
+                  const canEditKobotsu = typeof setEditingItem === 'function' && typeof setTab === 'function';
                   return (
                   <tr key={item.id}
-                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : undefined}
+                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { setEditingItem(item); setTab('purchase'); } : undefined}
                     style={{borderBottom:'1px solid #f3f3f3',
                       background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
                       borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
-                      cursor: bs ? 'pointer' : 'default'}}>
+                      cursor: (bs || canEditKobotsu) ? 'pointer' : 'default'}}
+                    onMouseEnter={!bs && canEditKobotsu ? e => e.currentTarget.style.background='#f0f9ff' : undefined}
+                    onMouseLeave={!bs && canEditKobotsu ? e => e.currentTarget.style.background=bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa') : undefined}>
                     <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
-                    <td style={tdStyle()}>{item.category||'−'}</td>
+                    <td style={tdStyle({color: item.category ? '#555' : '#dc2626', fontWeight: item.category ? 400 : 700})}>{item.category || '⚠️未入力'}</td>
                     <td style={tdStyle({maxWidth:140,overflow:'hidden',textOverflow:'ellipsis'})}>
                       {bs && (
                         <span style={{display:'inline-block',background:bs.color,color:'white',borderRadius:4,
@@ -6519,10 +6561,13 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                           📦まとめ{bs.count}点 ›
                         </span>
                       )}
-                      {item.brand} {item.productName}
+                      {item.brand
+                        ? <span style={{color:'#888',fontSize:10,marginRight:3}}>{item.brand}</span>
+                        : <span style={{color:'#dc2626',fontWeight:700,fontSize:9}}>⚠️ブランド未入力 </span>}
+                      {item.productName}
                     </td>
                     <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                    <td style={tdStyle({color:'#555',fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
+                    <td style={tdStyle({fontSize:11,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
                       <div style={{color: item.purchaseStore ? '#555' : '#dc2626', fontWeight: item.purchaseStore ? 400 : 700}}>{item.purchaseStore||'⚠️未入力'}</div>
                       {resolveCompanyName(item) && <div style={{fontSize:10,color:'#aaa'}}>{resolveCompanyName(item)}</div>}
                     </td>
@@ -6687,15 +6732,16 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 <tbody>
                   {kobotsuPreview.map(({item,sale},i) => {
                     const bs = getBundleStyle(item);
+                    const canEditKobotsu = typeof setEditingItem === 'function' && typeof setTab === 'function';
                     return (
                     <tr key={item.id}
-                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : undefined}
+                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { setShowAllKobotsu(false); setEditingItem(item); setTab('purchase'); } : undefined}
                       style={{borderBottom:'1px solid #f3f3f3',
                         background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
                         borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
-                        cursor: bs ? 'pointer' : 'default'}}>
+                        cursor: (bs || canEditKobotsu) ? 'pointer' : 'default'}}>
                       <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
-                      <td style={tdStyle()}>{item.category||'−'}</td>
+                      <td style={tdStyle({color: item.category ? '#555' : '#dc2626', fontWeight: item.category ? 400 : 700})}>{item.category||'⚠️未入力'}</td>
                       <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>
                         {bs && (
                           <span style={{display:'inline-block',background:bs.color,color:'white',borderRadius:4,
@@ -6703,11 +6749,14 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                             📦まとめ{bs.count}点 ›
                           </span>
                         )}
-                        {item.brand} {item.productName}
+                        {item.brand
+                          ? <span style={{color:'#888',fontSize:10,marginRight:3}}>{item.brand}</span>
+                          : <span style={{color:'#dc2626',fontWeight:700,fontSize:9}}>⚠️ブランド未入力 </span>}
+                        {item.productName}
                       </td>
                       <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
-                      <td style={tdStyle({color:'#555',fontSize:11,maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>
-                        <div>{item.purchaseStore||'−'}</div>
+                      <td style={tdStyle({fontSize:11,maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>
+                        <div style={{color: item.purchaseStore ? '#555' : '#dc2626', fontWeight: item.purchaseStore ? 400 : 700}}>{item.purchaseStore||'⚠️未入力'}</div>
                         {resolveCompanyName(item) && <div style={{fontSize:10,color:'#aaa'}}>{resolveCompanyName(item)}</div>}
                       </td>
                       <td style={tdStyle({color:'#777',fontSize:10,maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>
@@ -7087,7 +7136,7 @@ const runRemoveBg = async (file, apiKey) => {
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
-  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser } = React.useContext(AppContext);
+  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem } = React.useContext(AppContext);
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
@@ -7729,6 +7778,9 @@ const OtherTab = () => {
             exportAll={exportAll}
             exportCSV={exportCSV}
             exportKobotsuCSV={exportKobotsuCSV}
+            setTab={setTab}
+            setPendingEditSaleId={setPendingEditSaleId}
+            setEditingItem={setEditingItem}
           />
         )}
 
@@ -8613,6 +8665,7 @@ const App = () => {
   const [tab, setTab]            = React.useState('inventory');
   const [editingItem, setEditingItem] = React.useState(null);
   const [pendingSaleItemId, setPendingSaleItemId] = React.useState(null); // 売上記録を促すinventoryId
+  const [pendingEditSaleId, setPendingEditSaleId] = React.useState(null); // エクスポート画面から売上編集
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
   const dataRef = React.useRef(fullData);
@@ -8855,7 +8908,7 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
