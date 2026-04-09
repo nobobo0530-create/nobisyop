@@ -3998,6 +3998,16 @@ const SalesTab = () => {
     } catch(_) {}
   }, []);
   const clearSaleDraft = () => { try { localStorage.removeItem(SALE_DRAFT_KEY); } catch(_) {} };
+  // ── まとめ販売（売上分割）────────────────────────────────
+  // ※ bundleSale 等は下書き保存 useEffect の deps に使うため、effects より先に宣言する
+  const SALE_BUNDLE_LABELS = ['A','B','C','D','E','F'];
+  const initSaleBundleItems = (n) => Array.from({length:n}, (_,i) =>
+    ({ id: String(i), label:`商品${SALE_BUNDLE_LABELS[i]||i+1}`, inventoryId:'', salePrice:'', shipping:'' })
+  );
+  const [bundleSale, setBundleSale] = React.useState(false);
+  const [bundleSaleItems, setBundleSaleItems] = React.useState(initSaleBundleItems(2));
+  const [bundleSaleSplitMethod, setBundleSaleSplitMethod] = React.useState('equal');
+  const [bundleSaleInlineForm, setBundleSaleInlineForm] = React.useState(null); // {idx, productName, brand, purchasePrice}
   // フォーム変化時に自動保存（新規のみ・有意な入力がある場合のみ）
   React.useEffect(() => {
     if (!showForm || editingSale) return;
@@ -4018,15 +4028,6 @@ const SalesTab = () => {
       window.removeEventListener('pagehide', forceSave);
     };
   }, [form, bundleSale, bundleSaleItems, bundleSaleSplitMethod, showForm, editingSale, saveSaleDraft]);
-  // ── まとめ販売（売上分割）────────────────────────────────
-  const SALE_BUNDLE_LABELS = ['A','B','C','D','E','F'];
-  const initSaleBundleItems = (n) => Array.from({length:n}, (_,i) =>
-    ({ id: String(i), label:`商品${SALE_BUNDLE_LABELS[i]||i+1}`, inventoryId:'', salePrice:'', shipping:'' })
-  );
-  const [bundleSale, setBundleSale] = React.useState(false);
-  const [bundleSaleItems, setBundleSaleItems] = React.useState(initSaleBundleItems(2));
-  const [bundleSaleSplitMethod, setBundleSaleSplitMethod] = React.useState('equal');
-  const [bundleSaleInlineForm, setBundleSaleInlineForm] = React.useState(null); // {idx, productName, brand, purchasePrice}
   const apiKey = data.settings?.apiKey || '';
 
   // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
