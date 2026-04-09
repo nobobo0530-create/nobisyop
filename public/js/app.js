@@ -6433,7 +6433,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
             <table style={{fontSize:12,borderCollapse:'collapse',minWidth:520}}>
               <thead>
                 <tr style={{background:'#f8f8f8'}}>
-                  {['仕入日','仕入先','仕入単価','出品日','販売日','販路','売上','手数料','送料','販売利益','純利益','利益率'].map(h=>(
+                  {['ブランド','品名','仕入日','仕入先','仕入単価','出品日','販売日','販路','売上','純利益','利益率'].map(h=>(
                     <th key={h} style={thStyle}>{h}</th>
                   ))}
                 </tr>
@@ -6445,20 +6445,21 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const fee  = Math.round(sp*(s.feeRate||0));
                   const ship = s.shipping||0;
                   const sProfit = sp - fee - ship;
-                  const nProfit = sProfit - (item.purchasePrice||0);
+                  const nProfit = sProfit - (item.purchasePrice||s.purchasePrice||0);
                   const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
+                  const brand = item.brand || s.brand || '';
+                  const productName = item.productName || s.productName || s.memo || '−';
                   return (
                     <tr key={s.id} style={{borderBottom:'1px solid #f3f3f3'}}>
-                      <td style={tdStyle({color:'#777'})}>{item.purchaseDate}</td>
-                      <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore}</td>
-                      <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice)}</td>
+                      <td style={tdStyle({color:'#888',fontWeight:700,textTransform:'uppercase',maxWidth:80,overflow:'hidden',textOverflow:'ellipsis'})}>{brand||'−'}</td>
+                      <td style={tdStyle({fontWeight:600,maxWidth:120,overflow:'hidden',textOverflow:'ellipsis'})}>{productName}</td>
+                      <td style={tdStyle({color:'#777'})}>{item.purchaseDate||'−'}</td>
+                      <td style={tdStyle({maxWidth:90,overflow:'hidden',textOverflow:'ellipsis'})}>{item.purchaseStore||s.purchaseStore||'−'}</td>
+                      <td style={tdStyle({fontWeight:600})}>¥{formatMoney(item.purchasePrice||s.purchasePrice||0)}</td>
                       <td style={tdStyle({color:'#777'})}>{item.listDate||'−'}</td>
                       <td style={tdStyle({color:'#555'})}>{s.saleDate}</td>
                       <td style={tdStyle()}>{s.platform}</td>
                       <td style={tdStyle({fontWeight:700})}>¥{formatMoney(sp)}</td>
-                      <td style={tdStyle({color:'#888'})}>¥{formatMoney(fee)}</td>
-                      <td style={tdStyle({color:'#888'})}>¥{formatMoney(ship)}</td>
-                      <td style={tdStyle({fontWeight:600,color:sProfit>=0?'#2563eb':'#dc2626'})}>¥{formatMoney(sProfit)}</td>
                       <td style={tdStyle({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
                       <td style={tdStyle({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
                     </tr>
