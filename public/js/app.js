@@ -1183,6 +1183,8 @@ const PurchaseTab = () => {
   const [bundlePurchase, setBundlePurchase] = React.useState(false);
   const [bundleItems, setBundleItems] = React.useState(initBundleItems(2));
   const [bundleSplitMethod, setBundleSplitMethod] = React.useState('equal');
+  const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
+  const [formError, setFormError] = React.useState(null); // インラインバリデーションエラー
 
   // ── 下書き自動保存 ──
   const DRAFT_KEY = 'nobushop_purchase_draft';
@@ -1789,6 +1791,8 @@ const PurchaseTab = () => {
   };
 
   const resetForm = () => {
+    setSaving(false);
+    setFormError(null);
     clearDraft();
     photos.forEach(p => {
       if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
@@ -1823,158 +1827,178 @@ const PurchaseTab = () => {
   const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
 
   const handleSave = () => {
-    try {
-    if (!form.productName) { toast('商品名を入力してください'); return; }
-    if (!totalPurchaseTaxIn) { toast('仕入れ価格を入力してください'); return; }
-    // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
-    const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
-    // 税込・税抜内訳を保存
-    const purchaseCost = {
-      totalTaxIn: totalPurchaseTaxIn,
-      totalTaxEx: totalPurchaseTaxEx,
-      itemPriceTaxIn: Number(form.itemPriceTaxIn) || 0,
-      itemTaxRate: form.itemTaxRate,
-      itemPriceTaxEx: calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate),
-      ...(purchaseType === 'online' ? {
-        shippingTaxIn: Number(form.shippingTaxIn) || 0,
-        shippingTaxRate: form.shippingTaxRate,
-        shippingTaxEx: calcTaxEx(form.shippingTaxIn, form.shippingTaxRate),
-        optionalFeeTaxIn: form.showOptionalFee ? (Number(form.optionalFeeTaxIn) || 0) : 0,
-        optionalTaxRate: form.optionalTaxRate,
-        optionalFeeTaxEx: form.showOptionalFee ? calcTaxEx(form.optionalFeeTaxIn, form.optionalTaxRate) : 0,
-      } : {}),
-    };
+    if (saving) return; // 二重タップ防止
+    setFormError(null);
 
-    if (editingItem) {
-      // ---- 編集モード: 既存アイテムを上書き ----
-      const updatedItem = {
-        ...editingItem,   // id, mgmtNo, createdAt, status など元データを保持
+    // ── バリデーション（インライン表示） ──
+    if (!form.productName.trim()) {
+      setFormError('商品名を入力してください');
+      return;
+    }
+    if (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '') {
+      setFormError('仕入れ価格を入力してください（0円より大きい金額）');
+      return;
+    }
+
+    // まとめ仕入れのバリデーション
+    if (bundlePurchase) {
+      const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
+      if (filledItems.length < 2) {
+        setFormError('まとめ仕入れは2件以上の金額を入力してください');
+        return;
+      }
+      const badExisting = bundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
+      if (badExisting) {
+        setFormError(`${badExisting.label}：既存商品を選択してください（または「新規登録」に切替）`);
+        return;
+      }
+    }
+
+    setSaving(true);
+    try {
+      // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
+      const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
+      // 税込・税抜内訳を保存
+      const purchaseCost = {
+        totalTaxIn: totalPurchaseTaxIn,
+        totalTaxEx: totalPurchaseTaxEx,
+        itemPriceTaxIn: Number(form.itemPriceTaxIn) || 0,
+        itemTaxRate: form.itemTaxRate,
+        itemPriceTaxEx: calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate),
+        ...(purchaseType === 'online' ? {
+          shippingTaxIn: Number(form.shippingTaxIn) || 0,
+          shippingTaxRate: form.shippingTaxRate,
+          shippingTaxEx: calcTaxEx(form.shippingTaxIn, form.shippingTaxRate),
+          optionalFeeTaxIn: form.showOptionalFee ? (Number(form.optionalFeeTaxIn) || 0) : 0,
+          optionalTaxRate: form.optionalTaxRate,
+          optionalFeeTaxEx: form.showOptionalFee ? calcTaxEx(form.optionalFeeTaxIn, form.optionalTaxRate) : 0,
+        } : {}),
+      };
+
+      if (editingItem) {
+        // ---- 編集モード: 既存アイテムを上書き ----
+        const updatedItem = {
+          ...editingItem,   // id, mgmtNo, createdAt, status など元データを保持
+          ...form,
+          size: computedSize,
+          purchasePrice: totalPurchaseTaxIn,
+          purchaseCost,
+          purchaseType,
+          purchaseTypeSource,
+          purchaseStoreType: (() => { const m = data.settings?.storeMaster || getInitialData().settings.storeMaster; return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal'; })(),
+          aiTypeDetection: aiTypeDetection || editingItem.aiTypeDetection || null,
+          listPrice: Number(form.listPrice) || 0,
+          photos: photoRefs,
+          descriptionText: generatedDesc || form.descriptionText || '',
+          updatedAt: new Date().toISOString(),
+        };
+        const updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
+        setData({ ...data, inventory: updated });
+        toast('✅ 商品情報を更新しました！');
+        const savedId = editingItem.id;
+        const goSell = postSaveNavToSale.current;
+        postSaveNavToSale.current = false;
+        resetForm(); // saving=false も resetForm 内でリセットされる
+        if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
+        return;
+      }
+
+      // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
+      if (bundlePurchase) {
+        const purchaseStoreType = (() => {
+          const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+          return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';
+        })();
+        const bundleGroupId = `bundle_${Date.now()}`;
+        const ts = Date.now();
+
+        // ── 新規作成アイテム ──
+        const newBundleItems = bundleItems.filter(bi => bi.mode !== 'existing');
+        const createdItems = newBundleItems.map((bi, idx) => {
+          const bPrice = Number(bi.purchasePrice) || 0;
+          return {
+            id: `${ts}_bundle_${idx}`,
+            ...form,
+            userId: currentUser,
+            productName: bi.productName.trim() || `${form.productName || '商品'} [${bi.label}]`,
+            brand: '',
+            listDate: '',
+            purchasePrice: bPrice,
+            purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
+            size: computedSize,
+            purchaseType, purchaseTypeSource, purchaseStoreType,
+            aiTypeDetection: aiTypeDetection || null,
+            listPrice: Number(form.listPrice) || 0,
+            photos: idx === 0 ? photoRefs : [],
+            mgmtNo: idx === 0 ? mgmtNo : null,
+            status: 'unlisted',
+            bundleGroup: bundleGroupId,
+            bundleLabel: bi.label,
+            descriptionText: idx === 0 ? (generatedDesc || '') : '',
+            createdAt: new Date(ts + idx).toISOString(),
+          };
+        });
+
+        // ── 既存アイテム更新 ──
+        const existingBundleItems = bundleItems.filter(bi => bi.mode === 'existing' && bi.existingItemId);
+        const updatedInventory = data.inventory.map(invItem => {
+          const bi = existingBundleItems.find(b => b.existingItemId === invItem.id);
+          if (!bi) return invItem;
+          const bPrice = Number(bi.purchasePrice) || invItem.purchasePrice || 0;
+          return {
+            ...invItem,
+            purchasePrice: bPrice,
+            purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
+            ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
+            ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+            purchaseType,
+            bundleGroup: bundleGroupId,
+            bundleLabel: bi.label,
+            updatedAt: new Date().toISOString(),
+          };
+        });
+
+        const totalCount = createdItems.length + existingBundleItems.length;
+        setData({ ...data, inventory: [...updatedInventory, ...createdItems] });
+        const msgParts = [];
+        if (createdItems.length)        msgParts.push(`新規${createdItems.length}件`);
+        if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
+        toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！`);
+        resetForm();
+        return;
+      }
+
+      // ---- 通常新規登録 ----
+      const newItem = {
+        id: Date.now().toString(),
         ...form,
+        userId: currentUser,
         size: computedSize,
         purchasePrice: totalPurchaseTaxIn,
         purchaseCost,
         purchaseType,
         purchaseTypeSource,
         purchaseStoreType: (() => { const m = data.settings?.storeMaster || getInitialData().settings.storeMaster; return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal'; })(),
-        aiTypeDetection: aiTypeDetection || editingItem.aiTypeDetection || null,
+        aiTypeDetection: aiTypeDetection || null,
         listPrice: Number(form.listPrice) || 0,
         photos: photoRefs,
-        descriptionText: generatedDesc || form.descriptionText || '',
-        updatedAt: new Date().toISOString(),
+        mgmtNo,
+        status: registrationMode === 'listed' ? 'listed' : 'unlisted',
+        profit,
+        descriptionText: generatedDesc || '',
+        createdAt: new Date().toISOString(),
       };
-      const updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
-      setData({ ...data, inventory: updated });
-      toast('✅ 商品情報を更新しました！');
-      const savedId = editingItem.id;
-      const goSell = postSaveNavToSale.current;
+      setData({ ...data, inventory: [...data.inventory, newItem] });
+      toast('✅ 仕入れを登録しました！');
+      const goSellNew = postSaveNavToSale.current;
       postSaveNavToSale.current = false;
+      setLastSavedItem(newItem);
       resetForm();
-      if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
-      return;
-    }
-
-    // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
-    if (bundlePurchase) {
-      // バリデーション
-      const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
-      if (filledItems.length < 2) { toast('まとめ仕入れは2件以上の金額を入力してください'); return; }
-      const badExisting = bundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
-      if (badExisting) { toast(`${badExisting.label}：既存商品を選択してください（または「新規登録」に切替）`); return; }
-
-      const purchaseStoreType = (() => {
-        const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-        return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';
-      })();
-      const bundleGroupId = `bundle_${Date.now()}`;
-      const ts = Date.now();
-
-      // ── 新規作成アイテム ──
-      const newBundleItems = bundleItems.filter(bi => bi.mode !== 'existing');
-      const createdItems = newBundleItems.map((bi, idx) => {
-        const bPrice = Number(bi.purchasePrice) || 0;
-        return {
-          id: `${ts}_bundle_${idx}`,
-          ...form,
-          userId: currentUser,
-          productName: bi.productName.trim() || `${form.productName || '商品'} [${bi.label}]`,
-          // 分割新規商品はブランド・出品日を未選択（まだ確定していないため）
-          brand: '',
-          listDate: '',
-          purchasePrice: bPrice,
-          purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
-          size: computedSize,
-          purchaseType, purchaseTypeSource, purchaseStoreType,
-          aiTypeDetection: aiTypeDetection || null,
-          listPrice: Number(form.listPrice) || 0,
-          photos: idx === 0 ? photoRefs : [],
-          mgmtNo: idx === 0 ? mgmtNo : null,
-          status: 'unlisted', // 分割新規商品は必ず「未出品」からスタート
-          bundleGroup: bundleGroupId,
-          bundleLabel: bi.label,
-          descriptionText: idx === 0 ? (generatedDesc || '') : '',
-          createdAt: new Date(ts + idx).toISOString(),
-        };
-      });
-
-      // ── 既存アイテム更新 ──
-      const existingBundleItems = bundleItems.filter(bi => bi.mode === 'existing' && bi.existingItemId);
-      const updatedInventory = data.inventory.map(invItem => {
-        const bi = existingBundleItems.find(b => b.existingItemId === invItem.id);
-        if (!bi) return invItem;
-        const bPrice = Number(bi.purchasePrice) || invItem.purchasePrice || 0;
-        return {
-          ...invItem,
-          purchasePrice: bPrice,
-          purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
-          ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
-          ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
-          purchaseType,
-          bundleGroup: bundleGroupId,
-          bundleLabel: bi.label,
-          updatedAt: new Date().toISOString(),
-        };
-      });
-
-      const totalCount = createdItems.length + existingBundleItems.length;
-      setData({ ...data, inventory: [...updatedInventory, ...createdItems] });
-      const msgParts = [];
-      if (createdItems.length)      msgParts.push(`新規${createdItems.length}件`);
-      if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
-      toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！`);
-      resetForm();
-      return;
-    }
-
-    // ---- 新規登録 ----
-    const newItem = {
-      id: Date.now().toString(),
-      ...form,
-      userId: currentUser,
-      size: computedSize,
-      purchasePrice: totalPurchaseTaxIn,
-      purchaseCost,
-      purchaseType,
-      purchaseTypeSource,
-      purchaseStoreType: (() => { const m = data.settings?.storeMaster || getInitialData().settings.storeMaster; return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal'; })(),
-      aiTypeDetection: aiTypeDetection || null,
-      listPrice: Number(form.listPrice) || 0,
-      photos: photoRefs,
-      mgmtNo,
-      status: registrationMode === 'listed' ? 'listed' : 'unlisted',
-      profit,
-      descriptionText: generatedDesc || '',
-      createdAt: new Date().toISOString(),
-    };
-    setData({ ...data, inventory: [...data.inventory, newItem] });
-    toast('✅ 仕入れを登録しました！');
-    const goSellNew = postSaveNavToSale.current;
-    postSaveNavToSale.current = false;
-    setLastSavedItem(newItem);
-    resetForm();
-    if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
+      if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
     } catch(e) {
       console.error('handleSave error:', e);
-      toast('⚠️ 保存中にエラーが発生しました。もう一度お試しください。');
+      setFormError('保存中にエラーが発生しました。もう一度お試しください。\n（入力内容は下書きに保存されています）');
+      setSaving(false); // catch では resetForm が呼ばれないので手動リセット
     }
   };
 
@@ -3323,16 +3347,28 @@ const PurchaseTab = () => {
               </button>
             ))}
           </div>
-          <button className="btn-primary" style={{width:'100%',padding:16,fontSize:17}}
-            onClick={handleSave}>
-            {editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
+          {/* インラインバリデーションエラー */}
+          {formError && (
+            <div style={{background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:10,
+              padding:'10px 14px',marginBottom:10,color:'#dc2626',fontWeight:600,fontSize:13,
+              display:'flex',alignItems:'flex-start',gap:6,whiteSpace:'pre-line'}}>
+              ⚠️ {formError}
+            </div>
+          )}
+          <button className="btn-primary"
+            style={{width:'100%',padding:16,fontSize:17,opacity:saving?0.75:1,transition:'opacity 0.15s'}}
+            onClick={handleSave}
+            disabled={saving}>
+            {saving ? '💾 保存中...' : editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
           </button>
           <button
             onClick={handleSaveAndSell}
+            disabled={saving}
             style={{width:'100%',marginTop:8,padding:14,fontSize:15,fontWeight:700,
               border:'none',borderRadius:12,cursor:'pointer',touchAction:'manipulation',
               background:'linear-gradient(135deg,#16a34a,#15803d)',color:'white',
-              display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+              display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+              opacity:saving?0.75:1,transition:'opacity 0.15s'}}>
             💰 {editingItem ? '保存して' : '登録して'}そのまま売上登録する
           </button>
         </div>
