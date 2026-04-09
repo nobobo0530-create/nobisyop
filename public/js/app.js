@@ -1173,7 +1173,12 @@ const PurchaseTab = () => {
   // ── まとめ仕入れ（仕入れ分割）────────────────────────────
   const BUNDLE_LABELS = ['A','B','C','D','E','F'];
   const initBundleItems = (n) => Array.from({length: n}, (_,i) =>
-    ({ id: String(i), label: `商品${BUNDLE_LABELS[i]||i+1}`, productName: '', purchasePrice: '' })
+    ({ id: String(i), label: `商品${BUNDLE_LABELS[i]||i+1}`,
+       mode: 'new',           // 'new' | 'existing'
+       productName: '',       // mode='new' 用
+       existingItemId: '',    // mode='existing' 用
+       existingItemQuery: '', // 既存商品検索テキスト（一時UI状態）
+       purchasePrice: '' })
   );
   const [bundlePurchase, setBundlePurchase] = React.useState(false);
   const [bundleItems, setBundleItems] = React.useState(initBundleItems(2));
@@ -1870,15 +1875,22 @@ const PurchaseTab = () => {
 
     // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
     if (bundlePurchase) {
+      // バリデーション
       const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
       if (filledItems.length < 2) { toast('まとめ仕入れは2件以上の金額を入力してください'); return; }
+      const badExisting = bundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
+      if (badExisting) { toast(`${badExisting.label}：既存商品を選択してください（または「新規登録」に切替）`); return; }
+
       const purchaseStoreType = (() => {
         const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
         return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';
       })();
       const bundleGroupId = `bundle_${Date.now()}`;
       const ts = Date.now();
-      const newItems = bundleItems.map((bi, idx) => {
+
+      // ── 新規作成アイテム ──
+      const newBundleItems = bundleItems.filter(bi => bi.mode !== 'existing');
+      const createdItems = newBundleItems.map((bi, idx) => {
         const bPrice = Number(bi.purchasePrice) || 0;
         return {
           id: `${ts}_bundle_${idx}`,
@@ -1900,8 +1912,32 @@ const PurchaseTab = () => {
           createdAt: new Date(ts + idx).toISOString(),
         };
       });
-      setData({ ...data, inventory: [...data.inventory, ...newItems] });
-      toast(`✅ まとめ仕入れ ${newItems.length}件を登録しました！`);
+
+      // ── 既存アイテム更新 ──
+      const existingBundleItems = bundleItems.filter(bi => bi.mode === 'existing' && bi.existingItemId);
+      const updatedInventory = data.inventory.map(invItem => {
+        const bi = existingBundleItems.find(b => b.existingItemId === invItem.id);
+        if (!bi) return invItem;
+        const bPrice = Number(bi.purchasePrice) || invItem.purchasePrice || 0;
+        return {
+          ...invItem,
+          purchasePrice: bPrice,
+          purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
+          ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
+          ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+          purchaseType,
+          bundleGroup: bundleGroupId,
+          bundleLabel: bi.label,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+
+      const totalCount = createdItems.length + existingBundleItems.length;
+      setData({ ...data, inventory: [...updatedInventory, ...createdItems] });
+      const msgParts = [];
+      if (createdItems.length)      msgParts.push(`新規${createdItems.length}件`);
+      if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
+      toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！`);
       resetForm();
       return;
     }
@@ -3097,24 +3133,148 @@ const PurchaseTab = () => {
                     </div>
 
                     {/* 各アイテム入力 */}
-                    {bundleItems.map((bi, idx) => (
-                      <div key={bi.id} style={{background:'#f8fafc',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #e2e8f0'}}>
-                        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
-                          <span style={{fontWeight:800,fontSize:13,color:'white',background:'#475569',
-                            borderRadius:99,padding:'2px 10px',flexShrink:0}}>{bi.label}</span>
-                          <input value={bi.productName} placeholder={`${form.productName || '商品名'} [${bi.label}]`}
-                            onChange={e => setBundleItems(prev => prev.map((b,i) => i===idx ? {...b,productName:e.target.value} : b))}
-                            style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12,background:'white'}}/>
+                    {bundleItems.map((bi, idx) => {
+                      const isExisting = bi.mode === 'existing';
+                      const selectedInv = isExisting && bi.existingItemId
+                        ? data.inventory.find(i => i.id === bi.existingItemId) : null;
+                      return (
+                        <div key={bi.id} style={{background: isExisting ? '#eff6ff' : '#f8fafc',
+                          borderRadius:10,padding:'10px 12px',marginBottom:8,
+                          border:`1px solid ${isExisting ? '#bfdbfe' : '#e2e8f0'}`}}>
+
+                          {/* ラベル + モード切り替えボタン */}
+                          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                            <span style={{fontWeight:800,fontSize:13,color:'white',
+                              background: isExisting ? '#2563eb' : '#475569',
+                              borderRadius:99,padding:'2px 10px',flexShrink:0}}>{bi.label}</span>
+                            <div style={{display:'flex',flex:1,gap:4}}>
+                              {[['new','＋ 新規登録'],['existing','📦 既存商品']].map(([m,l]) => (
+                                <button key={m}
+                                  onClick={() => setBundleItems(prev => prev.map((b,i) =>
+                                    i===idx ? {...b, mode:m, existingItemId:'', existingItemQuery:''} : b))}
+                                  style={{flex:1,padding:'5px 0',borderRadius:8,border:'none',cursor:'pointer',
+                                    fontSize:11,fontWeight:700,WebkitTapHighlightColor:'transparent',
+                                    background: bi.mode===m ? (m==='existing' ? '#2563eb' : '#1e293b') : '#e2e8f0',
+                                    color: bi.mode===m ? 'white' : '#777'}}>
+                                  {l}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* 新規登録モード：商品名入力 */}
+                          {!isExisting && (
+                            <input value={bi.productName}
+                              placeholder={`${form.productName || '商品名'} [${bi.label}]`}
+                              onChange={e => setBundleItems(prev => prev.map((b,i) => i===idx ? {...b,productName:e.target.value} : b))}
+                              style={{width:'100%',padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',
+                                fontSize:12,background:'white',marginBottom:8,boxSizing:'border-box'}}/>
+                          )}
+
+                          {/* 既存商品モード：選択済み or 検索 */}
+                          {isExisting && (
+                            <div style={{marginBottom:8}}>
+                              {selectedInv ? (
+                                /* 選択済み：商品カード + 解除ボタン */
+                                <div style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',
+                                  background:'white',borderRadius:8,border:'1px solid #93c5fd'}}>
+                                  <div style={{flex:1,minWidth:0}}>
+                                    <div style={{fontSize:12,fontWeight:700,overflow:'hidden',
+                                      textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#1e40af'}}>
+                                      ✔ {selectedInv.brand} {selectedInv.productName || '商品'}
+                                    </div>
+                                    <div style={{fontSize:10,color:'#888',marginTop:2,display:'flex',gap:8}}>
+                                      {selectedInv.purchaseDate
+                                        ? <span>仕入れ日：{selectedInv.purchaseDate}</span>
+                                        : <span style={{color:'#f59e0b',fontWeight:700}}>仕入れ日未入力</span>}
+                                      {(data.sales||[]).some(s=>s.inventoryId===selectedInv.id) &&
+                                        <span style={{color:'#2563eb',fontWeight:700}}>売上登録済</span>}
+                                    </div>
+                                  </div>
+                                  <button onClick={() => setBundleItems(prev => prev.map((b,i) =>
+                                    i===idx ? {...b, existingItemId:'', existingItemQuery:''} : b))}
+                                    style={{background:'none',border:'none',color:'#9ca3af',fontSize:18,
+                                      cursor:'pointer',padding:'0 4px',lineHeight:1}}>✕</button>
+                                </div>
+                              ) : (
+                                /* 未選択：インライン検索 */
+                                <div>
+                                  <input value={bi.existingItemQuery || ''}
+                                    placeholder="商品名・ブランドで検索..."
+                                    onChange={e => setBundleItems(prev => prev.map((b,i) =>
+                                      i===idx ? {...b, existingItemQuery:e.target.value} : b))}
+                                    style={{width:'100%',padding:'7px 10px',borderRadius:8,
+                                      border:'1px solid #93c5fd',fontSize:12,background:'white',
+                                      boxSizing:'border-box'}}/>
+                                  {(bi.existingItemQuery||'').trim().length >= 1 && (() => {
+                                    const q = (bi.existingItemQuery||'').toLowerCase();
+                                    const usedIds = new Set(bundleItems
+                                      .filter((b,j) => j!==idx && b.existingItemId)
+                                      .map(b => b.existingItemId));
+                                    const candidates = data.inventory.filter(inv =>
+                                      !usedIds.has(inv.id) &&
+                                      ((inv.brand||'').toLowerCase().includes(q) ||
+                                       (inv.productName||'').toLowerCase().includes(q) ||
+                                       (inv.modelNumber||'').toLowerCase().includes(q))
+                                    ).slice(0, 8);
+                                    return (
+                                      <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,
+                                        marginTop:4,maxHeight:200,overflowY:'auto',
+                                        boxShadow:'0 4px 16px rgba(0,0,0,0.12)',zIndex:10,position:'relative'}}>
+                                        {candidates.length === 0 ? (
+                                          <div style={{padding:'10px 12px',fontSize:12,color:'#999'}}>
+                                            一致する商品が見つかりません
+                                          </div>
+                                        ) : candidates.map(inv => {
+                                          const hasSale = (data.sales||[]).some(s=>s.inventoryId===inv.id);
+                                          return (
+                                            <button key={inv.id}
+                                              onClick={() => setBundleItems(prev => prev.map((b,i) =>
+                                                i===idx ? {...b, existingItemId:inv.id, existingItemQuery:''} : b))}
+                                              style={{width:'100%',padding:'9px 12px',background:'none',border:'none',
+                                                borderBottom:'1px solid #f3f4f6',cursor:'pointer',textAlign:'left',
+                                                WebkitTapHighlightColor:'transparent'}}>
+                                              <div style={{fontSize:12,fontWeight:700,color:'#1e293b'}}>
+                                                {inv.brand} {inv.productName}
+                                              </div>
+                                              <div style={{fontSize:10,color:'#888',display:'flex',gap:8,marginTop:2,flexWrap:'wrap'}}>
+                                                <span>¥{(inv.purchasePrice||0).toLocaleString()}</span>
+                                                {inv.purchaseDate && <span>{inv.purchaseDate}</span>}
+                                                {hasSale &&
+                                                  <span style={{color:'#2563eb',fontWeight:700,
+                                                    background:'#eff6ff',borderRadius:4,padding:'0 4px'}}>
+                                                    売上登録済
+                                                  </span>}
+                                                {!inv.purchaseDate &&
+                                                  <span style={{color:'#f59e0b',fontWeight:700,
+                                                    background:'#fffbeb',borderRadius:4,padding:'0 4px'}}>
+                                                    仕入れ日未入力
+                                                  </span>}
+                                              </div>
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* 仕入れ値（共通） */}
+                          <div style={{display:'flex',alignItems:'center',gap:6}}>
+                            <span style={{fontSize:12,color:'#666',flexShrink:0}}>仕入れ値</span>
+                            <input type="number" value={bi.purchasePrice} placeholder="0"
+                              onChange={e => setBundleItems(prev => prev.map((b,i) =>
+                                i===idx ? {...b,purchasePrice:e.target.value} : b))}
+                              style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',
+                                fontSize:14,fontWeight:700,background:'white',textAlign:'right'}}/>
+                            <span style={{fontSize:12,color:'#666'}}>円</span>
+                          </div>
                         </div>
-                        <div style={{display:'flex',alignItems:'center',gap:6}}>
-                          <span style={{fontSize:12,color:'#666',flexShrink:0}}>仕入れ値</span>
-                          <input type="number" value={bi.purchasePrice} placeholder="0"
-                            onChange={e => setBundleItems(prev => prev.map((b,i) => i===idx ? {...b,purchasePrice:e.target.value} : b))}
-                            style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:14,fontWeight:700,background:'white',textAlign:'right'}}/>
-                          <span style={{fontSize:12,color:'#666'}}>円</span>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
 
                     {/* 配分サマリー */}
                     <div style={{background: Math.abs(remaining)<=1 ? '#f0fdf4' : '#fef3c7',
