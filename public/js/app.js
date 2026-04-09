@@ -4593,13 +4593,17 @@ const SalesTab = () => {
     const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
     const platform = emptyForm.platform;
     const feeRate = fees[platform] ?? 0.10;
+    // 下書きをクリアしてバナーが出ないようにする（仕入れからの遷移時に干渉しないよう）
+    clearSaleDraft();
+    setSaleDraftBanner(null);
     setEditingSale(null);
+    setBundleSale(false);
     setForm({
       ...emptyForm,
       inventoryId,
       platform,
       feeRate,
-      salePrice:     inv?.listPrice    ? String(inv.listPrice)    : '',
+      salePrice:     (inv?.listPrice  > 0) ? String(inv.listPrice)    : '',
       purchasePrice: inv?.purchasePrice ? String(inv.purchasePrice) : '',
       listDate:      inv?.listDate     || '',   // 在庫の出品日を反映
       purchaseDate:  inv?.purchaseDate  || '',
@@ -4774,7 +4778,7 @@ const SalesTab = () => {
     if (!form.inventoryId) { toast('商品を選択してください'); return; }
     if (!form.salePrice) { toast('販売価格を入力してください'); return; }
 
-    const doSave = () => {
+    const doSave = () => { try {
       const listDate  = form.listDate || selectedItem?.listDate || '';
       const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
       const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
@@ -4807,13 +4811,15 @@ const SalesTab = () => {
           salePrice: Number(form.salePrice), shipping: Number(form.shipping),
           purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
           platformId: form.platformId || '', createdAt: new Date().toISOString(),
+          productName: selectedItem?.productName || '',
+          brand: selectedItem?.brand || '',
         };
         setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
         clearSaleDraft();
         toast('✅ 売上を記録しました');
       }
       closeForm();
-    };
+    } catch(e) { console.error('doSave error:', e); toast('⚠️ 保存中にエラーが発生しました。もう一度お試しください。'); } };
 
     // 新規登録時のみ重複チェック
     if (!editingSale) {
@@ -4969,8 +4975,8 @@ const SalesTab = () => {
                   {rank}
                 </div>
                 <div style={{flex:1,minWidth:0,fontSize:12,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#333',fontWeight:600}}>
-                  {s.item?.brand && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{s.item.brand}</span>}
-                  {s.item?.productName || '商品'}
+                  {(s.item?.brand || s.brand) && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{s.item?.brand || s.brand}</span>}
+                  {s.item?.productName || s.productName || '商品'}
                 </div>
                 <div style={{textAlign:'right',flexShrink:0}}>
                   <div style={{fontSize:13,fontWeight:800,color: isPos?'#16a34a':'#dc2626'}}>
@@ -5014,8 +5020,8 @@ const SalesTab = () => {
                   <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={52} fallback="💰" />
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:3}}>
-                      {item?.brand && <span style={{color:'#aaa',fontWeight:700,fontSize:11,marginRight:5,textTransform:'uppercase'}}>{item.brand}</span>}
-                      {item?.productName || '商品'}
+                      {(item?.brand || s.brand) && <span style={{color:'#aaa',fontWeight:700,fontSize:11,marginRight:5,textTransform:'uppercase'}}>{item?.brand || s.brand}</span>}
+                      {item?.productName || s.productName || s.memo || '商品'}
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
@@ -5115,8 +5121,8 @@ const SalesTab = () => {
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',
                           whiteSpace:'nowrap',color:'#111',lineHeight:1.3}}>
-                          {inv?.brand && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{inv.brand}</span>}
-                          {inv?.productName || s.memo || '商品'}
+                          {(inv?.brand || s.brand) && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{inv?.brand || s.brand}</span>}
+                          {inv?.productName || s.productName || s.memo || '商品'}
                         </div>
                         <div style={{display:'flex',alignItems:'center',gap:5,marginTop:4,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,
@@ -6051,12 +6057,11 @@ const SalesTab = () => {
                       <label style={{fontSize:10,color:'#888',fontWeight:700,display:'block',marginBottom:2}}>仕入れ先</label>
                       {(() => {
                         const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-                        // 全仕入れ先候補（店舗＋電脳＋過去の在庫の仕入れ先）
+                        // 全仕入れ先候補（マスタ登録済みのみ・自動追加しない）
                         const allStores = [
                           ...(master.normalStores||[]),
                           ...(master.yahooStores||[]),
                           ...(data.settings?.yahooStores||[]).map(s=>s.storeName).filter(Boolean),
-                          ...data.inventory.map(i => i.purchaseStore).filter(Boolean),
                         ].filter((v,i,a) => v && a.indexOf(v) === i)
                          .sort((a,b) => a.localeCompare(b,'ja'));
                         // 現在値が候補にない = カスタム入力中
@@ -8130,6 +8135,54 @@ const OtherTab = () => {
                         ＋ 新規ストアを追加
                       </button>
                     )}
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* ── 仕入れ先候補リスト管理 ── */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📦 仕入れ先候補リスト管理</div>
+              <div style={{fontSize:12,color:'#999',marginBottom:12}}>仕入れ登録・売上登録の「仕入れ先」ドロップダウンに表示される候補を管理します</div>
+              {(() => {
+                const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+                const delNormal = (name) => {
+                  const newMaster = { ...master, normalStores: (master.normalStores||[]).filter(s => s !== name) };
+                  setData({ ...data, settings: { ...data.settings, storeMaster: newMaster } });
+                  toast(`🗑️ 「${name}」を削除しました`);
+                };
+                const delYahoo = (name) => {
+                  const newMaster = { ...master, yahooStores: (master.yahooStores||[]).filter(s => s !== name) };
+                  setData({ ...data, settings: { ...data.settings, storeMaster: newMaster } });
+                  toast(`🗑️ 「${name}」を削除しました`);
+                };
+                const sortedNormal = [...(master.normalStores||[])].sort((a,b) => a.localeCompare(b,'ja'));
+                const sortedYahoo  = [...(master.yahooStores||[])].sort((a,b) => a.localeCompare(b,'ja'));
+                return (
+                  <>
+                    <div style={{fontWeight:700,fontSize:13,color:'#555',marginBottom:6}}>🏪 店舗仕入れ ({sortedNormal.length}件)</div>
+                    {sortedNormal.length === 0
+                      ? <div style={{fontSize:12,color:'#aaa',marginBottom:8}}>登録なし</div>
+                      : sortedNormal.map(name => (
+                        <div key={name} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,background:'#f9fafb',borderRadius:8,padding:'6px 10px'}}>
+                          <span style={{flex:1,fontSize:13,color:'#333'}}>{name}</span>
+                          <button onClick={() => { if (window.confirm(`「${name}」を削除しますか？`)) delNormal(name); }}
+                            style={{background:'none',border:'none',color:'#dc2626',fontSize:16,cursor:'pointer',padding:'0 4px',lineHeight:1}}>✕</button>
+                        </div>
+                      ))
+                    }
+                    <div style={{fontWeight:700,fontSize:13,color:'#555',marginBottom:6,marginTop:12}}>🟠 電脳仕入れ ({sortedYahoo.length}件)</div>
+                    {sortedYahoo.length === 0
+                      ? <div style={{fontSize:12,color:'#aaa',marginBottom:8}}>登録なし</div>
+                      : sortedYahoo.map(name => (
+                        <div key={name} style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,background:'#f9fafb',borderRadius:8,padding:'6px 10px'}}>
+                          <span style={{flex:1,fontSize:13,color:'#333'}}>{name}</span>
+                          <button onClick={() => { if (window.confirm(`「${name}」を削除しますか？`)) delYahoo(name); }}
+                            style={{background:'none',border:'none',color:'#dc2626',fontSize:16,cursor:'pointer',padding:'0 4px',lineHeight:1}}>✕</button>
+                        </div>
+                      ))
+                    }
+                    <div style={{fontSize:11,color:'#aaa',marginTop:10}}>※ 店舗・電脳それぞれの登録画面の「＋ その他」から新規追加できます</div>
                   </>
                 );
               })()}
