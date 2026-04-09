@@ -3989,6 +3989,8 @@ const SalesTab = () => {
   const batchInputRef = React.useRef();
   const [dupConfirm, setDupConfirm] = React.useState(null); // {existingSale, reason, onConfirm}
   const [saleStoreCustom, setSaleStoreCustom] = React.useState(null); // null=選択, string=手入力
+  const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
+  const [formError, setFormError] = React.useState(null); // インラインバリデーションエラー
   // ── 売上入力 下書き保存 ───────────────────────────────────
   const SALE_DRAFT_KEY = 'nobushop_sale_draft';
   const [saleDraftBanner, setSaleDraftBanner] = React.useState(null);
@@ -4503,6 +4505,7 @@ const SalesTab = () => {
     setShowForm(false); setEditingSale(null); setForm(emptyForm);
     setBundleSale(false); setBundleSaleItems(initSaleBundleItems(2)); setBundleSaleSplitMethod('equal'); setBundleSaleInlineForm(null);
     setSaleStoreCustom(null);
+    setSaving(false); setFormError(null); setDupConfirm(null);
   };
 
   const selectedItem = data.inventory.find(i => i.id === form.inventoryId);
@@ -4588,93 +4591,121 @@ const SalesTab = () => {
   };
 
   const handleSave = () => {
+    if (saving) return; // 二重タップ防止
+    setFormError(null);
+
     // ── まとめ販売（複数アイテムを一括登録）新規・編集両対応 ──────────────
     if (bundleSale) {
       const filled = bundleSaleItems.filter(bi => bi.inventoryId && bi.salePrice !== '');
-      if (filled.length < 2) { toast('まとめ販売は2件以上の商品と価格を入力してください'); return; }
-      const ts = Date.now();
-      const newSales = filled.map((bi, idx) => {
-        const inv = data.inventory.find(i => i.id === bi.inventoryId);
-        const sp  = Number(bi.salePrice);
-        const ship = Number(bi.shipping) || 0;
-        const pp  = inv?.purchasePrice || 0;
-        return {
-          id: `sale_${ts}_${idx}`,
-          inventoryId: bi.inventoryId,
-          userId: currentUser,
-          platform: form.platform,
-          salePrice: sp, feeRate: form.feeRate, shipping: ship,
-          saleDate: form.saleDate, platformId: form.platformId || '',
-          purchasePrice: pp,
-          profit: Math.round(sp * (1 - form.feeRate) - ship - pp),
-          listDate: inv?.listDate || '',
-          turnoverDays: (inv?.listDate && form.saleDate)
-            ? Math.max(0, Math.floor((new Date(form.saleDate) - new Date(inv.listDate)) / 86400000))
-            : null,
-          bundleGroup: `bundle_sale_${ts}`,
-          bundleLabel: bi.label,
-          createdAt: new Date(ts + idx).toISOString(),
-        };
-      });
-      const updatedInv = data.inventory.map(i =>
-        filled.some(bi => bi.inventoryId === i.id) ? { ...i, status: 'sold' } : i
-      );
-      // 編集時：元のレコードを削除して新規N件に置き換え
-      const baseSales = editingSale
-        ? data.sales.filter(s => s.id !== editingSale.id)
-        : data.sales;
-      setData({ ...data, inventory: updatedInv, sales: [...baseSales, ...newSales] });
-      clearSaleDraft();
-      toast(`✅ まとめ販売 ${newSales.length}件の売上を${editingSale ? '再登録' : '登録'}しました`);
-      closeForm();
+      if (filled.length < 2) {
+        setFormError('まとめ販売は2件以上の商品と価格を入力してください');
+        return;
+      }
+      setSaving(true);
+      try {
+        const ts = Date.now();
+        const newSales = filled.map((bi, idx) => {
+          const inv = data.inventory.find(i => i.id === bi.inventoryId);
+          const sp  = Number(bi.salePrice);
+          const ship = Number(bi.shipping) || 0;
+          const pp  = inv?.purchasePrice || 0;
+          return {
+            id: `sale_${ts}_${idx}`,
+            inventoryId: bi.inventoryId,
+            userId: currentUser,
+            platform: form.platform,
+            salePrice: sp, feeRate: form.feeRate, shipping: ship,
+            saleDate: form.saleDate, platformId: form.platformId || '',
+            purchasePrice: pp,
+            profit: Math.round(sp * (1 - form.feeRate) - ship - pp),
+            listDate: inv?.listDate || '',
+            turnoverDays: (inv?.listDate && form.saleDate)
+              ? Math.max(0, Math.floor((new Date(form.saleDate) - new Date(inv.listDate)) / 86400000))
+              : null,
+            bundleGroup: `bundle_sale_${ts}`,
+            bundleLabel: bi.label,
+            createdAt: new Date(ts + idx).toISOString(),
+          };
+        });
+        const updatedInv = data.inventory.map(i =>
+          filled.some(bi => bi.inventoryId === i.id) ? { ...i, status: 'sold' } : i
+        );
+        const baseSales = editingSale
+          ? data.sales.filter(s => s.id !== editingSale.id)
+          : data.sales;
+        setData({ ...data, inventory: updatedInv, sales: [...baseSales, ...newSales] });
+        clearSaleDraft();
+        toast(`✅ まとめ販売 ${newSales.length}件の売上を${editingSale ? '再登録' : '登録'}しました`);
+        closeForm();
+      } catch(e) {
+        console.error('bundleSave error:', e);
+        setFormError('保存中にエラーが発生しました。もう一度お試しください。');
+      } finally {
+        setSaving(false);
+      }
       return;
     }
 
-    if (!form.inventoryId) { toast('商品を選択してください'); return; }
-    if (!form.salePrice) { toast('販売価格を入力してください'); return; }
+    // ── バリデーション（インライン表示） ──
+    if (!form.inventoryId) {
+      setFormError('商品を選択してください');
+      return;
+    }
+    if (!form.salePrice) {
+      setFormError('販売価格を入力してください');
+      return;
+    }
 
-    const doSave = () => { try {
-      const listDate  = form.listDate || selectedItem?.listDate || '';
-      const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
-      const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
+    const doSave = () => {
+      setSaving(true);
+      try {
+        const listDate  = form.listDate || selectedItem?.listDate || '';
+        const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
+        const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
 
-      // 在庫の仕入れ情報を更新（仕入れ値・仕入れ日・仕入れ先）
-      const invPatch = selectedItem ? {
-        ...(form.purchasePrice !== '' ? { purchasePrice: Number(form.purchasePrice) } : {}),
-        ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
-        ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
-      } : null;
-      const updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
-        ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, ...invPatch } : i)
-        : data.inventory;
+        // 在庫の仕入れ情報を更新（仕入れ値・仕入れ日・仕入れ先）
+        const invPatch = selectedItem ? {
+          ...(form.purchasePrice !== '' ? { purchasePrice: Number(form.purchasePrice) } : {}),
+          ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
+          ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+        } : null;
+        const updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
+          ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, ...invPatch } : i)
+          : data.inventory;
 
-      if (editingSale) {
-        // ── 編集 ──
-        const updated = {
-          ...editingSale, ...form,
-          salePrice: Number(form.salePrice), shipping: Number(form.shipping),
-          purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
-          platformId: form.platformId || '', updatedAt: new Date().toISOString(),
-        };
-        setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
-        clearSaleDraft();
-        toast('✅ 売上を更新しました');
-      } else {
-        // ── 新規 ──
-        const newSale = {
-          id: Date.now().toString(), ...form, userId: currentUser,
-          salePrice: Number(form.salePrice), shipping: Number(form.shipping),
-          purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
-          platformId: form.platformId || '', createdAt: new Date().toISOString(),
-          productName: selectedItem?.productName || '',
-          brand: selectedItem?.brand || '',
-        };
-        setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
-        clearSaleDraft();
-        toast('✅ 売上を記録しました');
+        if (editingSale) {
+          // ── 編集 ──
+          const updated = {
+            ...editingSale, ...form,
+            salePrice: Number(form.salePrice), shipping: Number(form.shipping),
+            purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
+            platformId: form.platformId || '', updatedAt: new Date().toISOString(),
+          };
+          setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
+          clearSaleDraft();
+          toast('✅ 売上を更新しました');
+        } else {
+          // ── 新規 ──
+          const newSale = {
+            id: Date.now().toString(), ...form, userId: currentUser,
+            salePrice: Number(form.salePrice), shipping: Number(form.shipping),
+            purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
+            platformId: form.platformId || '', createdAt: new Date().toISOString(),
+            productName: selectedItem?.productName || '',
+            brand: selectedItem?.brand || '',
+          };
+          setData({ ...data, inventory: updatedInventory, sales: [...data.sales, newSale] });
+          clearSaleDraft();
+          toast('✅ 売上を記録しました');
+        }
+        closeForm();
+      } catch(e) {
+        console.error('doSave error:', e);
+        setFormError('保存中にエラーが発生しました。もう一度お試しください。');
+      } finally {
+        setSaving(false);
       }
-      closeForm();
-    } catch(e) { console.error('doSave error:', e); toast('⚠️ 保存中にエラーが発生しました。もう一度お試しください。'); } };
+    };
 
     // 新規登録時のみ重複チェック
     if (!editingSale) {
@@ -5015,53 +5046,6 @@ const SalesTab = () => {
           </div>
         );
       })()}
-
-      {/* 重複確認モーダル（単体登録時） */}
-      {dupConfirm && (
-        <div className="modal-overlay" onClick={() => setDupConfirm(null)}>
-          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:400}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:16,color:'#d97706'}}>⚠️ 重複の可能性</div>
-              <button onClick={() => setDupConfirm(null)}
-                style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
-            </div>
-            <div style={{fontSize:13,color:'#444',marginBottom:14}}>
-              {dupConfirm.reason}
-            </div>
-            {/* 既存レコード情報 */}
-            <div style={{background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:10,padding:'10px 12px',marginBottom:16,fontSize:12}}>
-              <div style={{fontWeight:700,color:'#92400e',marginBottom:6}}>📋 登録済みの売上</div>
-              <div style={{color:'#555',display:'flex',flexDirection:'column',gap:3}}>
-                {(() => {
-                  const s = dupConfirm.existingSale;
-                  const inv = data.inventory.find(i => i.id === s.inventoryId);
-                  return (
-                    <>
-                      {inv && <span>🏷️ {inv.brand} {inv.productName}</span>}
-                      <span>販売価格：¥{formatMoney(s.salePrice)}</span>
-                      <span>📅 {s.saleDate}</span>
-                      <span>🛒 {s.platform || 'フリマ'}</span>
-                      {s.platformId && <span>ID: {s.platformId}</span>}
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-            <div style={{display:'flex',gap:8}}>
-              <button onClick={() => setDupConfirm(null)}
-                style={{flex:1,padding:'12px',borderRadius:10,border:'1px solid #e5e7eb',
-                  background:'white',color:'#555',fontWeight:600,fontSize:14,cursor:'pointer'}}>
-                キャンセル
-              </button>
-              <button onClick={() => { setDupConfirm(null); dupConfirm.onConfirm(); }}
-                style={{flex:2,padding:'12px',borderRadius:10,border:'none',
-                  background:'#d97706',color:'white',fontWeight:700,fontSize:14,cursor:'pointer'}}>
-                それでも登録する
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* バッチ取込レビューモーダル */}
       {batchRows && (
@@ -6100,8 +6084,19 @@ const SalesTab = () => {
               );
             })()}
 
-            <button className="btn-primary" style={{width:'100%',touchAction:'manipulation'}} onClick={handleSave}>
-              {bundleSale
+            {/* インラインバリデーションエラー */}
+            {formError && (
+              <div style={{background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:10,
+                padding:'10px 14px',marginBottom:10,color:'#dc2626',fontWeight:600,fontSize:13,
+                display:'flex',alignItems:'center',gap:6}}>
+                ⚠️ {formError}
+              </div>
+            )}
+            <button className="btn-primary"
+              style={{width:'100%',touchAction:'manipulation',opacity:saving?0.75:1,transition:'opacity 0.15s'}}
+              onClick={handleSave}
+              disabled={saving}>
+              {saving ? '💾 保存中...' : bundleSale
                 ? `💾 ${bundleSaleItems.filter(bi=>bi.inventoryId&&bi.salePrice!=='').length}件に分割して${editingSale?'再登録':'登録'}する`
                 : editingSale ? '💾 売上を更新する' : '💾 売上を記録する'}
             </button>
@@ -6111,6 +6106,54 @@ const SalesTab = () => {
                 🗑️ この売上記録を削除する
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ===================================================
+          重複確認モーダル
+          ※ showForm より後に描画することで z-index 競合を回避
+             （同じ z-index:200 のとき DOM 後順が前面に表示される）
+          =================================================== */}
+      {dupConfirm && (
+        <div className="modal-overlay" style={{zIndex:300}} onClick={() => setDupConfirm(null)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:400}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:16,color:'#d97706'}}>⚠️ 重複の可能性</div>
+              <button onClick={() => setDupConfirm(null)}
+                style={{background:'none',border:'none',fontSize:22,cursor:'pointer',color:'#666'}}>×</button>
+            </div>
+            <div style={{fontSize:13,color:'#444',marginBottom:14}}>{dupConfirm.reason}</div>
+            <div style={{background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:10,padding:'10px 12px',marginBottom:16,fontSize:12}}>
+              <div style={{fontWeight:700,color:'#92400e',marginBottom:6}}>📋 登録済みの売上</div>
+              <div style={{color:'#555',display:'flex',flexDirection:'column',gap:3}}>
+                {(() => {
+                  const s = dupConfirm.existingSale;
+                  const inv = data.inventory.find(i => i.id === s.inventoryId);
+                  return (
+                    <>
+                      {inv && <span>🏷️ {inv.brand} {inv.productName}</span>}
+                      <span>販売価格：¥{formatMoney(s.salePrice)}</span>
+                      <span>📅 {s.saleDate}</span>
+                      <span>🛒 {s.platform || 'フリマ'}</span>
+                      {s.platformId && <span>ID: {s.platformId}</span>}
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={() => setDupConfirm(null)}
+                style={{flex:1,padding:'12px',borderRadius:10,border:'1px solid #e5e7eb',
+                  background:'white',color:'#555',fontWeight:600,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
+                キャンセル
+              </button>
+              <button onClick={() => { setDupConfirm(null); dupConfirm.onConfirm(); }}
+                style={{flex:2,padding:'12px',borderRadius:10,border:'none',
+                  background:'#d97706',color:'white',fontWeight:700,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
+                それでも登録する
+              </button>
+            </div>
           </div>
         </div>
       )}
