@@ -1188,7 +1188,9 @@ const PurchaseTab = () => {
 
   // ── 下書き自動保存 ──
   const DRAFT_KEY = 'nobushop_purchase_draft';
+  const EDIT_DRAFT_PREFIX = 'nobushop_edit_draft_'; // 既存商品編集中の下書き（IDベース）
   const [draftBanner, setDraftBanner] = React.useState(null);
+  const savingTimeoutRef = React.useRef(null); // saving状態の安全タイムアウト
 
   // 起動時に下書きチェック
   React.useEffect(() => {
@@ -1234,6 +1236,37 @@ const PurchaseTab = () => {
   }, [form, purchaseType, generatedDesc, step, editingItem, photos, registrationMode]);
 
   const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch(_) {} };
+
+  // ── 編集モード専用：フォーム変化時に自動下書き保存（タブ切替・クラッシュ対策）──
+  React.useEffect(() => {
+    if (!editingItem) return;
+    try {
+      localStorage.setItem(
+        EDIT_DRAFT_PREFIX + editingItem.id,
+        JSON.stringify({ form, purchaseType, registrationMode, savedAt: new Date().toISOString() })
+      );
+    } catch(_) {}
+  }, [form, editingItem, purchaseType, registrationMode]);
+
+  // 編集モード：バックグラウンド移行時も強制保存
+  React.useEffect(() => {
+    const saveEditDraftOnHide = () => {
+      if (!document.hidden || !editingItem) return;
+      try {
+        localStorage.setItem(
+          EDIT_DRAFT_PREFIX + editingItem.id,
+          JSON.stringify({ form, purchaseType, registrationMode, savedAt: new Date().toISOString() })
+        );
+      } catch(_) {}
+    };
+    document.addEventListener('visibilitychange', saveEditDraftOnHide);
+    return () => document.removeEventListener('visibilitychange', saveEditDraftOnHide);
+  }, [form, editingItem, purchaseType, registrationMode]);
+
+  const clearEditDraft = (itemId) => {
+    if (!itemId) return;
+    try { localStorage.removeItem(EDIT_DRAFT_PREFIX + itemId); } catch(_) {}
+  };
 
   // コンポーネントアンマウント時にObjectURLを解放
   React.useEffect(() => {
@@ -1354,6 +1387,26 @@ const PurchaseTab = () => {
       setPhotos(loaded);
     })();
     setStep(3);
+  }, [editingItem]);
+
+  // ★ 編集モード：下書きが保存済みなら自動復元（タブ切替・クラッシュ後の入力内容を守る）
+  React.useEffect(() => {
+    if (!editingItem) return;
+    try {
+      const raw = localStorage.getItem(EDIT_DRAFT_PREFIX + editingItem.id);
+      if (!raw) return;
+      const draft = JSON.parse(raw);
+      // 下書きが本体データより新しい場合のみ復元（3秒以上新しければ未保存変更あり）
+      const draftTime = new Date(draft.savedAt || 0).getTime();
+      const itemTime  = new Date(editingItem.updatedAt || editingItem.createdAt || 0).getTime();
+      if (draftTime > itemTime + 3000 && draft.form) {
+        // 下書きのフォーム値で上書き（前のuseEffectで読み込まれたeditingItemの値を差し替え）
+        setForm(prev => ({ ...prev, ...draft.form }));
+        if (draft.purchaseType)    setPurchaseType(draft.purchaseType);
+        if (draft.registrationMode) setRegistrationMode(draft.registrationMode);
+        toast('🔄 前回の編集内容を復元しました');
+      }
+    } catch(_) {}
   }, [editingItem]);
 
   const apiKey = data.settings?.apiKey || '';
@@ -1791,9 +1844,13 @@ const PurchaseTab = () => {
   };
 
   const resetForm = () => {
+    // saving安全タイムアウトをクリア
+    if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
     setSaving(false);
     setFormError(null);
     clearDraft();
+    // 編集モードの下書きもクリア（保存完了 or キャンセル時）
+    if (editingItem) clearEditDraft(editingItem.id);
     photos.forEach(p => {
       if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
       if (p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
@@ -1855,6 +1912,13 @@ const PurchaseTab = () => {
     }
 
     setSaving(true);
+    // 安全タイムアウト：15秒以内に完了しなければ saving を強制リセット
+    if (savingTimeoutRef.current) clearTimeout(savingTimeoutRef.current);
+    savingTimeoutRef.current = setTimeout(() => {
+      setSaving(false);
+      setFormError('保存処理がタイムアウトしました。もう一度お試しください。');
+      savingTimeoutRef.current = null;
+    }, 15000);
     try {
       // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
       const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
@@ -1898,6 +1962,7 @@ const PurchaseTab = () => {
         const savedId = editingItem.id;
         const goSell = postSaveNavToSale.current;
         postSaveNavToSale.current = false;
+        clearEditDraft(savedId); // 保存成功時に編集下書きを削除
         resetForm(); // saving=false も resetForm 内でリセットされる
         if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
         return;
@@ -8953,7 +9018,8 @@ const App = () => {
         sales:     cleanedSales,
       };
       dataRef.current = newFull;
-      saveData(newFull);
+      // ★ 同期保存（deferred setTimeout だとアプリ終了時にデータが失われる）
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newFull)); } catch(e) { console.error('[setData] localStorage error:', e); }
       syncToSupabase(oldFull, newFull);
       return newFull;
     });
@@ -9028,14 +9094,42 @@ const App = () => {
           saveData(cleanedLocal);
           setDbStatus('migrated');
         } else {
-          // クラウドのデータで画面を更新（孤立データも除去）
-          const cleanedCloud = cleanOrphans(cloudData);
-          dataRef.current = cleanedCloud;
-          setFullDataRaw(cleanedCloud);
-          saveData(cleanedCloud);
-          // 孤立データがあった場合はクラウドにも反映
-          if (cleanedCloud !== cloudData) {
-            syncToSupabase(cloudData, cleanedCloud);
+          // ★ last-write-wins マージ（以前は「クラウド常に勝つ」でローカル保存が消えるバグがあった）
+          // アイテム単位で updatedAt / createdAt を比較し、新しい方を採用する
+          const mergeByLastWrite = (localArr, cloudArr) => {
+            const localMap  = new Map((localArr  || []).map(i => [i.id, i]));
+            const cloudMap  = new Map((cloudArr  || []).map(i => [i.id, i]));
+            const allIds    = new Set([...localMap.keys(), ...cloudMap.keys()]);
+            const result    = [];
+            for (const id of allIds) {
+              const l = localMap.get(id);
+              const c = cloudMap.get(id);
+              if (!l) { result.push(c); continue; }
+              if (!c) { result.push(l); continue; }
+              // updatedAt（なければ createdAt）で比較 → 新しい方を採用
+              const lt = new Date(l.updatedAt || l.createdAt || 0).getTime();
+              const ct = new Date(c.updatedAt || c.createdAt || 0).getTime();
+              result.push(lt >= ct ? l : c);
+            }
+            return result;
+          };
+
+          const mergedData = {
+            ...cloudData,
+            inventory: mergeByLastWrite(localData.inventory, cloudData.inventory),
+            sales:     mergeByLastWrite(localData.sales,     cloudData.sales),
+            // 設定はローカル優先（クラウドにまだ反映されていない設定変更を守る）
+            settings: localData.settings || cloudData.settings,
+          };
+          const cleanedMerged = cleanOrphans(mergedData);
+          dataRef.current = cleanedMerged;
+          setFullDataRaw(cleanedMerged);
+          saveData(cleanedMerged);
+          // マージ結果（ローカル優先分）をクラウドへ反映
+          const invChanged  = JSON.stringify(cleanedMerged.inventory) !== JSON.stringify(cloudData.inventory);
+          const salesChanged = JSON.stringify(cleanedMerged.sales)    !== JSON.stringify(cloudData.sales);
+          if (invChanged || salesChanged || cleanedMerged !== mergedData) {
+            syncToSupabase(cloudData, cleanedMerged);
           }
           setDbStatus('ok');
         }
