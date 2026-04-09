@@ -5612,21 +5612,60 @@ const SalesTab = () => {
               </div>
             )}
 
-            {/* 編集時：商品写真の変更リンク */}
+            {/* 編集時：商品情報カード */}
             {editingSale && (() => {
               const linkedItem = data.inventory.find(i => i.id === editingSale.inventoryId);
               if (!linkedItem) return null;
               return (
-                <div style={{background:'#f8f8f8',borderRadius:12,padding:'10px 12px',marginBottom:14,display:'flex',alignItems:'center',gap:10}}>
-                  <ItemThumbnail thumbId={linkedItem.photos?.[0]?.thumbId} thumbDataUrl={linkedItem.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{linkedItem.brand} {linkedItem.productName}</div>
-                    <div style={{fontSize:11,color:'#999',marginTop:1}}>仕入れ ¥{formatMoney(linkedItem.purchasePrice)}</div>
+                <div style={{background:'#f8f8f8',borderRadius:12,padding:'10px 12px',marginBottom:14}}>
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom: linkedItem.brand ? 0 : 8}}>
+                    <ItemThumbnail thumbId={linkedItem.photos?.[0]?.thumbId} thumbDataUrl={linkedItem.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        {linkedItem.brand && <span style={{color:'#888',fontSize:12,marginRight:4}}>{linkedItem.brand}</span>}
+                        {linkedItem.productName}
+                      </div>
+                      <div style={{fontSize:11,color:'#999',marginTop:1}}>仕入れ ¥{formatMoney(linkedItem.purchasePrice)}</div>
+                    </div>
+                    <button style={{background:'#6b7280',color:'white',border:'none',borderRadius:8,padding:'6px 10px',fontSize:11,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}
+                      onClick={() => { closeForm(); setEditingItem(linkedItem); setTab('purchase'); }}>
+                      仕入れ登録へ
+                    </button>
                   </div>
-                  <button style={{background:'#E84040',color:'white',border:'none',borderRadius:8,padding:'6px 10px',fontSize:11,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}
-                    onClick={() => { closeForm(); setEditingItem(linkedItem); setTab('purchase'); }}>
-                    写真を変更
-                  </button>
+                  {!linkedItem.brand && (
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6}}>
+                      <span style={{fontSize:11,color:'#dc2626',fontWeight:700,flexShrink:0}}>⚠️ ブランド未入力</span>
+                      <input
+                        className="input-field"
+                        style={{flex:1,fontSize:13,padding:'5px 10px',height:'auto'}}
+                        placeholder="ブランド名を入力"
+                        onBlur={e => {
+                          const val = e.target.value.trim();
+                          if (!val) return;
+                          const updated = data.inventory.map(i => i.id === linkedItem.id ? { ...i, brand: val } : i);
+                          setData({ ...data, inventory: updated });
+                          toast('✅ ブランドを保存しました');
+                        }}
+                      />
+                    </div>
+                  )}
+                  {linkedItem.brand && (
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginTop:6}}>
+                      <span style={{fontSize:11,color:'#888',flexShrink:0}}>ブランド：</span>
+                      <input
+                        className="input-field"
+                        style={{flex:1,fontSize:13,padding:'5px 10px',height:'auto'}}
+                        defaultValue={linkedItem.brand}
+                        onBlur={e => {
+                          const val = e.target.value.trim();
+                          if (val === linkedItem.brand) return;
+                          const updated = data.inventory.map(i => i.id === linkedItem.id ? { ...i, brand: val } : i);
+                          setData({ ...data, inventory: updated });
+                          toast('✅ ブランドを更新しました');
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })()}
