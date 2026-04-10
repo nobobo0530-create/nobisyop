@@ -268,10 +268,24 @@ const loadData = () => {
   } catch { return getInitialData(); }
 };
 
+// ★ localStorage保存前にthumbDataUrl（base64画像）を除外する
+// 理由: 50件×3枚×30KB = 4.5MB がlocalStorageに書き込まれ、iOS Safari (上限5MB) でフリーズの原因になっていた
+// 写真データはIndexedDBに保存済みのため、localStorageにはIDのみで十分
+const stripPhotosForStorage = (data) => ({
+  ...data,
+  inventory: (data.inventory || []).map(item => ({
+    ...item,
+    photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
+  })),
+});
+
 const saveData = (data) => {
   // setTimeout(0) で JSON.stringify を非同期化し、大きなデータでもUIをブロックしない
   setTimeout(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch(e) { console.error(e); }
+    try {
+      const stripped = stripPhotosForStorage(data);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+    } catch(e) { console.error('[saveData] error:', e); }
   }, 0);
 };
 
@@ -326,11 +340,18 @@ const migrateLocalToSupabase = async (localData) => {
 };
 
 // 差分をサーバーに同期（/api/data POST）
+// itemからthumbDataUrlを除外（クラウド同期・比較用：base64画像はIndexedDB管理のため不要）
+const stripItemPhotos = (item) => ({
+  ...item,
+  photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
+});
+
 const syncToSupabase = async (oldData, newData) => {
   if (!_cloudEnabled) return;
   try {
-    const invOld   = new Map((oldData?.inventory || []).map(i => [i.id, i]));
-    const invNew   = new Map((newData?.inventory || []).map(i => [i.id, i]));
+    // ★ thumbDataUrlを除外した比較用データを作成（base64画像でJSON.stringifyが遅くなるのを防ぐ）
+    const invOld   = new Map((oldData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
+    const invNew   = new Map((newData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
     const salesOld = new Map((oldData?.sales     || []).map(s => [s.id, s]));
     const salesNew = new Map((newData?.sales     || []).map(s => [s.id, s]));
 
@@ -9320,7 +9341,11 @@ const App = () => {
     const forceSave = () => {
       // ★ バックグラウンド移行時のみ保存（前面復帰時は不要＆大量データでブロックを避ける）
       if (!document.hidden) return;
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataRef.current)); } catch(e) {}
+      try {
+        // ★ thumbDataUrl（base64画像）を除外して保存（iOS Safariの5MB上限＋同期書き込みフリーズ防止）
+        const stripped = stripPhotosForStorage(dataRef.current);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+      } catch(e) {}
     };
     // visibilitychange: タブ切り替え・ホームボタンなどでバックグラウンドに入るとき
     document.addEventListener('visibilitychange', forceSave);
