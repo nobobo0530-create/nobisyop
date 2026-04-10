@@ -6517,6 +6517,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
   const [showAllSales, setShowAllSales]           = React.useState(false); // 売上管理表全件表示
   const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
+  const [kobotsuSelected, setKobotsuSelected] = React.useState(null); // 古物台帳 商品詳細モーダル
   const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
 
   const spreadsheetId = settings.googleSpreadsheetId || '';
@@ -6829,15 +6830,16 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                     if (setPendingReturnTab) setPendingReturnTab('other');
                     setEditingItem(item); setTab('purchase');
                   } : undefined;
+                  const rowBg = bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa');
                   return (
                   <tr key={item.id}
-                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { if (setPendingReturnTab) setPendingReturnTab('other'); setEditingItem(item); setTab('purchase'); } : undefined}
+                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : () => setKobotsuSelected(item)}
                     style={{borderBottom:'1px solid #f3f3f3',
-                      background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
+                      background: rowBg,
                       borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
-                      cursor: (bs || canEditKobotsu) ? 'pointer' : 'default'}}
-                    onMouseEnter={!bs && canEditKobotsu ? e => e.currentTarget.style.background='#f0f9ff' : undefined}
-                    onMouseLeave={!bs && canEditKobotsu ? e => e.currentTarget.style.background=bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa') : undefined}>
+                      cursor:'pointer'}}
+                    onMouseEnter={e => { if (!bs) e.currentTarget.style.background='#f0f9ff'; }}
+                    onMouseLeave={e => { if (!bs) e.currentTarget.style.background=rowBg; }}>
                     <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                     <td style={tdStyle({color: item.category ? '#555' : '#dc2626', fontWeight: item.category ? 400 : 700})}>{item.category || '⚠️未入力'}</td>
                     <td style={tdStyle({maxWidth:140,overflow:'hidden',textOverflow:'ellipsis'})}>
@@ -7050,11 +7052,11 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                     } : undefined;
                     return (
                     <tr key={item.id}
-                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { setShowAllKobotsu(false); if (setPendingReturnTab) setPendingReturnTab('other'); setEditingItem(item); setTab('purchase'); } : undefined}
+                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : () => { setShowAllKobotsu(false); setKobotsuSelected(item); }}
                       style={{borderBottom:'1px solid #f3f3f3',
                         background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
                         borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
-                        cursor: (bs || canEditKobotsu) ? 'pointer' : 'default'}}>
+                        cursor:'pointer'}}>
                       <td style={tdStyle({color: item.purchaseDate ? '#555' : '#dc2626', fontWeight: item.purchaseDate ? 400 : 700})}>{item.purchaseDate || '⚠️未入力'}</td>
                       <td style={tdStyle({color: item.category ? '#555' : '#dc2626', fontWeight: item.category ? 400 : 700})}>{item.category||'⚠️未入力'}</td>
                       <td style={tdStyle({maxWidth:150,overflow:'hidden',textOverflow:'ellipsis'})}>
@@ -7099,6 +7101,125 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           </div>
         </div>
       )}
+
+      {/* ── 古物台帳 商品詳細モーダル ── */}
+      {kobotsuSelected && (() => {
+        const item = kobotsuSelected;
+        const sale = data.sales.find(s => s.inventoryId === item.id);
+        const statusCfg = item.status === 'sold'
+          ? { label: '売却済', color: '#16a34a', bg: '#d1fae5' }
+          : item.status === 'listed'
+          ? { label: '出品中', color: '#2563eb', bg: '#eff6ff' }
+          : { label: '未出品', color: '#d97706', bg: '#fef3c7' };
+        const kobotsuChecks = [
+          { label: '仕入年月日',       ok: !!item.purchaseDate,    value: item.purchaseDate    || '未入力' },
+          { label: '品目（カテゴリ）', ok: !!item.category,        value: item.category        || '未入力' },
+          { label: 'ブランド',         ok: !!item.brand,           value: item.brand           || '未入力' },
+          { label: '商品名',           ok: !!item.productName,     value: item.productName     || '未入力' },
+          { label: '仕入単価',         ok: item.purchasePrice > 0, value: item.purchasePrice   ? `¥${formatMoney(item.purchasePrice)}` : '未入力' },
+          { label: '仕入先',           ok: !!item.purchaseStore,   value: item.purchaseStore   || '未入力' },
+          { label: '許可証番号',       ok: !!resolveLicense(item), value: resolveLicense(item) || '未設定' },
+        ];
+        const missingCount = kobotsuChecks.filter(c => !c.ok).length;
+        const canEdit = typeof setEditingItem === 'function' && typeof setTab === 'function';
+        return (
+          <div className="modal-overlay" onClick={() => setKobotsuSelected(null)}>
+            <div className="modal-content slide-up" onClick={e => e.stopPropagation()}
+              style={{maxWidth:420,width:'calc(100% - 32px)',maxHeight:'88vh',overflowY:'auto',padding:18}}>
+
+              {/* ヘッダー */}
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:14}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:6}}>
+                    <span style={{fontSize:11,background:statusCfg.bg,color:statusCfg.color,
+                      borderRadius:99,padding:'2px 8px',fontWeight:700}}>
+                      {statusCfg.label}
+                    </span>
+                    {missingCount > 0
+                      ? <span style={{fontSize:11,background:'#fef2f2',color:'#dc2626',borderRadius:99,padding:'2px 8px',fontWeight:700}}>⚠️ 未入力 {missingCount}項目</span>
+                      : <span style={{fontSize:11,background:'#dcfce7',color:'#16a34a',borderRadius:99,padding:'2px 8px',fontWeight:700}}>✅ 必要項目 入力済</span>
+                    }
+                  </div>
+                  {item.brand && <div style={{fontSize:12,color:'#9ca3af',marginBottom:3}}>{item.brand}</div>}
+                  <div style={{fontWeight:800,fontSize:16,lineHeight:1.3}}>{item.productName || '（商品名未入力）'}</div>
+                </div>
+                <button onClick={() => setKobotsuSelected(null)}
+                  style={{background:'#f5f5f5',border:'none',borderRadius:20,width:32,height:32,fontSize:18,
+                    cursor:'pointer',flexShrink:0,marginLeft:10,display:'flex',alignItems:'center',
+                    justifyContent:'center',touchAction:'manipulation'}}>✕</button>
+              </div>
+
+              {/* 古物台帳 必要項目チェック */}
+              <div style={{background:'#f8fafc',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div style={{fontWeight:700,fontSize:13}}>📜 古物台帳 必要項目</div>
+                  <div style={{fontSize:11,borderRadius:99,padding:'2px 10px',fontWeight:700,
+                    background: missingCount===0?'#dcfce7':'#fef2f2',
+                    color:       missingCount===0?'#16a34a':'#dc2626'}}>
+                    {missingCount===0 ? '完全入力済み' : `${missingCount}件 未入力`}
+                  </div>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 14px'}}>
+                  {kobotsuChecks.map(c => (
+                    <div key={c.label}>
+                      <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,marginBottom:2}}>{c.label}</div>
+                      <div style={{fontSize:12,fontWeight:600,color: c.ok ? '#111' : '#dc2626',
+                        display:'flex',alignItems:'center',gap:3}}>
+                        {!c.ok && <span style={{fontSize:13}}>⚠️</span>}
+                        {c.value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {missingCount > 0 && (
+                  <div style={{marginTop:12,fontSize:11,color:'#9ca3af',textAlign:'center'}}>
+                    ⚠️ の項目は「✏️ 編集する」から入力できます
+                  </div>
+                )}
+              </div>
+
+              {/* 売却情報 */}
+              {sale && (
+                <div style={{background:'#f0fdf4',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+                  <div style={{fontWeight:700,fontSize:13,marginBottom:10,color:'#16a34a'}}>💰 売却情報</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px 14px'}}>
+                    {[
+                      ['売却日', sale.saleDate || '−', false],
+                      ['販売価格', sale.salePrice ? `¥${formatMoney(sale.salePrice)}` : '−', true],
+                      ['純利益', sale.profit != null ? `¥${formatMoney(sale.profit)}` : '−', true],
+                      ['販路', sale.platform || '−', false],
+                    ].map(([label, val, bold]) => (
+                      <div key={label}>
+                        <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,marginBottom:1}}>{label}</div>
+                        <div style={{fontSize:12,fontWeight: bold?700:600,color: bold?'#16a34a':'#111'}}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ボタン */}
+              {canEdit && (
+                <button className="btn-primary"
+                  style={{width:'100%',padding:14,fontSize:15,touchAction:'manipulation',marginBottom:8}}
+                  onClick={() => {
+                    setKobotsuSelected(null);
+                    if (setPendingReturnTab) setPendingReturnTab('other');
+                    setEditingItem(item);
+                    setTab('purchase');
+                  }}>
+                  ✏️ 編集する
+                </button>
+              )}
+              <button onClick={() => setKobotsuSelected(null)}
+                style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #e5e7eb',background:'white',
+                  color:'#374151',fontSize:14,cursor:'pointer',fontWeight:600,touchAction:'manipulation'}}>
+                閉じる
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };
