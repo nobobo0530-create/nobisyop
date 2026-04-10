@@ -1191,7 +1191,8 @@ const PurchaseTab = () => {
   const EDIT_DRAFT_PREFIX = 'nobushop_edit_draft_'; // 既存商品編集中の下書き（IDベース）
   const [draftBanner, setDraftBanner] = React.useState(null);
   const savingTimeoutRef = React.useRef(null); // saving状態の安全タイムアウト
-  const draftSaveTimerRef = React.useRef(null); // 編集下書き保存デバウンス用
+  const draftSaveTimerRef = React.useRef(null); // 編集下書き保存デバウンス用（編集モード）
+  const newRegDraftTimerRef = React.useRef(null); // 新規登録下書き保存デバウンス用
 
   // 起動時に下書きチェック
   React.useEffect(() => {
@@ -1205,17 +1206,23 @@ const PurchaseTab = () => {
   }, []);
 
   // form/step変化時に自動保存（Step3以降、新規のみ）
+  // ★ デバウンス500ms：毎キーストロークの同期localStorage書き込みを防止（フリーズ主因）
+  // photos.thumbDataUrlはbase64画像で数十KB → 同期書き込みでUIスレッドがブロックされていた
   React.useEffect(() => {
     if (editingItem) return;
     if (step < 3) return;
-    const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
-    try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({
-        form, purchaseType, generatedDesc, registrationMode,
-        photoRefs,
-        savedAt: new Date().toISOString(),
-      }));
-    } catch(_) {}
+    if (newRegDraftTimerRef.current) clearTimeout(newRegDraftTimerRef.current);
+    newRegDraftTimerRef.current = setTimeout(() => {
+      newRegDraftTimerRef.current = null;
+      const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify({
+          form, purchaseType, generatedDesc, registrationMode,
+          photoRefs,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch(_) {}
+    }, 500);
   }, [form, purchaseType, generatedDesc, step, editingItem, photos]);
 
   // バックグラウンド移行時にも強制保存
@@ -1861,6 +1868,7 @@ const PurchaseTab = () => {
     // saving安全タイムアウト・デバウンスタイマーをクリア
     if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
     if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null; }
+    if (newRegDraftTimerRef.current) { clearTimeout(newRegDraftTimerRef.current); newRegDraftTimerRef.current = null; }
     setSaving(false);
     if (pendingReturnSection) setPendingReturnSection(null);
     setFormError(null);
@@ -1897,9 +1905,9 @@ const PurchaseTab = () => {
 
   // 保存後に売上登録へ遷移するフラグ
   const postSaveNavToSale = React.useRef(false);
-  const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
+  const handleSaveAndSell = async () => { postSaveNavToSale.current = true; await handleSave(); };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (saving) return; // 二重タップ防止
     setFormError(null);
 
@@ -1928,6 +1936,9 @@ const PurchaseTab = () => {
     }
 
     setSaving(true);
+    // ★ await で一度イベントループを手放し、「保存中...」ボタン状態をUIに描画してから処理開始
+    // これにより保存ボタンが確実にdisabledになり、二重タップも防止される
+    await new Promise(r => setTimeout(r, 0));
     // 安全タイムアウト：15秒以内に完了しなければ saving を強制リセット
     if (savingTimeoutRef.current) clearTimeout(savingTimeoutRef.current);
     savingTimeoutRef.current = setTimeout(() => {
@@ -2090,7 +2101,9 @@ const PurchaseTab = () => {
       if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
     } catch(e) {
       console.error('handleSave error:', e);
-      setFormError('保存中にエラーが発生しました。もう一度お試しください。\n（入力内容は下書きに保存されています）');
+      // savingTimeoutRefをクリア（クリアしないと15秒後に別のエラーメッセージが上書きされる）
+      if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
+      setFormError('保存中にエラーが発生しました。もう一度お試しください。\n（入力内容は下書きに保存されています）\n詳細: ' + (e?.message || String(e)));
       setSaving(false); // catch では resetForm が呼ばれないので手動リセット
     }
   };
@@ -9233,7 +9246,12 @@ const App = () => {
       dataRef.current = newFull;
       // ★ 非同期保存（setTimeoutで主スレッドをブロックしない。終了時はpagehide/visibilitychangeで同期保存）
       saveData(newFull);
-      syncToSupabase(oldFull, newFull);
+      // ★ syncToSupabaseをsetTimeout(0)で非同期化：
+      //    JSON.stringify比較（在庫件数×2回）がstateアップデーター内で同期実行されるとレンダリングをブロックするため、
+      //    次のマクロタスクに遅延させUIスレッドのブロックを防止する
+      const _oldFull = oldFull;
+      const _newFull = newFull;
+      setTimeout(() => syncToSupabase(_oldFull, _newFull), 0);
       return newFull;
     });
   }, []);
