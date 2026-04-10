@@ -3489,11 +3489,13 @@ const PurchaseTab = () => {
         )}
       </div>
 
-      {/* 保存ボタン：常に画面下部に表示（ボトムナビの上に固定） */}
+      {/* 保存ボタン：画面下部に固定表示（ボトムナビの上） */}
+      {/* fixedレイアウトのためスペーサーでコンテンツが隠れるのを防止 */}
+      {step >= 3 && <div style={{height:'200px'}} aria-hidden="true" />}
       {step >= 3 && (
-        <div style={{position:'sticky',bottom:'calc(64px + env(safe-area-inset-bottom))',background:'white',
-          padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',zIndex:110,
-          boxShadow:'0 -4px 12px rgba(0,0,0,0.08)'}}>
+        <div style={{position:'fixed',bottom:'calc(64px + env(safe-area-inset-bottom))',left:0,right:0,
+          background:'white',padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',
+          zIndex:150,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)'}}>
           {/* 出品ステータス選択 */}
           <div style={{display:'flex',gap:8,marginBottom:10}}>
             {[

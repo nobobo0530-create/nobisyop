@@ -281,11 +281,40 @@
   <div id="root"></div>
 
   <script>
+  // ── iOS Safari: キーボード開閉後のタッチ座標ズレ修正 ──
+  // キーボード閉じた後にvisual viewportと実タッチ座標がズレて下部ボタンが押せなくなるバグを防止
+  (function() {
+    function fixTouchOffset() {
+      // スクロール位置を再セットすることでiOS Safariのタッチ座標キャッシュをリセット
+      window.scrollTo(window.scrollX, window.scrollY);
+    }
+    if (window.visualViewport) {
+      var lastHeight = window.visualViewport.height;
+      window.visualViewport.addEventListener('resize', function() {
+        var newHeight = window.visualViewport.height;
+        // キーボードが閉じた（viewportが広がった）タイミングで修正
+        if (newHeight > lastHeight) {
+          setTimeout(fixTouchOffset, 100);
+          setTimeout(fixTouchOffset, 300);
+        }
+        lastHeight = newHeight;
+      });
+    }
+    document.addEventListener('focusout', function(e) {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
+        setTimeout(fixTouchOffset, 100);
+        setTimeout(fixTouchOffset, 300);
+      }
+    });
+  })();
+  </script>
+
+  <script>
   // ── Babel コンパイルキャッシュ + 高速起動ローダー ──
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260410d';
+    var VERSION = '20260410e';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
