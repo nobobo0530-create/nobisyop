@@ -1191,6 +1191,7 @@ const PurchaseTab = () => {
   const EDIT_DRAFT_PREFIX = 'nobushop_edit_draft_'; // 既存商品編集中の下書き（IDベース）
   const [draftBanner, setDraftBanner] = React.useState(null);
   const savingTimeoutRef = React.useRef(null); // saving状態の安全タイムアウト
+  const draftSaveTimerRef = React.useRef(null); // 編集下書き保存デバウンス用
 
   // 起動時に下書きチェック
   React.useEffect(() => {
@@ -1241,16 +1242,23 @@ const PurchaseTab = () => {
   // ★ deps から editingItem を除外: editingItem が変わった直後は form がまだ古い値のため、
   //    誤った空フォームを下書き保存してしまうバグを防ぐ。
   //    form が変化したとき（=editingItemのロード完了後）だけ保存する。
+  // ★ デバウンス(400ms)で連続入力時のlocalStorage書き込み頻度を抑制しフリーズを防止
   React.useEffect(() => {
     if (!editingItem) return;
     // フォームが初期化済みかチェック（productNameが一致しないときは初期化前 → スキップ）
     if (!form.productName && editingItem.productName) return;
-    try {
-      localStorage.setItem(
-        EDIT_DRAFT_PREFIX + editingItem.id,
-        JSON.stringify({ form, purchaseType, registrationMode, savedAt: new Date().toISOString() })
-      );
-    } catch(_) {}
+    // 前回のタイマーをキャンセルして新しいタイマーをセット（400ms後に保存）
+    if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
+    const itemId = editingItem.id;
+    draftSaveTimerRef.current = setTimeout(() => {
+      draftSaveTimerRef.current = null;
+      try {
+        localStorage.setItem(
+          EDIT_DRAFT_PREFIX + itemId,
+          JSON.stringify({ form, purchaseType, registrationMode, savedAt: new Date().toISOString() })
+        );
+      } catch(_) {}
+    }, 400);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form, purchaseType, registrationMode]); // ← editingItem を deps に入れない（競合防止）
 
@@ -1850,8 +1858,9 @@ const PurchaseTab = () => {
   };
 
   const resetForm = () => {
-    // saving安全タイムアウトをクリア
+    // saving安全タイムアウト・デバウンスタイマーをクリア
     if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
+    if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null; }
     setSaving(false);
     setFormError(null);
     clearDraft();
@@ -2131,7 +2140,7 @@ const PurchaseTab = () => {
         </div>
         {editingItem && (
           <button onClick={resetForm}
-            style={{background:'rgba(255,255,255,0.2)',color:'white',border:'1px solid rgba(255,255,255,0.5)',borderRadius:8,padding:'4px 12px',fontSize:13,cursor:'pointer',flexShrink:0}}>
+            style={{background:'rgba(255,255,255,0.2)',color:'white',border:'1px solid rgba(255,255,255,0.5)',borderRadius:8,padding:'4px 12px',fontSize:13,cursor:'pointer',flexShrink:0,touchAction:'manipulation'}}>
             ✕ キャンセル
           </button>
         )}
@@ -3433,7 +3442,7 @@ const PurchaseTab = () => {
             </div>
           )}
           <button className="btn-primary"
-            style={{width:'100%',padding:16,fontSize:17,opacity:saving?0.75:1,transition:'opacity 0.15s'}}
+            style={{width:'100%',padding:16,fontSize:17,opacity:saving?0.75:1,transition:'opacity 0.15s',touchAction:'manipulation'}}
             onClick={handleSave}
             disabled={saving}>
             {saving ? '💾 保存中...' : editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
@@ -9071,6 +9080,8 @@ const App = () => {
   // ── アプリ終了・バックグラウンド移行時に同期保存（データ消失防止）──
   React.useEffect(() => {
     const forceSave = () => {
+      // ★ バックグラウンド移行時のみ保存（前面復帰時は不要＆大量データでブロックを避ける）
+      if (!document.hidden) return;
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataRef.current)); } catch(e) {}
     };
     // visibilitychange: タブ切り替え・ホームボタンなどでバックグラウンドに入るとき
