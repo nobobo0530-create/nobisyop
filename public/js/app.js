@@ -1119,7 +1119,7 @@ const normalizeColor = (colorStr) => {
 // 仕入れ登録タブ
 // ============================================================
 const PurchaseTab = () => {
-  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab } = React.useContext(AppContext);
+  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection } = React.useContext(AppContext);
   const [lastSavedItem, setLastSavedItem] = React.useState(null); // 直前に保存した仕入れ品（売上記録クイックアクション用）
   const toast = useToast();
   const [step, setStep] = React.useState(1); // 1:写真, 2:AI解析, 3:入力
@@ -1862,6 +1862,7 @@ const PurchaseTab = () => {
     if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
     if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null; }
     setSaving(false);
+    if (pendingReturnSection) setPendingReturnSection(null);
     setFormError(null);
     clearDraft();
     // 編集モードの下書きもクリア（保存完了 or キャンセル時）
@@ -1983,12 +1984,15 @@ const PurchaseTab = () => {
         const savedId = editingItem.id;
         const goSell = postSaveNavToSale.current;
         postSaveNavToSale.current = false;
-        const returnTab = pendingReturnTab; // 古物台帳からの編集時の戻り先
-        if (returnTab) setPendingReturnTab(null);
+        const returnTab = pendingReturnTab; // 保存後に戻るタブ
+        const returnSection = pendingReturnSection; // 保存後にOtherTabで表示するセクション
         clearEditDraft(savedId); // 保存成功時に編集下書きを削除
-        resetForm(); // saving=false も resetForm 内でリセットされる
+        resetForm(); // saving=false も resetForm 内でリセットされる（pendingReturn系もクリアされる）
         if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
-        else if (returnTab) { setTab(returnTab); } // 古物台帳 → 保存 → 古物台帳へ戻る
+        else if (returnTab) {
+          if (returnSection) setPendingReturnSection(returnSection); // resetFormでクリアされた後に再セット
+          setTab(returnTab);
+        }
         return;
       }
 
@@ -2142,7 +2146,15 @@ const PurchaseTab = () => {
           </h1>
         </div>
         {editingItem && (
-          <button onClick={resetForm}
+          <button onClick={() => {
+            const returnTab = pendingReturnTab;
+            const returnSection = pendingReturnSection;
+            resetForm();
+            if (returnTab) {
+              if (returnSection) setPendingReturnSection(returnSection);
+              setTab(returnTab);
+            }
+          }}
             style={{background:'rgba(255,255,255,0.2)',color:'white',border:'1px solid rgba(255,255,255,0.5)',borderRadius:8,padding:'4px 12px',fontSize:13,cursor:'pointer',flexShrink:0,touchAction:'manipulation'}}>
             ✕ キャンセル
           </button>
@@ -3529,7 +3541,7 @@ const PhotoSlide = ({ photoRef }) => {
 // 在庫一覧タブ
 // ============================================================
 const InventoryTab = () => {
-  const { data, setData, setTab, setEditingItem, setPendingSaleItemId } = React.useContext(AppContext);
+  const { data, setData, setTab, setEditingItem, setPendingSaleItemId, setPendingReturnTab } = React.useContext(AppContext);
   const toast = useToast();
   const [filter, setFilter] = React.useState('unlisted');
   const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
@@ -4202,7 +4214,7 @@ const InventoryTab = () => {
             <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:12}}>
               {/* 編集ボタン */}
               <button className="btn-secondary" style={{width:'100%'}}
-                onClick={() => { setEditingItem(selected); setTab('purchase'); setSelected(null); }}>
+                onClick={() => { setPendingReturnTab('inventory'); setEditingItem(selected); setTab('purchase'); setSelected(null); }}>
                 ✏️ 編集
               </button>
 
@@ -4263,7 +4275,7 @@ const InventoryTab = () => {
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
-  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId } = React.useContext(AppContext);
+  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, setPendingReturnTab } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
@@ -5803,7 +5815,7 @@ const SalesTab = () => {
                       <div style={{fontSize:11,color:'#999',marginTop:1}}>仕入れ ¥{formatMoney(linkedItem.purchasePrice)}</div>
                     </div>
                     <button style={{background:'#6b7280',color:'white',border:'none',borderRadius:8,padding:'6px 10px',fontSize:11,fontWeight:600,cursor:'pointer',flexShrink:0,whiteSpace:'nowrap'}}
-                      onClick={() => { closeForm(); setEditingItem(linkedItem); setTab('purchase'); }}>
+                      onClick={() => { closeForm(); setPendingReturnTab('sales'); setEditingItem(linkedItem); setTab('purchase'); }}>
                       仕入れ登録へ
                     </button>
                   </div>
@@ -6510,7 +6522,7 @@ const SalesTab = () => {
 // ============================================================
 // エクスポートパネル（独立コンポーネント）
 // ============================================================
-const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab }) => {
+const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, setPendingReturnSection }) => {
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
   const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
@@ -6827,6 +6839,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const canEditKobotsu = typeof setEditingItem === 'function' && typeof setTab === 'function';
                   const goEditFromKobotsu = canEditKobotsu ? (e) => {
                     e.stopPropagation();
+                    if (setPendingReturnSection) setPendingReturnSection('export');
                     if (setPendingReturnTab) setPendingReturnTab('other');
                     setEditingItem(item); setTab('purchase');
                   } : undefined;
@@ -6975,6 +6988,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       {typeof setEditingItem === 'function' && (
                         <button onClick={() => {
                           setExpandedBundleGroup(null);
+                          if (setPendingReturnSection) setPendingReturnSection('export');
                           if (setPendingReturnTab) setPendingReturnTab('other');
                           setEditingItem(item); setTab('purchase');
                         }}
@@ -7047,6 +7061,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                     const goEditFromKobotsuAll = canEditKobotsu ? (e) => {
                       e.stopPropagation();
                       setShowAllKobotsu(false);
+                      if (setPendingReturnSection) setPendingReturnSection('export');
                       if (setPendingReturnTab) setPendingReturnTab('other');
                       setEditingItem(item); setTab('purchase');
                     } : undefined;
@@ -7204,6 +7219,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   style={{width:'100%',padding:14,fontSize:15,touchAction:'manipulation',marginBottom:8}}
                   onClick={() => {
                     setKobotsuSelected(null);
+                    if (setPendingReturnSection) setPendingReturnSection('export');
                     if (setPendingReturnTab) setPendingReturnTab('other');
                     setEditingItem(item);
                     setTab('purchase');
@@ -7582,9 +7598,10 @@ const runRemoveBg = async (file, apiKey) => {
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
-  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab } = React.useContext(AppContext);
+  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, pendingReturnSection, setPendingReturnSection } = React.useContext(AppContext);
   const toast = useToast();
-  const [activeSection, setActiveSection] = React.useState('receipts');
+  const [activeSection, setActiveSection] = React.useState(pendingReturnSection || 'receipts');
+  React.useEffect(() => { if (pendingReturnSection) setPendingReturnSection(null); }, []);
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
   const [receiptModal, setReceiptModal] = React.useState(null);
   const [receiptEdit, setReceiptEdit] = React.useState(null);
@@ -8228,6 +8245,7 @@ const OtherTab = () => {
             setPendingEditSaleId={setPendingEditSaleId}
             setEditingItem={setEditingItem}
             setPendingReturnTab={setPendingReturnTab}
+            setPendingReturnSection={setPendingReturnSection}
           />
         )}
 
@@ -9176,7 +9194,8 @@ const App = () => {
   const [editingItem, setEditingItem] = React.useState(null);
   const [pendingSaleItemId, setPendingSaleItemId] = React.useState(null); // 売上記録を促すinventoryId
   const [pendingEditSaleId, setPendingEditSaleId] = React.useState(null); // エクスポート画面から売上編集
-  const [pendingReturnTab, setPendingReturnTab] = React.useState(null); // 保存後に戻るタブ（古物台帳→保存→古物台帳）
+  const [pendingReturnTab, setPendingReturnTab] = React.useState(null); // 保存後に戻るタブ
+  const [pendingReturnSection, setPendingReturnSection] = React.useState(null); // 保存後にOtherTabで表示するセクション
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
   const dataRef = React.useRef(fullData);
@@ -9477,7 +9496,7 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
