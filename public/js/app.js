@@ -1948,8 +1948,14 @@ const PurchaseTab = () => {
       if (editingItem) {
         // ---- 編集モード: 既存アイテムを上書き ----
         const updatedItem = {
-          ...editingItem,   // id, mgmtNo, createdAt, status など元データを保持
+          ...editingItem,   // id, mgmtNo, createdAt など元データを保持
           ...form,
+          // ★ registrationMode からステータスを明示設定（...editingItemの古いstatusを上書き）
+          status: registrationMode === 'listed' ? 'listed' : 'unlisted',
+          // 出品済みに変更した場合、listDateが未設定なら今日の日付をセット
+          listDate: registrationMode === 'listed'
+            ? (form.listDate || editingItem.listDate || new Date().toISOString().slice(0, 10))
+            : (form.listDate || editingItem.listDate || ''),
           size: computedSize,
           purchasePrice: totalPurchaseTaxIn,
           purchaseCost,
@@ -9026,8 +9032,8 @@ const App = () => {
         sales:     cleanedSales,
       };
       dataRef.current = newFull;
-      // ★ 同期保存（deferred setTimeout だとアプリ終了時にデータが失われる）
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(newFull)); } catch(e) { console.error('[setData] localStorage error:', e); }
+      // ★ 非同期保存（setTimeoutで主スレッドをブロックしない。終了時はpagehide/visibilitychangeで同期保存）
+      saveData(newFull);
       syncToSupabase(oldFull, newFull);
       return newFull;
     });
@@ -9060,6 +9066,24 @@ const App = () => {
       syncToSupabase(oldFull, newFull);
       return newFull;
     });
+  }, []);
+
+  // ── アプリ終了・バックグラウンド移行時に同期保存（データ消失防止）──
+  React.useEffect(() => {
+    const forceSave = () => {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(dataRef.current)); } catch(e) {}
+    };
+    // visibilitychange: タブ切り替え・ホームボタンなどでバックグラウンドに入るとき
+    document.addEventListener('visibilitychange', forceSave);
+    // pagehide: ページ遷移・アプリ終了（iOS Safariで確実）
+    window.addEventListener('pagehide', forceSave);
+    // beforeunload: デスクトップブラウザのタブ閉じ・リロード
+    window.addEventListener('beforeunload', forceSave);
+    return () => {
+      document.removeEventListener('visibilitychange', forceSave);
+      window.removeEventListener('pagehide', forceSave);
+      window.removeEventListener('beforeunload', forceSave);
+    };
   }, []);
 
   // ── クラウドデータ読み込み（/api/data 経由・iOS Safari対応）──
