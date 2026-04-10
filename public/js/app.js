@@ -1865,10 +1865,12 @@ const PurchaseTab = () => {
   };
 
   const resetForm = () => {
-    // saving安全タイムアウト・デバウンスタイマーをクリア
+    // タイマー系をすべてクリア
     if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
     if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null; }
     if (newRegDraftTimerRef.current) { clearTimeout(newRegDraftTimerRef.current); newRegDraftTimerRef.current = null; }
+    // ★ savingLockRef もリセット（キャンセルボタン経由の場合に備えて）
+    savingLockRef.current = false;
     setSaving(false);
     if (pendingReturnSection) setPendingReturnSection(null);
     setFormError(null);
@@ -1905,48 +1907,62 @@ const PurchaseTab = () => {
 
   // 保存後に売上登録へ遷移するフラグ
   const postSaveNavToSale = React.useRef(false);
-  const handleSaveAndSell = async () => { postSaveNavToSale.current = true; await handleSave(); };
+  // ★ savingLockRef: Refで同期的ロック（React stateは非同期なので連続タップで突破される場合がある）
+  const savingLockRef = React.useRef(false);
 
-  const handleSave = async () => {
-    if (saving) return; // 二重タップ防止
+  const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
+
+  const handleSave = () => {
+    // ★ Refで同期チェック（saving stateより確実）
+    if (savingLockRef.current) {
+      console.warn('[Save] blocked: already in progress');
+      return;
+    }
+    // ★ 即座にロック取得（同期的・React renderを待たない）
+    savingLockRef.current = true;
     setFormError(null);
 
-    // ── バリデーション（インライン表示） ──
-    if (!form.productName.trim()) {
-      setFormError('商品名を入力してください');
-      return;
-    }
-    if (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '') {
-      setFormError('仕入れ価格を入力してください（0円より大きい金額）');
-      return;
-    }
-
-    // まとめ仕入れのバリデーション
-    if (bundlePurchase) {
-      const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
-      if (filledItems.length < 2) {
-        setFormError('まとめ仕入れは2件以上の金額を入力してください');
-        return;
-      }
-      const badExisting = bundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
-      if (badExisting) {
-        setFormError(`${badExisting.label}：既存商品を選択してください（または「新規登録」に切替）`);
-        return;
-      }
-    }
-
-    setSaving(true);
-    // ★ await で一度イベントループを手放し、「保存中...」ボタン状態をUIに描画してから処理開始
-    // これにより保存ボタンが確実にdisabledになり、二重タップも防止される
-    await new Promise(r => setTimeout(r, 0));
-    // 安全タイムアウト：15秒以内に完了しなければ saving を強制リセット
-    if (savingTimeoutRef.current) clearTimeout(savingTimeoutRef.current);
-    savingTimeoutRef.current = setTimeout(() => {
-      setSaving(false);
-      setFormError('保存処理がタイムアウトしました。もう一度お試しください。');
-      savingTimeoutRef.current = null;
-    }, 15000);
     try {
+      // ── バリデーション（try内：finally でロックが必ず解放される）──
+      if (!form.productName.trim()) {
+        setFormError('商品名を入力してください');
+        return; // finally でロック解放
+      }
+      if (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '') {
+        setFormError('仕入れ価格を入力してください（0円より大きい金額）');
+        return; // finally でロック解放
+      }
+      if (bundlePurchase) {
+        const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
+        if (filledItems.length < 2) {
+          setFormError('まとめ仕入れは2件以上の金額を入力してください');
+          return; // finally でロック解放
+        }
+        const badExisting = bundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
+        if (badExisting) {
+          setFormError(`${badExisting.label}：既存商品を選択してください（または「新規登録」に切替）`);
+          return; // finally でロック解放
+        }
+      }
+
+      // バリデーション通過 → UI を「保存中」に（同期的に保存するのでUIには一瞬しか見えない）
+      setSaving(true);
+
+      // ★ 保存前の緊急バックアップ（保存失敗時もフォームデータを復元できるように）
+      try {
+        localStorage.setItem('nobushop_save_backup', JSON.stringify({
+          form, purchaseType, registrationMode,
+          editingItemId: editingItem?.id || null,
+          bundlePurchase, bundleItems: bundlePurchase ? bundleItems : undefined,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch(_) {}
+
+      console.log('[Save] start', {
+        mode: editingItem ? 'edit' : (bundlePurchase ? 'bundle' : 'new'),
+        id: editingItem?.id, name: form.productName, price: form.itemPriceTaxIn,
+        ts: new Date().toISOString(),
+      });
       // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
       const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
       // 税込・税抜内訳を保存
@@ -1997,11 +2013,13 @@ const PurchaseTab = () => {
         postSaveNavToSale.current = false;
         const returnTab = pendingReturnTab; // 保存後に戻るタブ
         const returnSection = pendingReturnSection; // 保存後にOtherTabで表示するセクション
-        clearEditDraft(savedId); // 保存成功時に編集下書きを削除
-        resetForm(); // saving=false も resetForm 内でリセットされる（pendingReturn系もクリアされる）
+        clearEditDraft(savedId);
+        console.log('[Save] edit success:', savedId);
+        try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
+        resetForm();
         if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
         else if (returnTab) {
-          if (returnSection) setPendingReturnSection(returnSection); // resetFormでクリアされた後に再セット
+          if (returnSection) setPendingReturnSection(returnSection);
           setTab(returnTab);
         }
         return;
@@ -2068,6 +2086,8 @@ const PurchaseTab = () => {
         if (createdItems.length)        msgParts.push(`新規${createdItems.length}件`);
         if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
         toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！`);
+        console.log('[Save] bundle success:', totalCount);
+        try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
         resetForm();
         return;
       }
@@ -2097,14 +2117,24 @@ const PurchaseTab = () => {
       const goSellNew = postSaveNavToSale.current;
       postSaveNavToSale.current = false;
       setLastSavedItem(newItem);
+      console.log('[Save] new success:', newItem.id);
+      try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
       resetForm();
       if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
+
     } catch(e) {
-      console.error('handleSave error:', e);
-      // savingTimeoutRefをクリア（クリアしないと15秒後に別のエラーメッセージが上書きされる）
-      if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
-      setFormError('保存中にエラーが発生しました。もう一度お試しください。\n（入力内容は下書きに保存されています）\n詳細: ' + (e?.message || String(e)));
-      setSaving(false); // catch では resetForm が呼ばれないので手動リセット
+      // ★ 保存処理中の例外を捕捉してエラー表示（finally でロックも解放）
+      console.error('[Save] ERROR:', e.message, e.stack || '');
+      setFormError('保存中にエラーが発生しました。もう一度タップしてください。\n（入力データは保護されています）\n原因: ' + (e?.message || String(e)));
+      // saving は finally で必ず false にリセットされる
+
+    } finally {
+      // ★★★ finally: 成功・失敗・バリデーションreturn・例外 どれでも必ず実行 ★★★
+      // これにより「保存ボタンが二度と押せなくなる」バグを完全に防止する
+      savingLockRef.current = false;
+      // saving=true にした場合（バリデーション通過後）はresetFormかここでfalseにする
+      // バリデーション失敗でreturnした場合はsaving=falseのままなのでsetSaving(false)は無害
+      setSaving(false);
     }
   };
 
