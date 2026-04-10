@@ -281,29 +281,48 @@
   <div id="root"></div>
 
   <script>
-  // ── iOS Safari: キーボード開閉後のタッチ座標ズレ修正 ──
-  // キーボード閉じた後にvisual viewportと実タッチ座標がズレて下部ボタンが押せなくなるバグを防止
+  // ── iOS Safari: キーボード起因のタッチ座標ズレ根本修正 ──
+  // 症状: キーボード開閉後、見た目上正しい位置にボタンがあるのに押せなくなる
+  // 原因: iOSのスクロール座標追跡がズレたまま→タッチが別の場所に飛ぶ
+  // 修正: キーボードが「完全に閉じた後」に1px強制スクロール→元に戻すことでiOS座標を強制リセット
   (function() {
-    function fixTouchOffset() {
-      // スクロール位置を再セットすることでiOS Safariのタッチ座標キャッシュをリセット
-      window.scrollTo(window.scrollX, window.scrollY);
-    }
-    if (window.visualViewport) {
-      var lastHeight = window.visualViewport.height;
-      window.visualViewport.addEventListener('resize', function() {
-        var newHeight = window.visualViewport.height;
-        // キーボードが閉じた（viewportが広がった）タイミングで修正
-        if (newHeight > lastHeight) {
-          setTimeout(fixTouchOffset, 100);
-          setTimeout(fixTouchOffset, 300);
-        }
-        lastHeight = newHeight;
+    var fixTimer = null;
+
+    function fixIOSTouchTargets() {
+      // 重要: scrollTo(same, same) はiOSがスキップするため、1px動かして元に戻す
+      var sx = window.scrollX || 0;
+      var sy = window.scrollY || 0;
+      // 強制的に1pxスクロール変化を起こしてiOSの座標追跡をリセット
+      window.scrollTo(sx, sy + 1);
+      requestAnimationFrame(function() {
+        window.scrollTo(sx, sy);
       });
     }
+
+    // visualViewportのリサイズが安定してから実行（キーボードアニメーション完了待ち）
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', function() {
+        // デバウンス: リサイズイベントが連続する間は待機し、止まったら実行
+        if (fixTimer) clearTimeout(fixTimer);
+        fixTimer = setTimeout(function() {
+          fixTimer = null;
+          fixIOSTouchTargets();
+        }, 200); // キーボードアニメーション完了を待つ
+      });
+    }
+
+    // focusout時（input/textarea/selectからフォーカスが外れた = キーボードが閉じ始める）
     document.addEventListener('focusout', function(e) {
-      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
-        setTimeout(fixTouchOffset, 100);
-        setTimeout(fixTouchOffset, 300);
+      if (!e.target) return;
+      var tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        // キーボードが完全に閉じ終わるまで待ってから修正
+        // iOS キーボードアニメーション: 約300-400ms
+        if (fixTimer) clearTimeout(fixTimer);
+        fixTimer = setTimeout(function() {
+          fixTimer = null;
+          fixIOSTouchTargets();
+        }, 450);
       }
     });
   })();
@@ -314,7 +333,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260410e';
+    var VERSION = '20260410f';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');

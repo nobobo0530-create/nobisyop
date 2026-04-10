@@ -3489,13 +3489,17 @@ const PurchaseTab = () => {
         )}
       </div>
 
-      {/* 保存ボタン：画面下部に固定表示（ボトムナビの上） */}
-      {/* fixedレイアウトのためスペーサーでコンテンツが隠れるのを防止 */}
+      {/* 保存ボタンバー用スペーサー（fixedレイアウトでコンテンツが隠れるのを防止） */}
       {step >= 3 && <div style={{height:'200px'}} aria-hidden="true" />}
-      {step >= 3 && (
+
+      {/* 保存ボタン：ReactDOM.createPortal で body 直下にレンダリング
+          → position:fixed がコンテナのスタッキングコンテキストに依存しなくなる
+          → iOS Safari のタッチ座標ズレ問題を回避 */}
+      {step >= 3 && ReactDOM.createPortal(
         <div style={{position:'fixed',bottom:'calc(64px + env(safe-area-inset-bottom))',left:0,right:0,
           background:'white',padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',
-          zIndex:150,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)'}}>
+          zIndex:150,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)',
+          touchAction:'manipulation'}}>
           {/* 出品ステータス選択 */}
           <div style={{display:'flex',gap:8,marginBottom:10}}>
             {[
@@ -3538,7 +3542,8 @@ const PurchaseTab = () => {
               opacity:saving?0.75:1,transition:'opacity 0.15s'}}>
             💰 {editingItem ? '保存して' : '登録して'}そのまま売上登録する
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
