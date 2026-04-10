@@ -1119,7 +1119,7 @@ const normalizeColor = (colorStr) => {
 // 仕入れ登録タブ
 // ============================================================
 const PurchaseTab = () => {
-  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId } = React.useContext(AppContext);
+  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab } = React.useContext(AppContext);
   const [lastSavedItem, setLastSavedItem] = React.useState(null); // 直前に保存した仕入れ品（売上記録クイックアクション用）
   const toast = useToast();
   const [step, setStep] = React.useState(1); // 1:写真, 2:AI解析, 3:入力
@@ -1983,9 +1983,12 @@ const PurchaseTab = () => {
         const savedId = editingItem.id;
         const goSell = postSaveNavToSale.current;
         postSaveNavToSale.current = false;
+        const returnTab = pendingReturnTab; // 古物台帳からの編集時の戻り先
+        if (returnTab) setPendingReturnTab(null);
         clearEditDraft(savedId); // 保存成功時に編集下書きを削除
         resetForm(); // saving=false も resetForm 内でリセットされる
         if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
+        else if (returnTab) { setTab(returnTab); } // 古物台帳 → 保存 → 古物台帳へ戻る
         return;
       }
 
@@ -6507,7 +6510,7 @@ const SalesTab = () => {
 // ============================================================
 // エクスポートパネル（独立コンポーネント）
 // ============================================================
-const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem }) => {
+const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab }) => {
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
   const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
@@ -6809,9 +6812,10 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 <tr>
                   <th colSpan={5} style={{...thStyle,background:'#dbeafe',color:'#1e3a5f',textAlign:'center'}}>◀ 仕入れ（入れ）</th>
                   <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
+                  <th style={{...thStyle,background:'#f5f5f5'}}></th>
                 </tr>
                 <tr style={{background:'#f8f8f8'}}>
-                  {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路'].map(h=>(
+                  {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路',''].map(h=>(
                     <th key={h} style={thStyle}>{h}</th>
                   ))}
                 </tr>
@@ -6820,9 +6824,14 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                 {kobotsuPreview.slice(0,10).map(({item,sale},i) => {
                   const bs = getBundleStyle(item);
                   const canEditKobotsu = typeof setEditingItem === 'function' && typeof setTab === 'function';
+                  const goEditFromKobotsu = canEditKobotsu ? (e) => {
+                    e.stopPropagation();
+                    if (setPendingReturnTab) setPendingReturnTab('other');
+                    setEditingItem(item); setTab('purchase');
+                  } : undefined;
                   return (
                   <tr key={item.id}
-                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { setEditingItem(item); setTab('purchase'); } : undefined}
+                    onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { if (setPendingReturnTab) setPendingReturnTab('other'); setEditingItem(item); setTab('purchase'); } : undefined}
                     style={{borderBottom:'1px solid #f3f3f3',
                       background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
                       borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
@@ -6854,6 +6863,16 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                     <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
                     <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
                     <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
+                    <td style={tdStyle({padding:'4px 6px'})}>
+                      {canEditKobotsu && (
+                        <button onClick={goEditFromKobotsu}
+                          style={{padding:'3px 8px',fontSize:11,fontWeight:700,border:'1px solid #d1d5db',
+                            borderRadius:6,background:'white',color:'#374151',cursor:'pointer',
+                            whiteSpace:'nowrap',touchAction:'manipulation',lineHeight:1.4}}>
+                          ✏️ 編集
+                        </button>
+                      )}
+                    </td>
                   </tr>
                   );
                 })}
@@ -6951,6 +6970,18 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       ) : (
                         <span style={{fontSize:11,background:'#f3f4f6',color:'#6b7280',borderRadius:99,padding:'2px 8px',fontWeight:700,flexShrink:0}}>未売却</span>
                       )}
+                      {typeof setEditingItem === 'function' && (
+                        <button onClick={() => {
+                          setExpandedBundleGroup(null);
+                          if (setPendingReturnTab) setPendingReturnTab('other');
+                          setEditingItem(item); setTab('purchase');
+                        }}
+                          style={{padding:'3px 10px',fontSize:11,fontWeight:700,border:'1px solid #d1d5db',
+                            borderRadius:6,background:'white',color:'#374151',cursor:'pointer',
+                            flexShrink:0,whiteSpace:'nowrap',touchAction:'manipulation'}}>
+                          ✏️ 編集
+                        </button>
+                      )}
                     </div>
                     {/* 詳細フィールド */}
                     <div style={{padding:'10px 12px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px 10px',background:'white'}}>
@@ -6999,9 +7030,10 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   <tr>
                     <th colSpan={5} style={{...thStyle,background:'#dbeafe',color:'#1e3a5f',textAlign:'center'}}>◀ 仕入れ（入れ）</th>
                     <th colSpan={3} style={{...thStyle,background:'#d1fae5',color:'#065f46',textAlign:'center'}}>払出し（売却）▶</th>
+                    <th style={{...thStyle,background:'#f5f5f5'}}></th>
                   </tr>
                   <tr style={{background:'#f8f8f8'}}>
-                    {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路'].map(h=>(
+                    {['仕入年月日','品目','品名（特徴）','仕入単価','仕入先','許可証番号','売却年月日','売却単価','販路',''].map(h=>(
                       <th key={h} style={thStyle}>{h}</th>
                     ))}
                   </tr>
@@ -7010,9 +7042,15 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   {kobotsuPreview.map(({item,sale},i) => {
                     const bs = getBundleStyle(item);
                     const canEditKobotsu = typeof setEditingItem === 'function' && typeof setTab === 'function';
+                    const goEditFromKobotsuAll = canEditKobotsu ? (e) => {
+                      e.stopPropagation();
+                      setShowAllKobotsu(false);
+                      if (setPendingReturnTab) setPendingReturnTab('other');
+                      setEditingItem(item); setTab('purchase');
+                    } : undefined;
                     return (
                     <tr key={item.id}
-                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { setShowAllKobotsu(false); setEditingItem(item); setTab('purchase'); } : undefined}
+                      onClick={bs ? () => setExpandedBundleGroup(item.bundleGroup) : canEditKobotsu ? () => { setShowAllKobotsu(false); if (setPendingReturnTab) setPendingReturnTab('other'); setEditingItem(item); setTab('purchase'); } : undefined}
                       style={{borderBottom:'1px solid #f3f3f3',
                         background: bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa'),
                         borderLeft: bs ? `4px solid ${bs.color}` : '4px solid transparent',
@@ -7042,6 +7080,16 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       <td style={tdStyle({color: sale?'#16a34a':'#bbb'})}>{sale?.saleDate||'−'}</td>
                       <td style={tdStyle({fontWeight: sale?700:400,color:sale?'#16a34a':'#bbb'})}>{sale ? `¥${formatMoney(sale.salePrice)}` : '−'}</td>
                       <td style={tdStyle({color:sale?'#555':'#bbb'})}>{sale?.platform||'−'}</td>
+                      <td style={tdStyle({padding:'4px 6px'})}>
+                        {canEditKobotsu && (
+                          <button onClick={goEditFromKobotsuAll}
+                            style={{padding:'3px 8px',fontSize:11,fontWeight:700,border:'1px solid #d1d5db',
+                              borderRadius:6,background:'white',color:'#374151',cursor:'pointer',
+                              whiteSpace:'nowrap',touchAction:'manipulation',lineHeight:1.4}}>
+                            ✏️ 編集
+                          </button>
+                        )}
+                      </td>
                     </tr>
                     );
                   })}
@@ -7413,7 +7461,7 @@ const runRemoveBg = async (file, apiKey) => {
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
-  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem } = React.useContext(AppContext);
+  const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab } = React.useContext(AppContext);
   const toast = useToast();
   const [activeSection, setActiveSection] = React.useState('receipts');
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
@@ -8058,6 +8106,7 @@ const OtherTab = () => {
             setTab={setTab}
             setPendingEditSaleId={setPendingEditSaleId}
             setEditingItem={setEditingItem}
+            setPendingReturnTab={setPendingReturnTab}
           />
         )}
 
@@ -9006,6 +9055,7 @@ const App = () => {
   const [editingItem, setEditingItem] = React.useState(null);
   const [pendingSaleItemId, setPendingSaleItemId] = React.useState(null); // 売上記録を促すinventoryId
   const [pendingEditSaleId, setPendingEditSaleId] = React.useState(null); // エクスポート画面から売上編集
+  const [pendingReturnTab, setPendingReturnTab] = React.useState(null); // 保存後に戻るタブ（古物台帳→保存→古物台帳）
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
   const dataRef = React.useRef(fullData);
@@ -9306,7 +9356,7 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
