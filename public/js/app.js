@@ -115,6 +115,54 @@ const normalizeStoreName = (name) => {
   return n;
 };
 
+// ストア名の表記ゆれを全データに一括適用 + 仕入れで使ったストアをstoreMasterに自動登録
+// ・inventory.purchaseStore を normalizeStoreName で正規化
+// ・yahooタイプ仕入れで使われているストア名を storeMaster.yahooStores に自動追加
+const normalizeStores = (appData) => {
+  const initial = getInitialData();
+  const master = appData.settings?.storeMaster || initial.settings.storeMaster;
+
+  // Step1: purchaseStore を正規化
+  let storeChanged = false;
+  const newInventory = (appData.inventory || []).map(item => {
+    if (!item.purchaseStore) return item;
+    const norm = normalizeStoreName(item.purchaseStore);
+    if (norm === item.purchaseStore) return item;
+    storeChanged = true;
+    return { ...item, purchaseStore: norm };
+  });
+
+  // Step2: online/yahooタイプ仕入れで使われているストア名を収集 → storeMasterに未登録なら追加
+  const masterYahooStores = master.yahooStores || [];
+  const existingSet = new Set(masterYahooStores);
+  const newNames = [];
+  for (const item of newInventory) {
+    const n = item.purchaseStore;
+    if (!n) continue;
+    if ((item.purchaseStoreType === 'yahoo' || item.purchaseType === 'online') && !existingSet.has(n)) {
+      existingSet.add(n);
+      newNames.push(n);
+    }
+  }
+
+  if (!storeChanged && newNames.length === 0) return appData; // 変更なし
+
+  const updatedMasterYahooStores = [...new Set([...masterYahooStores, ...newNames])]
+    .sort((a, b) => a.localeCompare(b, 'ja'));
+
+  return {
+    ...appData,
+    inventory: newInventory,
+    settings: {
+      ...(appData.settings || initial.settings),
+      storeMaster: {
+        ...master,
+        yahooStores: updatedMasterYahooStores,
+      },
+    },
+  };
+};
+
 // ============================================================
 // IndexedDB（写真専用ストレージ）
 // ============================================================
@@ -302,7 +350,7 @@ const loadData = () => {
         })),
       }));
     }
-    return { ...getInitialData(), ...parsed };
+    return normalizeStores({ ...getInitialData(), ...parsed });
   } catch { return getInitialData(); }
 };
 
@@ -3093,7 +3141,7 @@ const PurchaseTab = () => {
                               placeholder="仕入れ先名を入力"/>
                             <button
                               onClick={() => {
-                                const name = storeCustomText.trim();
+                                const name = normalizeStoreName(storeCustomText.trim());
                                 if (!name) return;
                                 const newMaster = {
                                   ...master,
@@ -9721,7 +9769,7 @@ const App = () => {
             sales:     mergeByLastWrite(localData.sales,     cloudData.sales,     mergedDeletedIds),
             settings:  mergeSettings(localData.settings, cloudData.settings),
           };
-          const cleanedMerged = cleanOrphans(mergedData);
+          const cleanedMerged = normalizeStores(cleanOrphans(mergedData));
           dataRef.current = cleanedMerged;
           setFullDataRaw(cleanedMerged);
           saveData(cleanedMerged);
