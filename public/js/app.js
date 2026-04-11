@@ -259,18 +259,56 @@ const copyToClipboard = async (text) => {
 // ストレージ
 // ============================================================
 const STORAGE_KEY = 'nobushop_data';
+// ★ thumbDataUrl専用の別キー（メインデータとは分離してlocalStorage容量問題を回避）
+const THUMBS_KEY  = 'nobushop_thumbs_v1';
+
+// thumbDataUrl を { photoId: dataUrl } マップとして保存（IndexedDB消失時の復元用）
+const saveThumbMap = (data) => {
+  try {
+    const map = {};
+    (data.inventory || []).forEach(item => {
+      (item.photos || []).forEach(p => {
+        if (p.id && p.thumbDataUrl) map[p.id] = p.thumbDataUrl;
+      });
+    });
+    localStorage.setItem(THUMBS_KEY, JSON.stringify(map));
+  } catch(e) {
+    // 容量超過時はサイレント失敗（メインデータに影響なし）
+    console.warn('[saveThumbMap] 容量超過、スキップ:', e.message);
+  }
+};
+
+// thumbMap を読み込んで返す
+const loadThumbMap = () => {
+  try {
+    const raw = localStorage.getItem(THUMBS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch(e) { return {}; }
+};
 
 const loadData = () => {
   try {
+    const thumbMap = loadThumbMap();
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return getInitialData();
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // ★ thumbDataUrlをthumbMapから復元（IndexedDB消失後でも表示できるようにする）
+    if (parsed.inventory && Object.keys(thumbMap).length > 0) {
+      parsed.inventory = parsed.inventory.map(item => ({
+        ...item,
+        photos: (item.photos || []).map(p => ({
+          ...p,
+          thumbDataUrl: p.thumbDataUrl || thumbMap[p.id] || null,
+        })),
+      }));
+    }
+    return { ...getInitialData(), ...parsed };
   } catch { return getInitialData(); }
 };
 
 // ★ localStorage保存前にthumbDataUrl（base64画像）を除外する
 // 理由: 50件×3枚×30KB = 4.5MB がlocalStorageに書き込まれ、iOS Safari (上限5MB) でフリーズの原因になっていた
-// 写真データはIndexedDBに保存済みのため、localStorageにはIDのみで十分
+// thumbDataUrl は別キー(THUMBS_KEY)に保存して復元できるようにする
 const stripPhotosForStorage = (data) => ({
   ...data,
   inventory: (data.inventory || []).map(item => ({
@@ -286,6 +324,8 @@ const saveData = (data) => {
       const stripped = stripPhotosForStorage(data);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
     } catch(e) { console.error('[saveData] error:', e); }
+    // ★ thumbDataUrlを別キーに保存（IndexedDB消失時の保険・3重バックアップの1つ目）
+    try { saveThumbMap(data); } catch(e) {}
   }, 0);
 };
 
@@ -340,7 +380,8 @@ const migrateLocalToSupabase = async (localData) => {
 };
 
 // 差分をサーバーに同期（/api/data POST）
-// itemからthumbDataUrlを除外（クラウド同期・比較用：base64画像はIndexedDB管理のため不要）
+// 比較にはstripItemPhotosを使い（base64でJSON.stringifyが重くなるのを防ぐ）
+// 書き込みにはfullアイテムを使う（thumbDataUrlをSupabaseに保存→IndexedDB消失時の3重バックアップ）
 const stripItemPhotos = (item) => ({
   ...item,
   photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
@@ -349,15 +390,18 @@ const stripItemPhotos = (item) => ({
 const syncToSupabase = async (oldData, newData) => {
   if (!_cloudEnabled) return;
   try {
-    // ★ thumbDataUrlを除外した比較用データを作成（base64画像でJSON.stringifyが遅くなるのを防ぐ）
-    const invOld   = new Map((oldData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
-    const invNew   = new Map((newData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
+    // 比較用: thumbDataUrlを除外（JSON.stringify高速化）
+    const invOld = new Map((oldData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
+    const invNew = new Map((newData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
+    // 書き込み用: thumbDataUrlを含む完全データ（Supabaseへのバックアップ）
+    const invNewFull = new Map((newData?.inventory || []).map(i => [i.id, i]));
     const salesOld = new Map((oldData?.sales     || []).map(s => [s.id, s]));
     const salesNew = new Map((newData?.sales     || []).map(s => [s.id, s]));
 
     const invUpsert = [], invDelete = [], salesUpsert = [], salesDelete = [];
     for (const [id, item] of invNew) {
-      if (JSON.stringify(invOld.get(id)) !== JSON.stringify(item)) invUpsert.push({ id, data: item });
+      // ★ 比較はstrip版、書き込みはfull版（thumbDataUrlをSupabaseに保存）
+      if (JSON.stringify(invOld.get(id)) !== JSON.stringify(item)) invUpsert.push({ id, data: invNewFull.get(id) });
     }
     for (const id of invOld.keys()) { if (!invNew.has(id)) invDelete.push(id); }
     for (const [id, sale] of salesNew) {
@@ -1409,21 +1453,33 @@ const PurchaseTab = () => {
       setGeneratedDesc(editingItem.descriptionText);
       setShowDesc(true);
     }
-    // 写真をIndexedDBからロード
+    // 写真をIndexedDBからロード（IndexedDB消失時はthumbDataUrl→thumbMapでフォールバック）
     (async () => {
+      const thumbMap = loadThumbMap(); // thumbMapも参照して3重フォールバック
       const loaded = [];
       for (const ref of (editingItem.photos || [])) {
+        // thumbDataUrl: ref直接 → thumbMap → null の優先順位で取得
+        const thumbDU = ref.thumbDataUrl || thumbMap[ref.id] || null;
         try {
           const [fullBlob, thumbBlob] = await Promise.all([getPhoto(ref.id), getPhoto(ref.thumbId)]);
+          // ★ IndexedDBが空でthumbDataUrlがある場合、IndexedDBに再保存する
+          if (!thumbBlob && thumbDU) {
+            try {
+              const res = await fetch(thumbDU);
+              const blob = await res.blob();
+              await savePhoto(ref.thumbId, blob);
+              console.log('[Photo] IndexedDB再保存:', ref.thumbId);
+            } catch(_) {}
+          }
           loaded.push({
             id: ref.id,
             thumbId: ref.thumbId,
-            previewUrl: fullBlob ? blobToURL(fullBlob) : (ref.thumbDataUrl || null),
-            thumbUrl:   thumbBlob ? blobToURL(thumbBlob) : (ref.thumbDataUrl || null),
-            thumbDataUrl: ref.thumbDataUrl || null,
+            previewUrl: fullBlob ? blobToURL(fullBlob) : thumbDU,
+            thumbUrl:   thumbBlob ? blobToURL(thumbBlob) : thumbDU,
+            thumbDataUrl: thumbDU,
           });
         } catch(e) {
-          loaded.push({ id: ref.id, thumbId: ref.thumbId, previewUrl: ref.thumbDataUrl||null, thumbUrl: ref.thumbDataUrl||null, thumbDataUrl: ref.thumbDataUrl||null });
+          loaded.push({ id: ref.id, thumbId: ref.thumbId, previewUrl: thumbDU, thumbUrl: thumbDU, thumbDataUrl: thumbDU });
         }
       }
       setPhotos(loaded);
@@ -1984,8 +2040,15 @@ const PurchaseTab = () => {
         id: editingItem?.id, name: form.productName, price: form.itemPriceTaxIn,
         ts: new Date().toISOString(),
       });
-      // photos配列: IDとbase64サムネイルを保存（IndexedDB消失時もSupabaseから復元可能）
-      const photoRefs = photos.map(p => ({ id: p.id, thumbId: p.thumbId, thumbDataUrl: p.thumbDataUrl || null }));
+      // photos配列: IDとbase64サムネイルを保存（3重バックアップ: IndexedDB + thumbMap + Supabase）
+      // ★ 編集時: IndexedDB消失でthumbDataUrlがnullになっていても、既存アイテムの値で補完する
+      const existingPhotoThumbMap = new Map((editingItem?.photos || []).map(p => [p.id, p.thumbDataUrl || null]));
+      const photoRefs = photos.map(p => ({
+        id: p.id,
+        thumbId: p.thumbId,
+        // 現在のthumbDataUrlがnullでも既存アイテムのthumbDataUrlで補完（消失を防ぐ）
+        thumbDataUrl: p.thumbDataUrl || existingPhotoThumbMap.get(p.id) || null,
+      }));
       // 税込・税抜内訳を保存
       const purchaseCost = {
         totalTaxIn: totalPurchaseTaxIn,
@@ -2271,19 +2334,22 @@ const PurchaseTab = () => {
                 setPurchaseType(draftBanner.purchaseType || 'store');
                 setGeneratedDesc(draftBanner.generatedDesc || '');
                 setRegistrationMode(draftBanner.registrationMode || 'unlisted');
-                // 写真も復元（thumbDataUrlをプレビューとして利用）
+                // 写真も復元（thumbDataUrl → thumbMap → IDのみ の順でフォールバック）
                 if (draftBanner.photoRefs?.length) {
-                  const restoredPhotos = draftBanner.photoRefs
-                    .filter(r => r.thumbDataUrl)
-                    .map(r => ({
+                  const thumbMap = loadThumbMap();
+                  // ★ thumbDataUrlがないものも除外しない（IndexedDBにある場合があるため）
+                  const restoredPhotos = draftBanner.photoRefs.map(r => {
+                    const thumbDU = r.thumbDataUrl || thumbMap[r.id] || null;
+                    return {
                       id: r.id,
                       thumbId: r.thumbId,
-                      thumbDataUrl: r.thumbDataUrl,
-                      previewUrl: r.thumbDataUrl,
+                      thumbDataUrl: thumbDU,
+                      previewUrl: thumbDU,
                       thumbUrl: null,
                       file: null,
                       fromDraft: true,
-                    }));
+                    };
+                  });
                   setPhotos(restoredPhotos);
                 }
                 setStep(3);
@@ -9422,7 +9488,16 @@ const App = () => {
               // updatedAt（なければ createdAt）で比較 → 新しい方を採用
               const lt = new Date(l.updatedAt || l.createdAt || 0).getTime();
               const ct = new Date(c.updatedAt || c.createdAt || 0).getTime();
-              result.push(lt >= ct ? l : c);
+              const winner = lt >= ct ? l : c;
+              const loser  = lt >= ct ? c : l;
+              // ★ 勝者のthumbDataUrlがnullでも、敗者のthumbDataUrlで補完する
+              // （ローカル/クラウドどちらかにthumbDataUrlがあれば必ず保持）
+              const loserPhotoMap = new Map((loser.photos || []).map(p => [p.id, p]));
+              const mergedPhotos = (winner.photos || []).map(p => ({
+                ...p,
+                thumbDataUrl: p.thumbDataUrl || loserPhotoMap.get(p.id)?.thumbDataUrl || null,
+              }));
+              result.push({ ...winner, photos: mergedPhotos });
             }
             return result;
           };
