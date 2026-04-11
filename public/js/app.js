@@ -7773,7 +7773,7 @@ const runRemoveBg = async (file, apiKey) => {
 };
 
 // ============================================================
-// 重複チェックタブ
+// 重複チェックタブ（スコアリング式類似判定）
 // ============================================================
 const DuplicateTab = () => {
   const { data, setData } = React.useContext(AppContext);
@@ -7782,96 +7782,219 @@ const DuplicateTab = () => {
   const [mode, setMode] = React.useState('sales'); // 'inventory' | 'sales'
   const [checkedIds, setCheckedIds] = React.useState(new Set());
 
-  // 商品名の正規化（スペース・大小文字・全角半角を無視）
-  const normName = (s) =>
+  // ── テキスト正規化（スペース・大小文字・全角半角を統一）
+  const normText = (s) =>
     (s || '').trim().toLowerCase()
       .replace(/[\s　]+/g, '')
       .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
 
-  // ── 在庫の重複検出 ──────────────────────────────────────
-  const invGroups = React.useMemo(() => {
-    const groups = {};
-    (data.inventory || []).forEach(item => {
-      const key = normName(item.productName);
-      if (!key) return;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(item);
-    });
-    return Object.values(groups)
-      .filter(g => g.length >= 2)
-      .map(g => ({
-        key: 'inv:' + normName(g[0].productName),
-        label: g[0].productName || '商品名なし',
-        subLabel: `${g.length}件が同一商品名`,
-        // 新しい（createdAt降順）順に並べる → index 0 = 残すもの
-        items: [...g].sort((a, b) =>
-          new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
-      }))
-      .sort((a, b) => b.items.length - a.items.length);
-  }, [data.inventory]);
+  // ── バイグラム類似度（Dice係数: 0〜1）
+  // 日本語を含む文字列の類似度計算に有効
+  const bigramSim = (s1, s2) => {
+    if (!s1 || !s2) return 0;
+    if (s1 === s2) return 1;
+    const getBigrams = s => {
+      const g = new Set();
+      for (let i = 0; i < s.length - 1; i++) g.add(s.slice(i, i + 2));
+      return g;
+    };
+    const b1 = getBigrams(s1), b2 = getBigrams(s2);
+    if (!b1.size || !b2.size) return (s1 === s2 ? 1 : 0);
+    let common = 0;
+    b1.forEach(b => { if (b2.has(b)) common++; });
+    return (2 * common) / (b1.size + b2.size);
+  };
 
-  // ── 売上の重複検出 ──────────────────────────────────────
+  // ── 商品名スコア（完全一致+3 / 含有+2 / バイグラム類似+1〜2 / 不一致0）
+  const calcNameScore = (n1, n2) => {
+    if (!n1 || !n2) return 0;
+    if (n1 === n2) return 3;
+    if (n1.length >= 3 && n2.length >= 3 && (n1.includes(n2) || n2.includes(n1))) return 2;
+    const sim = bigramSim(n1, n2);
+    if (sim >= 0.6) return 2;
+    if (sim >= 0.35) return 1;
+    return 0;
+  };
+
+  const SCORE_THRESHOLD = 5;
+  const MAX_ITEMS = 800; // O(N²)対策：超過時はスキャン件数を制限
+
+  // ── Union-Find（連結成分でグループ化）
+  const makeUF = (ids) => {
+    const p = {};
+    ids.forEach(id => { p[id] = id; });
+    const find = x => { if (p[x] !== x) p[x] = find(p[x]); return p[x]; };
+    const union = (x, y) => { const px = find(x), py = find(y); if (px !== py) p[px] = py; };
+    return { find, union };
+  };
+
+  // ── 売上のスコアリング検出 ──────────────────────────────
+  // 価格一致(+3) / ブランド一致(+2) / 商品名類似(+1〜3) / 販売日近接(+1)
+  // 合計SCORE_THRESHOLD点以上 → 重複候補
   const salesGroups = React.useMemo(() => {
+    const sales = data.sales || [];
     const invMap = new Map((data.inventory || []).map(i => [i.id, i]));
+    if (sales.length < 2) return [];
 
-    // 手法1: 同じ inventoryId に複数の売上
-    const byInvId = {};
-    (data.sales || []).forEach(s => {
-      if (!s.inventoryId) return;
-      if (!byInvId[s.inventoryId]) byInvId[s.inventoryId] = [];
-      byInvId[s.inventoryId].push(s);
+    const items = sales.length > MAX_ITEMS ? sales.slice(0, MAX_ITEMS) : sales;
+    const uf = makeUF(items.map(s => s.id));
+    const pairBest = {}; // `id1__id2` → { score, reasons }
+
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const s1 = items[i], s2 = items[j];
+        let score = 0;
+        const reasons = [];
+
+        // 同一inventoryId → 確定重複
+        if (s1.inventoryId && s1.inventoryId === s2.inventoryId) {
+          score = 10;
+          reasons.push('同一商品への重複売上 (+10)');
+        } else {
+          const inv1 = invMap.get(s1.inventoryId) || {};
+          const inv2 = invMap.get(s2.inventoryId) || {};
+
+          // 販売価格一致 +3
+          if (s1.salePrice != null && s1.salePrice === s2.salePrice && s1.salePrice > 0) {
+            score += 3;
+            reasons.push(`価格一致 ¥${Number(s1.salePrice).toLocaleString()} (+3)`);
+          }
+          // ブランド一致 +2
+          const br1 = normText(inv1.brand || ''), br2 = normText(inv2.brand || '');
+          if (br1 && br2 && br1 === br2) {
+            score += 2;
+            reasons.push(`ブランド一致「${inv1.brand}」(+2)`);
+          }
+          // 商品名類似 +1〜3
+          const ns = calcNameScore(normText(inv1.productName || ''), normText(inv2.productName || ''));
+          if (ns > 0) {
+            score += ns;
+            reasons.push(`商品名${ns === 3 ? '一致' : ns === 2 ? '類似' : '部分一致'}(+${ns})`);
+          }
+          // 販売日近接 +1（7日以内）
+          if (s1.saleDate && s2.saleDate) {
+            const diff = Math.abs(new Date(s1.saleDate) - new Date(s2.saleDate)) / 86400000;
+            if (diff <= 7) {
+              score += 1;
+              reasons.push(`販売日近接 ${diff < 1 ? '同日' : Math.round(diff) + '日差'}(+1)`);
+            }
+          }
+        }
+
+        if (score >= SCORE_THRESHOLD) {
+          uf.union(s1.id, s2.id);
+          const pkey = [s1.id, s2.id].sort().join('__');
+          if (!pairBest[pkey] || pairBest[pkey].score < score)
+            pairBest[pkey] = { score, reasons };
+        }
+      }
+    }
+
+    // グループ化して整形
+    const grouped = {};
+    items.forEach(s => {
+      const root = uf.find(s.id);
+      if (!grouped[root]) grouped[root] = [];
+      grouped[root].push(s);
     });
 
-    // 手法2: 商品名 + 販売日 + 販売価格が同一（セラーブック二重インポート等）
-    const byKey = {};
-    (data.sales || []).forEach(s => {
-      const inv = invMap.get(s.inventoryId);
-      const name = normName(inv?.productName || '');
-      if (!name || !s.saleDate || s.salePrice == null) return;
-      const key = `${name}|${s.saleDate}|${s.salePrice}`;
-      if (!byKey[key]) byKey[key] = [];
-      byKey[key].push(s);
-    });
-
-    const seen = new Set();
-    const result = [];
-
-    // 手法1グループ
-    Object.entries(byInvId).forEach(([invId, group]) => {
-      if (group.length < 2) return;
-      const inv = invMap.get(invId);
-      const gKey = `inv:${invId}`;
-      seen.add(gKey);
-      group.forEach(s => seen.add(s.id));
-      result.push({
-        key: gKey,
-        type: 'same_inventory',
-        label: inv?.productName || '商品名不明',
-        subLabel: `同一商品に${group.length}件の売上`,
-        items: [...group].sort((a, b) =>
-          new Date(b.createdAt || b.saleDate || 0) - new Date(a.createdAt || a.saleDate || 0)),
-      });
-    });
-
-    // 手法2グループ（手法1で検出済みを除外）
-    Object.entries(byKey).forEach(([k, group]) => {
-      if (group.length < 2) return;
-      const unseenItems = group.filter(s => !seen.has(s.id));
-      if (unseenItems.length < 2) return;
-      const inv = invMap.get(unseenItems[0].inventoryId);
-      unseenItems.forEach(s => seen.add(s.id));
-      result.push({
-        key: `key:${k}`,
-        type: 'same_sale',
-        label: inv?.productName || k.split('|')[0] || '商品名不明',
-        subLabel: `同日・同額の売上が${unseenItems.length}件`,
-        items: [...unseenItems].sort((a, b) =>
-          new Date(b.createdAt || b.saleDate || 0) - new Date(a.createdAt || a.saleDate || 0)),
-      });
-    });
-
-    return result.sort((a, b) => b.items.length - a.items.length);
+    return Object.values(grouped)
+      .filter(g => g.length >= 2)
+      .map(g => {
+        let maxScore = 0, topReasons = [];
+        for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+          const pkey = [g[i].id, g[j].id].sort().join('__');
+          const info = pairBest[pkey];
+          if (info && info.score > maxScore) { maxScore = info.score; topReasons = info.reasons; }
+        }
+        const inv0 = invMap.get(g[0].inventoryId) || {};
+        return {
+          key: 'sale:' + g[0].id,
+          label: inv0.productName || '商品名不明',
+          score: maxScore,
+          subLabel: topReasons.join(' / '),
+          items: [...g].sort((a, b) =>
+            new Date(b.createdAt || b.saleDate || 0) - new Date(a.createdAt || a.saleDate || 0)),
+        };
+      })
+      .sort((a, b) => b.score - a.score || b.items.length - a.items.length);
   }, [data.sales, data.inventory]);
+
+  // ── 在庫のスコアリング検出 ──────────────────────────────
+  // 仕入価格一致(+3) / ブランド一致(+2) / 商品名類似(+1〜3) / カテゴリ一致(+1)
+  const invGroups = React.useMemo(() => {
+    const inv = data.inventory || [];
+    if (inv.length < 2) return [];
+
+    const items = inv.length > MAX_ITEMS ? inv.slice(0, MAX_ITEMS) : inv;
+    const uf = makeUF(items.map(i => i.id));
+    const pairBest = {};
+
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i], b = items[j];
+        let score = 0;
+        const reasons = [];
+
+        // 仕入価格一致 +3
+        if (a.purchasePrice != null && a.purchasePrice === b.purchasePrice && a.purchasePrice > 0) {
+          score += 3;
+          reasons.push(`仕入価格一致 ¥${Number(a.purchasePrice).toLocaleString()} (+3)`);
+        }
+        // ブランド一致 +2
+        const br1 = normText(a.brand || ''), br2 = normText(b.brand || '');
+        if (br1 && br2 && br1 === br2) {
+          score += 2;
+          reasons.push(`ブランド一致「${a.brand}」(+2)`);
+        }
+        // 商品名類似 +1〜3
+        const ns = calcNameScore(normText(a.productName || ''), normText(b.productName || ''));
+        if (ns > 0) {
+          score += ns;
+          reasons.push(`商品名${ns === 3 ? '一致' : ns === 2 ? '類似' : '部分一致'}(+${ns})`);
+        }
+        // カテゴリ一致 +1
+        if (a.category && b.category && normText(a.category) === normText(b.category)) {
+          score += 1;
+          reasons.push(`カテゴリ一致(+1)`);
+        }
+
+        if (score >= SCORE_THRESHOLD) {
+          uf.union(a.id, b.id);
+          const pkey = [a.id, b.id].sort().join('__');
+          if (!pairBest[pkey] || pairBest[pkey].score < score)
+            pairBest[pkey] = { score, reasons };
+        }
+      }
+    }
+
+    const grouped = {};
+    items.forEach(item => {
+      const root = uf.find(item.id);
+      if (!grouped[root]) grouped[root] = [];
+      grouped[root].push(item);
+    });
+
+    return Object.values(grouped)
+      .filter(g => g.length >= 2)
+      .map(g => {
+        let maxScore = 0, topReasons = [];
+        for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+          const pkey = [g[i].id, g[j].id].sort().join('__');
+          const info = pairBest[pkey];
+          if (info && info.score > maxScore) { maxScore = info.score; topReasons = info.reasons; }
+        }
+        return {
+          key: 'inv:' + g[0].id,
+          label: g[0].productName || '商品名不明',
+          score: maxScore,
+          subLabel: topReasons.join(' / '),
+          items: [...g].sort((a, b) =>
+            new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+        };
+      })
+      .sort((a, b) => b.score - a.score || b.items.length - a.items.length);
+  }, [data.inventory]);
 
   const groups = mode === 'inventory' ? invGroups : salesGroups;
   const totalItems = groups.reduce((a, g) => a + g.items.length, 0);
@@ -7937,11 +8060,10 @@ const DuplicateTab = () => {
 
   const fmtDate  = (d) => d ? String(d).slice(0, 10) : '---';
   const fmtPrice = (p) => p != null ? `¥${Number(p).toLocaleString()}` : '---';
-  const STATUS_LABEL = { sold: '売却済', listed: '出品中', unlisted: '未出品' };
   const STATUS_STYLE = {
-    sold:    { background: '#dcfce7', color: '#15803d' },
-    listed:  { background: '#dbeafe', color: '#1d4ed8' },
-    unlisted:{ background: '#f3f4f6', color: '#555' },
+    sold:     { background: '#dcfce7', color: '#15803d', label: '売却済' },
+    listed:   { background: '#dbeafe', color: '#1d4ed8', label: '出品中' },
+    unlisted: { background: '#f3f4f6', color: '#555',    label: '未出品' },
   };
 
   return (
@@ -7951,12 +8073,25 @@ const DuplicateTab = () => {
         <h1 style={{margin: 0, fontSize: 18, fontWeight: 800}}>🔍 重複チェック</h1>
       </div>
 
+      {/* スコア判定基準の説明 */}
+      <div style={{margin:'10px 16px 0', padding:'10px 14px',
+        background:'#f8f9ff', border:'1px solid #e0e7ff', borderRadius:11}}>
+        <div style={{fontSize:12, color:'#4338ca', fontWeight:700, marginBottom:5}}>📊 スコア判定基準</div>
+        <div style={{display:'flex', flexWrap:'wrap', gap:'4px 16px', fontSize:11, color:'#555'}}>
+          <span>価格一致 <b style={{color:'#1d4ed8'}}>+3</b></span>
+          <span>ブランド一致 <b style={{color:'#1d4ed8'}}>+2</b></span>
+          <span>商品名類似 <b style={{color:'#1d4ed8'}}>+1〜3</b></span>
+          <span>販売日近接 <b style={{color:'#1d4ed8'}}>+1</b></span>
+          <span style={{color:'#dc2626', fontWeight:700}}>合計{SCORE_THRESHOLD}点以上 → 重複候補</span>
+        </div>
+      </div>
+
       {/* モード切り替え */}
-      <div style={{padding: '12px 16px 0'}}>
+      <div style={{padding: '10px 16px 0'}}>
         <div style={{display:'flex', gap: 6, background: '#f3f4f6', borderRadius: 12, padding: 4}}>
           {[
-            { id: 'sales',     label: `売上 (${salesGroups.length})` },
-            { id: 'inventory', label: `在庫 (${invGroups.length})` },
+            { id: 'sales',     label: `売上 (${salesGroups.length}グループ)` },
+            { id: 'inventory', label: `在庫 (${invGroups.length}グループ)` },
           ].map(m => (
             <button key={m.id}
               onClick={() => { setMode(m.id); setCheckedIds(new Set()); }}
@@ -7980,10 +8115,10 @@ const DuplicateTab = () => {
             padding:'11px 14px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
             <div>
               <div style={{fontWeight:700, fontSize:13, color:'#92400e'}}>
-                ⚠️ {groups.length}グループ・{totalItems}件の重複を検出
+                ⚠️ {groups.length}グループ・{totalItems}件の重複候補を検出
               </div>
               <div style={{fontSize:11, color:'#b45309', marginTop:2}}>
-                各グループの「残す」以外を削除することを推奨します
+                「残す（最新）」以外の古いものを削除することを推奨します
               </div>
             </div>
             <button onClick={selectAllOld}
@@ -7997,7 +8132,9 @@ const DuplicateTab = () => {
         ) : (
           <div style={{textAlign:'center', padding:'48px 0'}}>
             <div style={{fontSize:44, marginBottom:12}}>✅</div>
-            <div style={{fontWeight:700, fontSize:16, color:'#333', marginBottom:6}}>重複データは見つかりません</div>
+            <div style={{fontWeight:700, fontSize:16, color:'#333', marginBottom:6}}>
+              重複候補は見つかりません
+            </div>
             <div style={{fontSize:13, color:'#888'}}>
               {mode === 'sales' ? '売上' : '在庫'}データに重複はありません
             </div>
@@ -8009,36 +8146,52 @@ const DuplicateTab = () => {
       <div style={{padding:'10px 16px 0'}}>
         {groups.map(group => {
           const candidates = group.items.slice(1).map(i => i.id);
-          const selCount   = candidates.filter(id => checkedIds.has(id)).length;
-          const allSel     = candidates.length > 0 && selCount === candidates.length;
+          const allSel = candidates.length > 0 && candidates.every(id => checkedIds.has(id));
+          // スコアに応じたバッジ色
+          const scoreBg = group.score >= 9 ? '#dc2626' : group.score >= 7 ? '#ea580c' : '#d97706';
 
           return (
             <div key={group.key} className="card" style={{marginBottom:12, overflow:'hidden'}}>
               {/* グループヘッダー */}
-              <div style={{padding:'10px 14px', background:'#fef2f2', borderBottom:'1px solid #fecaca',
-                display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-                <div style={{flex:1, minWidth:0}}>
-                  <div style={{fontWeight:700, fontSize:13, color:'#991b1b',
-                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
-                    {group.label}
+              <div style={{padding:'10px 14px', background:'#fef2f2', borderBottom:'1px solid #fecaca'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8}}>
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontWeight:700, fontSize:13, color:'#991b1b',
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                      {group.label}
+                    </div>
+                    {/* 判定理由（スコア詳細） */}
+                    <div style={{fontSize:11, color:'#b45309', marginTop:3, lineHeight:1.6}}>
+                      {group.subLabel}
+                    </div>
                   </div>
-                  <div style={{fontSize:11, color:'#b91c1c', marginTop:2}}>{group.subLabel}</div>
+                  <div style={{display:'flex', flexDirection:'column', alignItems:'flex-end', gap:5, flexShrink:0}}>
+                    {/* スコアバッジ */}
+                    <span style={{padding:'3px 9px', borderRadius:99,
+                      background: scoreBg, color:'white', fontSize:12, fontWeight:800,
+                      whiteSpace:'nowrap'}}>
+                      {group.score}点
+                    </span>
+                    <button onClick={() => toggleGroup(group)}
+                      style={{padding:'4px 10px', borderRadius:8,
+                        border:'1px solid #fca5a5',
+                        background: allSel ? '#fee2e2' : 'white',
+                        color:'#dc2626', fontSize:11, fontWeight:700,
+                        cursor:'pointer', whiteSpace:'nowrap',
+                        touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
+                      {allSel ? '選択解除' : '古い方を選択'}
+                    </button>
+                  </div>
                 </div>
-                <button onClick={() => toggleGroup(group)}
-                  style={{marginLeft:10, padding:'5px 11px', borderRadius:8,
-                    border:'1px solid #fca5a5',
-                    background: allSel ? '#fee2e2' : 'white',
-                    color:'#dc2626', fontSize:11, fontWeight:700,
-                    cursor:'pointer', whiteSpace:'nowrap', flexShrink:0,
-                    touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
-                  {allSel ? '選択解除' : '古い方を選択'}
-                </button>
               </div>
 
               {/* グループ内アイテム */}
               {group.items.map((item, idx) => {
                 const isKeep    = idx === 0;
                 const isChecked = checkedIds.has(item.id);
+                // 売上モードでは在庫から商品情報を取得
+                const inv = mode === 'inventory' ? item
+                  : (data.inventory || []).find(i => i.id === item.inventoryId) || {};
 
                 return (
                   <div key={item.id}
@@ -8062,39 +8215,40 @@ const DuplicateTab = () => {
 
                     {/* アイテム情報 */}
                     <div style={{flex:1, minWidth:0}}>
-                      <div style={{fontSize:12, fontWeight:700, marginBottom:3,
-                        color: isKeep ? '#065f46' : isChecked ? '#dc2626' : '#999'}}>
-                        {isKeep ? '残す（新しい）' : isChecked ? '削除対象' : '未選択'}
+                      <div style={{fontSize:11, fontWeight:700, marginBottom:3,
+                        color: isKeep ? '#065f46' : isChecked ? '#dc2626' : '#bbb'}}>
+                        {isKeep ? '残す（最新）' : isChecked ? '削除対象' : '未選択'}
                       </div>
 
                       {mode === 'inventory' ? (
-                        <div style={{fontSize:12, color:'#555', display:'flex', flexWrap:'wrap', gap:'3px 10px'}}>
-                          <span>仕入: {fmtDate(item.purchaseDate)}</span>
-                          <span>登録: {fmtDate(item.createdAt)}</span>
-                          <span>{fmtPrice(item.purchasePrice)}</span>
+                        <div style={{display:'flex', flexWrap:'wrap', gap:'3px 10px', fontSize:12, color:'#555'}}>
+                          {item.brand && <span style={{color:'#7c3aed', fontWeight:600}}>{item.brand}</span>}
+                          <span style={{fontWeight:600}}>{item.productName}</span>
+                          <span>仕入 {fmtPrice(item.purchasePrice)}</span>
+                          <span>登録 {fmtDate(item.createdAt)}</span>
                           <span style={{padding:'1px 7px', borderRadius:99, fontSize:11, fontWeight:700,
                             ...(STATUS_STYLE[item.status] || STATUS_STYLE.unlisted)}}>
-                            {STATUS_LABEL[item.status] || '未出品'}
+                            {(STATUS_STYLE[item.status] || STATUS_STYLE.unlisted).label}
                           </span>
-                          {(item.photos||[]).length > 0 && (
-                            <span style={{color:'#888'}}>📷 {item.photos.length}枚</span>
-                          )}
+                          {(item.photos||[]).length > 0 && <span style={{color:'#888'}}>📷{item.photos.length}</span>}
                         </div>
                       ) : (
-                        <div style={{fontSize:12, color:'#555', display:'flex', flexWrap:'wrap', gap:'3px 10px'}}>
-                          <span>販売日: {fmtDate(item.saleDate)}</span>
+                        <div style={{display:'flex', flexWrap:'wrap', gap:'3px 10px', fontSize:12, color:'#555'}}>
+                          {inv.brand && <span style={{color:'#7c3aed', fontWeight:600}}>{inv.brand}</span>}
+                          {inv.productName && <span style={{fontWeight:600}}>{inv.productName}</span>}
                           <span>{fmtPrice(item.salePrice)}</span>
+                          <span>販売日 {fmtDate(item.saleDate)}</span>
                           <span style={{padding:'1px 7px', borderRadius:99, fontSize:11, fontWeight:700,
                             background:'#ede9fe', color:'#7c3aed'}}>
                             {item.platform || '---'}
                           </span>
                           {item.profit != null && (
-                            <span style={{color: item.profit >= 0 ? '#16a34a' : '#dc2626'}}>
+                            <span style={{color: item.profit >= 0 ? '#16a34a' : '#dc2626', fontWeight:600}}>
                               利益 {item.profit >= 0 ? '+' : ''}{Number(item.profit).toLocaleString()}円
                             </span>
                           )}
                           {item.createdAt && (
-                            <span style={{color:'#bbb', fontSize:10}}>登録: {fmtDate(item.createdAt)}</span>
+                            <span style={{color:'#bbb', fontSize:10}}>登録 {fmtDate(item.createdAt)}</span>
                           )}
                         </div>
                       )}
