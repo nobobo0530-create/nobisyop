@@ -4243,11 +4243,11 @@ const InventoryTab = () => {
                       {alert && !isSold && (
                         <span style={{
                           fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
-                          background: alert.level==='danger' ? '#fef2f2' : alert.level==='warn' ? '#fffbeb' : '#f0fdf4',
-                          color:       alert.level==='danger' ? '#dc2626' : alert.level==='warn' ? '#d97706' : '#6b7280',
-                          border:`1px solid ${alert.level==='danger'?'#fecaca':alert.level==='warn'?'#fde68a':'#e5e7eb'}`,
+                          background:'#f0fdf4',
+                          color:'#6b7280',
+                          border:'1px solid #e5e7eb',
                         }}>
-                          {alert.level==='danger' ? '🔴 値下げ推奨' : alert.level==='warn' ? '🟡 値下げ検討' : ''}{alert.level==='ok'?`${alert.days}日`:` ${alert.days}日`}
+                          {alert.days}日
                         </span>
                       )}
                     </div>
