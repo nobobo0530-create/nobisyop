@@ -3678,7 +3678,9 @@ const PhotoSlide = ({ photoRef }) => {
 // 在庫一覧タブ
 // ============================================================
 const InventoryTab = () => {
-  const { data, setData, setTab, setEditingItem, setPendingSaleItemId, setPendingReturnTab } = React.useContext(AppContext);
+  const { data, setData, setTab, setEditingItem, setPendingSaleItemId, setPendingReturnTab,
+          pendingInventoryFilter, setPendingInventoryFilter,
+          pendingInventoryScrollY, setPendingInventoryScrollY } = React.useContext(AppContext);
   const toast = useToast();
   const [filter, setFilter] = React.useState('unlisted');
   const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
@@ -3688,6 +3690,33 @@ const InventoryTab = () => {
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
+
+  // ★ 編集から戻った時：フィルター（未出品/出品中/売却済）とスクロール位置を復元する
+  // pendingInventoryFilter が設定されている = 編集から戻ってきた場合
+  const pendingScrollRef = React.useRef(null);
+  React.useEffect(() => {
+    if (pendingInventoryFilter) {
+      // スクロール位置を一時保存（filterの変更→再レンダリング後にスクロール実行するため）
+      if (pendingInventoryScrollY !== null) {
+        pendingScrollRef.current = pendingInventoryScrollY;
+      }
+      setFilter(pendingInventoryFilter);
+      setPendingInventoryFilter(null);
+      setPendingInventoryScrollY(null);
+    }
+  }, []); // マウント時のみ実行
+
+  // filterが変更されてレンダリング完了後にスクロール位置を復元
+  React.useEffect(() => {
+    if (pendingScrollRef.current !== null) {
+      const y = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+      // レンダリング完了後にスクロール（100ms待機）
+      setTimeout(() => {
+        window.scrollTo({ top: y, behavior: 'instant' });
+      }, 100);
+    }
+  }, [filter]);
 
   // 仕入れからの経過日数
   const daysSince = (dateStr) => {
@@ -4351,7 +4380,15 @@ const InventoryTab = () => {
             <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:12}}>
               {/* 編集ボタン */}
               <button className="btn-secondary" style={{width:'100%'}}
-                onClick={() => { setPendingReturnTab('inventory'); setEditingItem(selected); setTab('purchase'); setSelected(null); }}>
+                onClick={() => {
+                  // ★ 編集前の状態を保存（戻り時にフィルター・スクロール位置を復元するため）
+                  setPendingReturnTab('inventory');
+                  setPendingInventoryFilter(filter);          // 現在のタブ（未出品/出品中/売却済）
+                  setPendingInventoryScrollY(window.scrollY); // 現在のスクロール位置
+                  setEditingItem(selected);
+                  setTab('purchase');
+                  setSelected(null);
+                }}>
                 ✏️ 編集
               </button>
 
@@ -9333,6 +9370,9 @@ const App = () => {
   const [pendingEditSaleId, setPendingEditSaleId] = React.useState(null); // エクスポート画面から売上編集
   const [pendingReturnTab, setPendingReturnTab] = React.useState(null); // 保存後に戻るタブ
   const [pendingReturnSection, setPendingReturnSection] = React.useState(null); // 保存後にOtherTabで表示するセクション
+  // 在庫タブ: 編集から戻った時にフィルター（未出品/出品中/売却済）とスクロール位置を復元するため保存
+  const [pendingInventoryFilter, setPendingInventoryFilter] = React.useState(null);
+  const [pendingInventoryScrollY, setPendingInventoryScrollY] = React.useState(null);
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
   const dataRef = React.useRef(fullData);
@@ -9651,7 +9691,7 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
