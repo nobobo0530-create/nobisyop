@@ -1,11 +1,11 @@
-// SalesLog Service Worker v20260411d
+// SalesLog Service Worker v20260411e
 // キャッシュ優先戦略 + Google APIはスキップ
-var CACHE = 'nobushop-20260411d';
+var CACHE = 'nobushop-20260411e';
 
 var PRECACHE = [
   '/',
   '/manifest.json',
-  '/js/app.js?v=20260411d',
+  '/js/app.js?v=20260411e',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
