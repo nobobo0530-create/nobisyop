@@ -829,6 +829,206 @@ const AppContext = React.createContext(null);
 // ============================================================
 // ホームタブ
 // ============================================================
+// ── 利益推移グラフ（SVG折れ線） ────────────────────────────
+const ProfitChart = ({ summarySales, now }) => {
+  const [selectedIdx, setSelectedIdx] = React.useState(null);
+  const scrollRef = React.useRef(null);
+
+  const MONTHS = 12;
+  const COL_W  = 54;
+  const TOTAL_W = MONTHS * COL_W;
+  const SVG_H   = 130;
+  const TOP_PAD = 14;
+  const BOT_PAD = 22; // month label
+  const DRAW_H  = SVG_H - TOP_PAD - BOT_PAD;
+
+  // 過去12ヶ月のデータを構築
+  const monthData = React.useMemo(() => {
+    const thisKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const result = [];
+    for (let i = MONTHS - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const sales = summarySales.filter(s => s.saleDate?.startsWith(key));
+      const profit  = sales.reduce((a, s) => a + (s.profit  || 0), 0);
+      const revenue = sales.reduce((a, s) => a + (s.salePrice || 0), 0);
+      const cost    = revenue - profit;
+      result.push({
+        key,
+        label:     `${d.getMonth()+1}月`,
+        yearLabel: d.getMonth() === 0 ? `${d.getFullYear()}` : '',
+        profit, revenue, cost,
+        count: sales.length,
+        isCurrent: key === thisKey,
+      });
+    }
+    return result;
+  }, [summarySales, now]);
+
+  // マウント時に右端（最新月）へスクロール
+  React.useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
+  }, []);
+
+  // Y スケール（0を必ず含む）
+  const profits = monthData.map(d => d.profit);
+  const maxP    = Math.max(0, ...profits);
+  const minP    = Math.min(0, ...profits);
+  const range   = maxP - minP || 1;
+  const xOf = i => i * COL_W + COL_W / 2;
+  const yOf = v => TOP_PAD + (maxP - v) / range * DRAW_H;
+  const zeroY = yOf(0);
+
+  // 折れ線パス
+  const linePath = monthData
+    .map((d, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(d.profit).toFixed(1)}`)
+    .join(' ');
+
+  // 塗りつぶし（ゼロ線で閉じる）
+  const areaPath = monthData.length > 0
+    ? `${linePath} L${xOf(monthData.length-1).toFixed(1)},${zeroY.toFixed(1)} L${xOf(0).toFixed(1)},${zeroY.toFixed(1)} Z`
+    : '';
+
+  const selected = selectedIdx !== null ? monthData[selectedIdx] : null;
+  const hasData  = profits.some(p => p !== 0);
+
+  return (
+    <div>
+      {/* グラフカード */}
+      <div style={{background:'#0f172a', borderRadius:16, overflow:'hidden',
+        border:'1px solid rgba(255,255,255,0.06)'}}>
+
+        {/* タイトル */}
+        <div style={{padding:'12px 14px 6px',
+          display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+          <div style={{fontSize:10, color:'rgba(255,255,255,0.4)', fontWeight:700, letterSpacing:'0.08em'}}>
+            利益推移（過去12ヶ月）
+          </div>
+          <div style={{fontSize:10, color:'rgba(74,222,128,0.8)', fontWeight:600}}>── 純利益</div>
+        </div>
+
+        {/* スクロール可能なSVGエリア */}
+        <div ref={scrollRef}
+          style={{overflowX:'auto', overflowY:'hidden', paddingBottom:2,
+            /* スクロールバー非表示 */
+            msOverflowStyle:'none', scrollbarWidth:'none'}}>
+          <svg width={TOTAL_W} height={SVG_H}
+            style={{display:'block', overflow:'visible', userSelect:'none'}}>
+
+            {/* ゼロ基準線 */}
+            <line x1={0} y1={zeroY} x2={TOTAL_W} y2={zeroY}
+              stroke="rgba(255,255,255,0.12)" strokeWidth={1} strokeDasharray="3,4"/>
+
+            {/* 選択列ハイライト */}
+            {selectedIdx !== null && (
+              <rect x={selectedIdx * COL_W} y={0}
+                width={COL_W} height={SVG_H - BOT_PAD}
+                fill="rgba(255,255,255,0.06)" rx={4}/>
+            )}
+
+            {hasData && (
+              <>
+                {/* 面積塗りつぶし */}
+                <path d={areaPath} fill="rgba(74,222,128,0.12)" stroke="none"/>
+                {/* 折れ線 */}
+                <path d={linePath} fill="none"
+                  stroke="#4ade80" strokeWidth={2.2}
+                  strokeLinecap="round" strokeLinejoin="round"/>
+              </>
+            )}
+
+            {/* 各月のドットとタップ領域・ラベル */}
+            {monthData.map((d, i) => {
+              const cx = xOf(i);
+              const cy = yOf(d.profit);
+              const isSel = selectedIdx === i;
+              const dotColor = d.profit < 0 ? '#f87171' : '#4ade80';
+              return (
+                <g key={d.key}
+                  onClick={() => setSelectedIdx(isSel ? null : i)}
+                  style={{cursor:'pointer'}}>
+                  {/* タップ領域（透明な縦長の長方形） */}
+                  <rect x={i * COL_W} y={0} width={COL_W} height={SVG_H - BOT_PAD}
+                    fill="transparent"/>
+
+                  {/* データポイントのドット */}
+                  {hasData && (
+                    <circle cx={cx} cy={cy}
+                      r={isSel ? 5.5 : 3.5}
+                      fill={dotColor}
+                      stroke={isSel ? 'white' : '#0f172a'}
+                      strokeWidth={isSel ? 2 : 1.5}/>
+                  )}
+
+                  {/* 月ラベル */}
+                  <text x={cx} y={SVG_H - 5}
+                    textAnchor="middle" fontSize={9}
+                    fill={d.isCurrent ? '#4ade80' : 'rgba(255,255,255,0.3)'}
+                    fontWeight={d.isCurrent ? 700 : 400}>
+                    {d.yearLabel ? d.yearLabel : d.label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+
+        {/* データなし表示 */}
+        {!hasData && (
+          <div style={{textAlign:'center', padding:'4px 0 12px',
+            fontSize:11, color:'rgba(255,255,255,0.2)'}}>
+            売上データが登録されると表示されます
+          </div>
+        )}
+      </div>
+
+      {/* 月別詳細パネル（タップ時に展開） */}
+      {selected && (
+        <div style={{background:'white', borderRadius:14, padding:'14px',
+          marginTop:8, border:'1.5px solid #f0f0f0',
+          boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
+          <div style={{fontSize:11, color:'#9ca3af', fontWeight:700, marginBottom:10}}>
+            {selected.key.slice(0,4)}年{parseInt(selected.key.slice(5),10)}月
+          </div>
+          <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8}}>
+            <div>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600,
+                letterSpacing:'0.05em', marginBottom:4}}>純利益</div>
+              <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px',
+                color: selected.profit >= 0 ? '#16a34a' : '#dc2626', lineHeight:1}}>
+                {selected.profit >= 0 ? '' : '−'}¥{formatMoney(Math.abs(selected.profit))}
+              </div>
+            </div>
+            <div>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600,
+                letterSpacing:'0.05em', marginBottom:4}}>売上</div>
+              <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px',
+                color:'#1d4ed8', lineHeight:1}}>
+                ¥{formatMoney(selected.revenue)}
+              </div>
+            </div>
+            <div>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600,
+                letterSpacing:'0.05em', marginBottom:4}}>件数</div>
+              <div style={{fontSize:20, fontWeight:900, color:'#374151', lineHeight:1}}>
+                {selected.count}
+                <span style={{fontSize:11, color:'#9ca3af', fontWeight:500, marginLeft:2}}>件</span>
+              </div>
+            </div>
+          </div>
+          {selected.count > 0 && selected.revenue > 0 && (
+            <div style={{marginTop:10, paddingTop:10, borderTop:'1px solid #f3f4f6',
+              display:'flex', gap:16, fontSize:11, color:'#9ca3af'}}>
+              <span>仕入コスト ¥{formatMoney(selected.cost)}</span>
+              <span>利益率 {Math.round(selected.profit / selected.revenue * 100)}%</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const HomeTab = () => {
   const { data, setTab, currentUser, userProfile, setUserProfile } = React.useContext(AppContext);
   const now = new Date();
@@ -879,8 +1079,6 @@ const HomeTab = () => {
     return Math.floor((now - new Date(i.purchaseDate)) / 86400000) > 60;
   });
 
-  // ── 最近の売上（直近3件）──
-  const recentSales = [...(data.sales||[])].sort((a,b)=>(b.saleDate||'')>(a.saleDate||'')?1:-1).slice(0,3);
 
   // ── 目標編集モーダル ──
   const [editingGoal, setEditingGoal] = React.useState(false);
@@ -1044,59 +1242,8 @@ const HomeTab = () => {
           </div>
         </div>
 
-        {/* ── 最近の売上 ── */}
-        {recentSales.length > 0 && (
-          <div style={{background:'white',borderRadius:14,padding:'14px',boxShadow:'0 1px 4px rgba(0,0,0,0.05)',border:'1.5px solid #f0f0f0'}}>
-            <div style={{fontSize:10,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:10}}>最近の売上</div>
-            {recentSales.map((s, i) => {
-              const item = (data.inventory||[]).find(inv => inv.id === s.inventoryId) || {};
-              const name = item.productName || s.productName || s.memo || '商品';
-              const brand = item.brand || s.brand || '';
-              const profit = s.profit || 0;
-              return (
-                <div key={s.id}
-                  style={{display:'flex',alignItems:'flex-start',gap:10,
-                    paddingTop: i>0 ? 10 : 0,
-                    marginTop: i>0 ? 10 : 0,
-                    borderTop: i>0 ? '1px solid #f3f4f6' : 'none'}}>
-                  {/* 左：商品情報 */}
-                  <div style={{flex:1,minWidth:0,overflow:'hidden'}}>
-                    {brand && (
-                      <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,
-                        overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
-                        marginBottom:2}}>
-                        {brand}
-                      </div>
-                    )}
-                    <div style={{
-                      fontSize:13,fontWeight:600,color:'#1a1a1a',
-                      lineHeight:1.4,
-                      display:'-webkit-box',
-                      WebkitLineClamp:2,
-                      WebkitBoxOrient:'vertical',
-                      overflow:'hidden',
-                    }}>
-                      {name}
-                    </div>
-                    <div style={{fontSize:10,color:'#9ca3af',marginTop:3}}>
-                      {s.saleDate} · {s.platform}
-                    </div>
-                  </div>
-                  {/* 右：金額（固定幅） */}
-                  <div style={{textAlign:'right',flexShrink:0,minWidth:72}}>
-                    <div style={{fontSize:13,fontWeight:700,color:'#1a1a1a',whiteSpace:'nowrap'}}>
-                      ¥{formatMoney(s.salePrice||0)}
-                    </div>
-                    <div style={{fontSize:12,fontWeight:700,whiteSpace:'nowrap',marginTop:2,
-                      color: profit>=0 ? '#16a34a' : '#dc2626'}}>
-                      {profit>=0?'+':''}{formatMoney(profit)}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        {/* ── 利益推移グラフ ── */}
+        <ProfitChart summarySales={summarySales} now={now} />
 
         {/* ── 警告：長期在庫 ── */}
         {longStayItems.length > 0 && (
