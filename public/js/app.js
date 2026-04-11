@@ -3799,9 +3799,13 @@ const InventoryTab = () => {
 
   const deleteItem = (item) => {
     if (!confirm('この商品を削除しますか？')) return;
+    const now = new Date().toISOString();
+    // ★ トゥームストーン: 削除したIDを記録し、クラウドとのマージで復活しないようにする
+    const newDeletedIds = { ...(data.settings?._deletedIds || {}), [item.id]: now };
+    (data.sales||[]).filter(s => s.inventoryId === item.id).forEach(s => { newDeletedIds[s.id] = now; });
     const newInv   = data.inventory.filter(i => i.id !== item.id);
     const newSales = (data.sales||[]).filter(s => s.inventoryId !== item.id);
-    setData({ ...data, inventory: newInv, sales: newSales });
+    setData({ ...data, inventory: newInv, sales: newSales, settings: { ...data.settings, _deletedIds: newDeletedIds } });
     setSelected(null);
     toast('🗑️ 削除しました');
   };
@@ -3830,9 +3834,14 @@ const InventoryTab = () => {
   };
 
   const executeBulkDelete = () => {
+    const now = new Date().toISOString();
+    // ★ トゥームストーン: 削除した全IDを記録し、クラウドとのマージで復活しないようにする
+    const newDeletedIds = { ...(data.settings?._deletedIds || {}) };
+    checkedIds.forEach(id => { newDeletedIds[id] = now; });
+    (data.sales||[]).filter(s => checkedIds.has(s.inventoryId)).forEach(s => { newDeletedIds[s.id] = now; });
     const newInv   = data.inventory.filter(i => !checkedIds.has(i.id));
     const newSales = (data.sales||[]).filter(s => !checkedIds.has(s.inventoryId));
-    setData({ ...data, inventory: newInv, sales: newSales });
+    setData({ ...data, inventory: newInv, sales: newSales, settings: { ...data.settings, _deletedIds: newDeletedIds } });
     const cnt = checkedIds.size;
     exitBulkMode();
     toast(`🗑️ ${cnt}件を削除しました`);
@@ -5244,7 +5253,10 @@ const SalesTab = () => {
 
   const handleDelete = (saleId) => {
     if (!window.confirm('この売上記録を削除しますか？')) return;
-    setData({ ...data, sales: data.sales.filter(s => s.id !== saleId) });
+    // ★ トゥームストーン: 削除した売上IDを記録し、クラウドとのマージで復活しないようにする
+    const now = new Date().toISOString();
+    const newDeletedIds = { ...(data.settings?._deletedIds || {}), [saleId]: now };
+    setData({ ...data, sales: data.sales.filter(s => s.id !== saleId), settings: { ...data.settings, _deletedIds: newDeletedIds } });
     closeForm();
     toast('🗑️ 売上記録を削除しました');
   };
@@ -9230,8 +9242,12 @@ const OtherTab = () => {
                     <button
                       onClick={() => {
                         if (!confirm(`在庫に存在しない売上データ ${orphans.length}件を削除しますか？\nこの操作は元に戻せません。`)) return;
+                        // ★ トゥームストーン: 孤立売上IDを記録し、クラウドとのマージで復活しないようにする
+                        const _now = new Date().toISOString();
+                        const _newDeletedIds = { ...(data.settings?._deletedIds || {}) };
+                        orphans.forEach(s => { _newDeletedIds[s.id] = _now; });
                         const cleanedSales = (data.sales||[]).filter(s => !s.inventoryId || invIds.has(s.inventoryId));
-                        setData({ ...data, sales: cleanedSales });
+                        setData({ ...data, sales: cleanedSales, settings: { ...data.settings, _deletedIds: _newDeletedIds } });
                         toast(`🗑️ 孤立した売上データ ${orphans.length}件を削除しました`);
                       }}
                       style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #fed7aa',
@@ -9507,12 +9523,15 @@ const App = () => {
         } else {
           // ★ last-write-wins マージ（以前は「クラウド常に勝つ」でローカル保存が消えるバグがあった）
           // アイテム単位で updatedAt / createdAt を比較し、新しい方を採用する
-          const mergeByLastWrite = (localArr, cloudArr) => {
+          const mergeByLastWrite = (localArr, cloudArr, deletedIds) => {
+            const deleted   = deletedIds || {};
             const localMap  = new Map((localArr  || []).map(i => [i.id, i]));
             const cloudMap  = new Map((cloudArr  || []).map(i => [i.id, i]));
             const allIds    = new Set([...localMap.keys(), ...cloudMap.keys()]);
             const result    = [];
             for (const id of allIds) {
+              // ★ トゥームストーン: 意図的に削除されたIDはクラウドに残っていても復活させない
+              if (deleted[id]) continue;
               const l = localMap.get(id);
               const c = cloudMap.get(id);
               if (!l) { result.push(c); continue; }
@@ -9542,12 +9561,19 @@ const App = () => {
             for (const [k, v] of Object.entries(cloud || {})) {
               if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
             }
+            // ★ _deletedIds はユニオンマージ（ローカル・クラウド両方の削除記録を保持）
+            base._deletedIds = { ...(cloud?._deletedIds || {}), ...(local?._deletedIds || {}) };
             return base;
+          };
+          // ★ 削除トゥームストーンをローカル・クラウド双方からマージしてmergeByLastWriteに渡す
+          const mergedDeletedIds = {
+            ...(localData.settings?._deletedIds || {}),
+            ...(cloudData.settings?._deletedIds || {}),
           };
           const mergedData = {
             ...cloudData,
-            inventory: mergeByLastWrite(localData.inventory, cloudData.inventory),
-            sales:     mergeByLastWrite(localData.sales,     cloudData.sales),
+            inventory: mergeByLastWrite(localData.inventory, cloudData.inventory, mergedDeletedIds),
+            sales:     mergeByLastWrite(localData.sales,     cloudData.sales,     mergedDeletedIds),
             settings:  mergeSettings(localData.settings, cloudData.settings),
           };
           const cleanedMerged = cleanOrphans(mergedData);
