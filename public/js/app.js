@@ -7773,6 +7773,362 @@ const runRemoveBg = async (file, apiKey) => {
 };
 
 // ============================================================
+// 重複チェックタブ
+// ============================================================
+const DuplicateTab = () => {
+  const { data, setData } = React.useContext(AppContext);
+  const toast = useToast();
+
+  const [mode, setMode] = React.useState('sales'); // 'inventory' | 'sales'
+  const [checkedIds, setCheckedIds] = React.useState(new Set());
+
+  // 商品名の正規化（スペース・大小文字・全角半角を無視）
+  const normName = (s) =>
+    (s || '').trim().toLowerCase()
+      .replace(/[\s　]+/g, '')
+      .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+
+  // ── 在庫の重複検出 ──────────────────────────────────────
+  const invGroups = React.useMemo(() => {
+    const groups = {};
+    (data.inventory || []).forEach(item => {
+      const key = normName(item.productName);
+      if (!key) return;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    });
+    return Object.values(groups)
+      .filter(g => g.length >= 2)
+      .map(g => ({
+        key: 'inv:' + normName(g[0].productName),
+        label: g[0].productName || '商品名なし',
+        subLabel: `${g.length}件が同一商品名`,
+        // 新しい（createdAt降順）順に並べる → index 0 = 残すもの
+        items: [...g].sort((a, b) =>
+          new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+      }))
+      .sort((a, b) => b.items.length - a.items.length);
+  }, [data.inventory]);
+
+  // ── 売上の重複検出 ──────────────────────────────────────
+  const salesGroups = React.useMemo(() => {
+    const invMap = new Map((data.inventory || []).map(i => [i.id, i]));
+
+    // 手法1: 同じ inventoryId に複数の売上
+    const byInvId = {};
+    (data.sales || []).forEach(s => {
+      if (!s.inventoryId) return;
+      if (!byInvId[s.inventoryId]) byInvId[s.inventoryId] = [];
+      byInvId[s.inventoryId].push(s);
+    });
+
+    // 手法2: 商品名 + 販売日 + 販売価格が同一（セラーブック二重インポート等）
+    const byKey = {};
+    (data.sales || []).forEach(s => {
+      const inv = invMap.get(s.inventoryId);
+      const name = normName(inv?.productName || '');
+      if (!name || !s.saleDate || s.salePrice == null) return;
+      const key = `${name}|${s.saleDate}|${s.salePrice}`;
+      if (!byKey[key]) byKey[key] = [];
+      byKey[key].push(s);
+    });
+
+    const seen = new Set();
+    const result = [];
+
+    // 手法1グループ
+    Object.entries(byInvId).forEach(([invId, group]) => {
+      if (group.length < 2) return;
+      const inv = invMap.get(invId);
+      const gKey = `inv:${invId}`;
+      seen.add(gKey);
+      group.forEach(s => seen.add(s.id));
+      result.push({
+        key: gKey,
+        type: 'same_inventory',
+        label: inv?.productName || '商品名不明',
+        subLabel: `同一商品に${group.length}件の売上`,
+        items: [...group].sort((a, b) =>
+          new Date(b.createdAt || b.saleDate || 0) - new Date(a.createdAt || a.saleDate || 0)),
+      });
+    });
+
+    // 手法2グループ（手法1で検出済みを除外）
+    Object.entries(byKey).forEach(([k, group]) => {
+      if (group.length < 2) return;
+      const unseenItems = group.filter(s => !seen.has(s.id));
+      if (unseenItems.length < 2) return;
+      const inv = invMap.get(unseenItems[0].inventoryId);
+      unseenItems.forEach(s => seen.add(s.id));
+      result.push({
+        key: `key:${k}`,
+        type: 'same_sale',
+        label: inv?.productName || k.split('|')[0] || '商品名不明',
+        subLabel: `同日・同額の売上が${unseenItems.length}件`,
+        items: [...unseenItems].sort((a, b) =>
+          new Date(b.createdAt || b.saleDate || 0) - new Date(a.createdAt || a.saleDate || 0)),
+      });
+    });
+
+    return result.sort((a, b) => b.items.length - a.items.length);
+  }, [data.sales, data.inventory]);
+
+  const groups = mode === 'inventory' ? invGroups : salesGroups;
+  const totalItems = groups.reduce((a, g) => a + g.items.length, 0);
+
+  const toggleId = (id) => {
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  // グループ内の「古いもの（index 1以降）」をまとめて選択/解除
+  const toggleGroup = (group) => {
+    const candidates = group.items.slice(1).map(i => i.id);
+    const allSel = candidates.every(id => checkedIds.has(id));
+    setCheckedIds(prev => {
+      const next = new Set(prev);
+      if (allSel) { candidates.forEach(id => next.delete(id)); }
+      else        { candidates.forEach(id => next.add(id)); }
+      return next;
+    });
+  };
+
+  // 全グループ: 各グループの古いものをまとめて選択
+  const selectAllOld = () => {
+    const ids = new Set();
+    groups.forEach(g => g.items.slice(1).forEach(item => ids.add(item.id)));
+    setCheckedIds(ids);
+  };
+
+  // 選択削除（トゥームストーン付き）
+  const handleDelete = () => {
+    if (checkedIds.size === 0) return;
+    if (!confirm(`選択した${checkedIds.size}件を削除しますか？\nこの操作は元に戻せません。`)) return;
+    const now = new Date().toISOString();
+    const newDeletedIds = { ...(data.settings?._deletedIds || {}) };
+    checkedIds.forEach(id => { newDeletedIds[id] = now; });
+
+    if (mode === 'inventory') {
+      // 在庫削除 → 紐づく売上も削除
+      const relatedSaleIds = new Set(
+        (data.sales || []).filter(s => checkedIds.has(s.inventoryId)).map(s => s.id)
+      );
+      relatedSaleIds.forEach(id => { newDeletedIds[id] = now; });
+      setData({
+        ...data,
+        inventory: (data.inventory || []).filter(i => !checkedIds.has(i.id)),
+        sales:     (data.sales    || []).filter(s => !relatedSaleIds.has(s.id)),
+        settings:  { ...data.settings, _deletedIds: newDeletedIds },
+      });
+    } else {
+      setData({
+        ...data,
+        sales:    (data.sales || []).filter(s => !checkedIds.has(s.id)),
+        settings: { ...data.settings, _deletedIds: newDeletedIds },
+      });
+    }
+    const cnt = checkedIds.size;
+    setCheckedIds(new Set());
+    toast(`🗑️ ${cnt}件の重複データを削除しました`);
+  };
+
+  const fmtDate  = (d) => d ? String(d).slice(0, 10) : '---';
+  const fmtPrice = (p) => p != null ? `¥${Number(p).toLocaleString()}` : '---';
+  const STATUS_LABEL = { sold: '売却済', listed: '出品中', unlisted: '未出品' };
+  const STATUS_STYLE = {
+    sold:    { background: '#dcfce7', color: '#15803d' },
+    listed:  { background: '#dbeafe', color: '#1d4ed8' },
+    unlisted:{ background: '#f3f4f6', color: '#555' },
+  };
+
+  return (
+    <div className="fade-in" style={{paddingBottom: 140}}>
+      {/* ヘッダー */}
+      <div className="header">
+        <h1 style={{margin: 0, fontSize: 18, fontWeight: 800}}>🔍 重複チェック</h1>
+      </div>
+
+      {/* モード切り替え */}
+      <div style={{padding: '12px 16px 0'}}>
+        <div style={{display:'flex', gap: 6, background: '#f3f4f6', borderRadius: 12, padding: 4}}>
+          {[
+            { id: 'sales',     label: `売上 (${salesGroups.length})` },
+            { id: 'inventory', label: `在庫 (${invGroups.length})` },
+          ].map(m => (
+            <button key={m.id}
+              onClick={() => { setMode(m.id); setCheckedIds(new Set()); }}
+              style={{flex: 1, padding: '9px 0', borderRadius: 9, border: 'none', cursor: 'pointer',
+                fontSize: 13, fontWeight: 700,
+                background: mode === m.id ? 'white' : 'transparent',
+                color:      mode === m.id ? 'var(--color-primary)' : '#888',
+                boxShadow:  mode === m.id ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                transition: 'all 0.15s',
+                touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent'}}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 統計・一括選択 */}
+      <div style={{padding: '10px 16px 0'}}>
+        {groups.length > 0 ? (
+          <div style={{background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:12,
+            padding:'11px 14px', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+            <div>
+              <div style={{fontWeight:700, fontSize:13, color:'#92400e'}}>
+                ⚠️ {groups.length}グループ・{totalItems}件の重複を検出
+              </div>
+              <div style={{fontSize:11, color:'#b45309', marginTop:2}}>
+                各グループの「残す」以外を削除することを推奨します
+              </div>
+            </div>
+            <button onClick={selectAllOld}
+              style={{padding:'7px 13px', borderRadius:9, border:'1px solid #f97316',
+                background:'white', color:'#ea580c', fontSize:12, fontWeight:700,
+                cursor:'pointer', whiteSpace:'nowrap', flexShrink:0,
+                touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
+              全選択
+            </button>
+          </div>
+        ) : (
+          <div style={{textAlign:'center', padding:'48px 0'}}>
+            <div style={{fontSize:44, marginBottom:12}}>✅</div>
+            <div style={{fontWeight:700, fontSize:16, color:'#333', marginBottom:6}}>重複データは見つかりません</div>
+            <div style={{fontSize:13, color:'#888'}}>
+              {mode === 'sales' ? '売上' : '在庫'}データに重複はありません
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 重複グループ一覧 */}
+      <div style={{padding:'10px 16px 0'}}>
+        {groups.map(group => {
+          const candidates = group.items.slice(1).map(i => i.id);
+          const selCount   = candidates.filter(id => checkedIds.has(id)).length;
+          const allSel     = candidates.length > 0 && selCount === candidates.length;
+
+          return (
+            <div key={group.key} className="card" style={{marginBottom:12, overflow:'hidden'}}>
+              {/* グループヘッダー */}
+              <div style={{padding:'10px 14px', background:'#fef2f2', borderBottom:'1px solid #fecaca',
+                display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontWeight:700, fontSize:13, color:'#991b1b',
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                    {group.label}
+                  </div>
+                  <div style={{fontSize:11, color:'#b91c1c', marginTop:2}}>{group.subLabel}</div>
+                </div>
+                <button onClick={() => toggleGroup(group)}
+                  style={{marginLeft:10, padding:'5px 11px', borderRadius:8,
+                    border:'1px solid #fca5a5',
+                    background: allSel ? '#fee2e2' : 'white',
+                    color:'#dc2626', fontSize:11, fontWeight:700,
+                    cursor:'pointer', whiteSpace:'nowrap', flexShrink:0,
+                    touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
+                  {allSel ? '選択解除' : '古い方を選択'}
+                </button>
+              </div>
+
+              {/* グループ内アイテム */}
+              {group.items.map((item, idx) => {
+                const isKeep    = idx === 0;
+                const isChecked = checkedIds.has(item.id);
+
+                return (
+                  <div key={item.id}
+                    style={{padding:'10px 14px',
+                      borderBottom: idx < group.items.length - 1 ? '1px solid #f5f5f5' : 'none',
+                      display:'flex', alignItems:'flex-start', gap:10,
+                      background: isKeep ? '#f0fdf4' : isChecked ? '#fff1f2' : 'white',
+                      transition:'background 0.15s'}}>
+
+                    {/* チェックボックス or 保持マーク */}
+                    {isKeep ? (
+                      <div style={{width:22, height:22, flexShrink:0, display:'flex',
+                        alignItems:'center', justifyContent:'center', marginTop:2}}>
+                        <span style={{fontSize:15}}>✅</span>
+                      </div>
+                    ) : (
+                      <input type="checkbox" checked={isChecked} onChange={() => toggleId(item.id)}
+                        style={{width:22, height:22, flexShrink:0, cursor:'pointer',
+                          accentColor:'var(--color-primary)', marginTop:2}} />
+                    )}
+
+                    {/* アイテム情報 */}
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={{fontSize:12, fontWeight:700, marginBottom:3,
+                        color: isKeep ? '#065f46' : isChecked ? '#dc2626' : '#999'}}>
+                        {isKeep ? '残す（新しい）' : isChecked ? '削除対象' : '未選択'}
+                      </div>
+
+                      {mode === 'inventory' ? (
+                        <div style={{fontSize:12, color:'#555', display:'flex', flexWrap:'wrap', gap:'3px 10px'}}>
+                          <span>仕入: {fmtDate(item.purchaseDate)}</span>
+                          <span>登録: {fmtDate(item.createdAt)}</span>
+                          <span>{fmtPrice(item.purchasePrice)}</span>
+                          <span style={{padding:'1px 7px', borderRadius:99, fontSize:11, fontWeight:700,
+                            ...(STATUS_STYLE[item.status] || STATUS_STYLE.unlisted)}}>
+                            {STATUS_LABEL[item.status] || '未出品'}
+                          </span>
+                          {(item.photos||[]).length > 0 && (
+                            <span style={{color:'#888'}}>📷 {item.photos.length}枚</span>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{fontSize:12, color:'#555', display:'flex', flexWrap:'wrap', gap:'3px 10px'}}>
+                          <span>販売日: {fmtDate(item.saleDate)}</span>
+                          <span>{fmtPrice(item.salePrice)}</span>
+                          <span style={{padding:'1px 7px', borderRadius:99, fontSize:11, fontWeight:700,
+                            background:'#ede9fe', color:'#7c3aed'}}>
+                            {item.platform || '---'}
+                          </span>
+                          {item.profit != null && (
+                            <span style={{color: item.profit >= 0 ? '#16a34a' : '#dc2626'}}>
+                              利益 {item.profit >= 0 ? '+' : ''}{Number(item.profit).toLocaleString()}円
+                            </span>
+                          )}
+                          {item.createdAt && (
+                            <span style={{color:'#bbb', fontSize:10}}>登録: {fmtDate(item.createdAt)}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 固定削除バー（選択時のみ表示） */}
+      {checkedIds.size > 0 && ReactDOM.createPortal(
+        <div style={{position:'fixed', bottom:'calc(64px + env(safe-area-inset-bottom))',
+          left:0, right:0, background:'white',
+          padding:'10px 16px 12px', borderTop:'2px solid #fecaca',
+          zIndex:150, boxShadow:'0 -4px 12px rgba(0,0,0,0.1)', touchAction:'manipulation'}}>
+          <button onClick={handleDelete}
+            style={{width:'100%', padding:'14px 0', borderRadius:13, border:'none',
+              background:'linear-gradient(135deg, #dc2626, #b91c1c)', color:'white',
+              fontSize:15, fontWeight:800, cursor:'pointer',
+              boxShadow:'0 4px 14px rgba(220,38,38,0.4)',
+              touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
+            🗑️ 選択した {checkedIds.size}件を削除する
+          </button>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+};
+
+// ============================================================
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
@@ -9691,11 +10047,20 @@ const App = () => {
         <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
       </svg>
     ),
+    duplicate: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        <line x1="8" y1="11" x2="14" y2="11"/>
+        <line x1="11" y1="8" x2="11" y2="14"/>
+      </svg>
+    ),
   };
   const tabs = [
     { id: 'home',      label: 'ホーム' },
     { id: 'inventory', label: '在庫'   },
     { id: 'sales',     label: '売上'   },
+    { id: 'duplicate', label: '重複'   },
     { id: 'other',     label: 'その他' },
   ];
 
@@ -9781,6 +10146,7 @@ const App = () => {
             {tab === 'purchase' && <PurchaseTab />}
             {tab === 'inventory' && <InventoryTab />}
             {tab === 'sales' && <SalesTab />}
+            {tab === 'duplicate' && <DuplicateTab />}
             {tab === 'other' && <OtherTab />}
           </div>
 
