@@ -3682,7 +3682,11 @@ const InventoryTab = () => {
           pendingInventoryFilter, setPendingInventoryFilter,
           pendingInventoryScrollY, setPendingInventoryScrollY } = React.useContext(AppContext);
   const toast = useToast();
-  const [filter, setFilter] = React.useState('unlisted');
+  // ★ 編集から戻った時: useState の初期化関数で正しいタブを「最初から」設定する
+  // useEffect で後から setFilter() すると「未出品で描画 → 出品中に切り替え」という2段階になり
+  // その間にスクロールが実行されて「未出品の下の方に飛ぶ」バグが起きる。
+  // useState の初期化関数はマウント時に1回だけ実行され、最初のレンダリングから正しいタブが表示される。
+  const [filter, setFilter] = React.useState(() => pendingInventoryFilter || 'unlisted');
   const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
   const [search, setSearch] = React.useState('');
   const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
@@ -3691,32 +3695,20 @@ const InventoryTab = () => {
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
 
-  // ★ 編集から戻った時：フィルター（未出品/出品中/売却済）とスクロール位置を復元する
-  // pendingInventoryFilter が設定されている = 編集から戻ってきた場合
-  const pendingScrollRef = React.useRef(null);
+  // ★ マウント時: pending値をクリア & スクロール位置を復元
+  // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
   React.useEffect(() => {
-    if (pendingInventoryFilter) {
-      // スクロール位置を一時保存（filterの変更→再レンダリング後にスクロール実行するため）
-      if (pendingInventoryScrollY !== null) {
-        pendingScrollRef.current = pendingInventoryScrollY;
-      }
-      setFilter(pendingInventoryFilter);
-      setPendingInventoryFilter(null);
+    // pending値をクリア（次回のマウント時に誤って復元されないようにする）
+    if (pendingInventoryFilter) setPendingInventoryFilter(null);
+    // スクロール位置を復元（初回レンダリング完了後に実行）
+    if (pendingInventoryScrollY !== null && pendingInventoryScrollY > 0) {
+      const y = pendingInventoryScrollY;
       setPendingInventoryScrollY(null);
-    }
-  }, []); // マウント時のみ実行
-
-  // filterが変更されてレンダリング完了後にスクロール位置を復元
-  React.useEffect(() => {
-    if (pendingScrollRef.current !== null) {
-      const y = pendingScrollRef.current;
-      pendingScrollRef.current = null;
-      // レンダリング完了後にスクロール（100ms待機）
       setTimeout(() => {
         window.scrollTo({ top: y, behavior: 'instant' });
       }, 100);
     }
-  }, [filter]);
+  }, []); // マウント時のみ実行
 
   // 仕入れからの経過日数
   const daysSince = (dateStr) => {
