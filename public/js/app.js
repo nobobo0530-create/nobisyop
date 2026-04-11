@@ -8754,15 +8754,13 @@ const OtherTab = () => {
               <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🟠 ヤフオクストア 古物商番号管理</div>
               <div style={{fontSize:12,color:'#999',marginBottom:12}}>店を選んだとき自動で許可証番号が入力されます</div>
               {(() => {
-                // デフォルト表示するストア名
-                const DEFAULT_YAHOO_STORES = [
-                  'ECO BASEヤフー店','エルミ ヤフーSHOP','エンパワーヤフーショップ',
-                  'オークション代行クイックドゥ','すまりく ヤフオク！ショップ','pleasure','リアクロ',
-                ];
+                // ★ 仕入れ登録と同じソース（storeMaster.yahooStores）を使う
+                // ハードコードリストをやめることで、仕入れ登録の選択肢と設定画面を完全一致させる
+                const masterYahooStores = (data.settings?.storeMaster || getInitialData().settings.storeMaster).yahooStores || [];
                 const yahooStores = settings.yahooStores || [];
-                // デフォルト＋登録済みを統合してあいうえお順に表示（重複排除）
+                // storeMaster ＋ 個別登録済みを統合してあいうえお順に表示（重複排除）
                 const allNames = [...new Set([
-                  ...DEFAULT_YAHOO_STORES,
+                  ...masterYahooStores,
                   ...yahooStores.map(s => s.storeName).filter(Boolean),
                 ])].sort((a,b) => a.localeCompare(b, 'ja'));
 
