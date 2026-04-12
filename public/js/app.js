@@ -1492,6 +1492,8 @@ const PurchaseTab = () => {
     optionalFeeTaxIn: '',   // 手数料（税込）- 任意
     optionalTaxRate: 10,    // 手数料税率
     showOptionalFee: false, // 手数料欄表示
+    couponTaxIn: '',        // クーポン値引き額（税込・マイナス扱い）
+    couponNote: '',         // クーポンメモ（例：1000円OFFクーポン）
   });
   const [generatedDesc, setGeneratedDesc] = React.useState('');
   const [showDesc, setShowDesc] = React.useState(false);
@@ -1709,6 +1711,8 @@ const PurchaseTab = () => {
       optionalFeeTaxIn:  editingItem.purchaseCost?.optionalFeeTaxIn != null ? String(editingItem.purchaseCost.optionalFeeTaxIn) : '',
       optionalTaxRate:   editingItem.purchaseCost?.optionalTaxRate  ?? 10,
       showOptionalFee:   (editingItem.purchaseCost?.optionalFeeTaxIn > 0) || false,
+      couponTaxIn:  editingItem.purchaseCost?.couponTaxIn ? String(editingItem.purchaseCost.couponTaxIn) : '',
+      couponNote:   editingItem.purchaseCost?.couponNote  || '',
     });
     setPurchaseType(editingItem.purchaseType || 'store');
     setRegistrationMode(editingItem.status === 'listed' ? 'listed' : 'unlisted');
@@ -2025,18 +2029,21 @@ const PurchaseTab = () => {
     return Math.round(n / (1 + taxRate / 100));
   };
 
-  // 仕入れ合計（税込・税抜）
-  const totalPurchaseTaxIn = purchaseType === 'store'
-    ? (Number(form.itemPriceTaxIn) || 0)
+  // 仕入れ合計（税込・税抜）　★ クーポン値引きをマイナスで反映
+  const couponAmount = Number(form.couponTaxIn) || 0;
+  const totalPurchaseTaxIn = Math.max(0, purchaseType === 'store'
+    ? (Number(form.itemPriceTaxIn) || 0) - couponAmount
     : (Number(form.itemPriceTaxIn) || 0)
       + (Number(form.shippingTaxIn) || 0)
-      + (form.showOptionalFee ? (Number(form.optionalFeeTaxIn) || 0) : 0);
+      + (form.showOptionalFee ? (Number(form.optionalFeeTaxIn) || 0) : 0)
+      - couponAmount);
 
-  const totalPurchaseTaxEx = purchaseType === 'store'
-    ? calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate)
+  const totalPurchaseTaxEx = Math.max(0, purchaseType === 'store'
+    ? calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate) - couponAmount
     : calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate)
       + calcTaxEx(form.shippingTaxIn, form.shippingTaxRate)
-      + (form.showOptionalFee ? calcTaxEx(form.optionalFeeTaxIn, form.optionalTaxRate) : 0);
+      + (form.showOptionalFee ? calcTaxEx(form.optionalFeeTaxIn, form.optionalTaxRate) : 0)
+      - couponAmount);
 
   const feeRate = data.settings?.platformFees?.['メルカリ'] || 0.10;
   const profit = calcProfit(Number(form.listPrice), totalPurchaseTaxIn, feeRate, CONFIG.ESTIMATED_SHIPPING);
@@ -2370,6 +2377,8 @@ const PurchaseTab = () => {
           optionalTaxRate: form.optionalTaxRate,
           optionalFeeTaxEx: form.showOptionalFee ? calcTaxEx(form.optionalFeeTaxIn, form.optionalTaxRate) : 0,
         } : {}),
+        // クーポン（店舗・電脳どちらでも保存）
+        ...(couponAmount > 0 ? { couponTaxIn: couponAmount, couponNote: form.couponNote || '' } : {}),
       };
 
       if (editingItem) {
@@ -3551,13 +3560,41 @@ const PurchaseTab = () => {
                 </>
               )}
 
+              {/* ── クーポン利用 ────────────────────── */}
+              <div style={{marginBottom:8}}>
+                <label className="field-label" style={{display:'flex',alignItems:'center',gap:6}}>
+                  🏷️ クーポン利用
+                  <span style={{fontSize:11,color:'#16a34a',fontWeight:400}}>値引き額（マイナス扱い）</span>
+                </label>
+                <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <span style={{color:'#dc2626',fontWeight:700,fontSize:16,flexShrink:0}}>−</span>
+                  <input type="number" className="input-field" style={{flex:1}}
+                    value={form.couponTaxIn}
+                    onChange={e => setF('couponTaxIn', e.target.value)}
+                    placeholder="0（未使用は空欄）"/>
+                  <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
+                </div>
+                <input className="input-field" style={{marginTop:6,fontSize:13}}
+                  value={form.couponNote}
+                  onChange={e => setF('couponNote', e.target.value)}
+                  placeholder="クーポン名・メモ（例：1,000円OFFクーポン）"/>
+              </div>
+
               {/* 合計表示 */}
               {totalPurchaseTaxIn > 0 && (
-                <div style={{borderTop:'1px solid #e4e4e4',paddingTop:10,marginTop:8,display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
-                  <span style={{fontWeight:700,fontSize:13,color:'#333'}}>仕入れ合計</span>
-                  <div style={{textAlign:'right'}}>
-                    <div style={{fontWeight:700,fontSize:20,color:'var(--color-primary)'}}>¥{totalPurchaseTaxIn.toLocaleString()}<span style={{fontSize:12,color:'#999',fontWeight:400}}> 税込</span></div>
-                    <div style={{fontSize:11,color:'#999'}}>税抜 ¥{totalPurchaseTaxEx.toLocaleString()}</div>
+                <div style={{borderTop:'1px solid #e4e4e4',paddingTop:10,marginTop:8}}>
+                  {couponAmount > 0 && (
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#dc2626',marginBottom:6}}>
+                      <span>🏷️ クーポン値引き{form.couponNote ? `（${form.couponNote}）` : ''}</span>
+                      <span style={{fontWeight:700}}>−¥{couponAmount.toLocaleString()}</span>
+                    </div>
+                  )}
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
+                    <span style={{fontWeight:700,fontSize:13,color:'#333'}}>仕入れ合計</span>
+                    <div style={{textAlign:'right'}}>
+                      <div style={{fontWeight:700,fontSize:20,color:'var(--color-primary)'}}>¥{totalPurchaseTaxIn.toLocaleString()}<span style={{fontSize:12,color:'#999',fontWeight:400}}> 税込</span></div>
+                      <div style={{fontSize:11,color:'#999'}}>税抜 ¥{totalPurchaseTaxEx.toLocaleString()}</div>
+                    </div>
                   </div>
                 </div>
               )}
