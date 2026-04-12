@@ -27,9 +27,8 @@ const CONFIG = {
   STORE_NAME_ALIASES: [
     { pattern: /オークション代行.*(ドゥ|どぅ)/i,                   correct: 'オークション代行クイックドゥ' },
     { pattern: /クイック[\s　]*ドゥ/i,                              correct: 'オークション代行クイックドゥ' },
-    { pattern: /エンパワー[\s　]*ヤフーショップ/,                   correct: 'エンパワーヤフーショップ' },
-    { pattern: /エンパワー[\s　]*ヤフー[\s　]*SHOP/i,               correct: 'エンパワーヤフーショップ' },
-    { pattern: /エンパワー[\s　]*Yahoo[\s　]*(ショップ|shop)/i,     correct: 'エンパワーヤフーショップ' },
+    // エンパワー系：どんな表記でも「エンパワー ヤフーショップ」に統一
+    { pattern: /エンパワー/,                                         correct: 'エンパワー ヤフーショップ' },
     // ECO BASE系: "ECO BASE"単体・スペースあり・なし → 全て'ECO BASEヤフー店'へ統一
     { pattern: /^ECO[\s　]*BASE$/i,                                  correct: 'ECO BASEヤフー店' },
     { pattern: /ECO[\s　]*BASE[\s　]+ヤフー/i,                       correct: 'ECO BASEヤフー店' },
@@ -658,7 +657,7 @@ const getInitialData = () => ({
       storeLocations: {},
       // 電脳仕入れ時に表示（オークション・ECサイト）
       yahooStores: [
-        'ヤフオクストア','エンパワーヤフーショップ','オークション代行クイックドゥ',
+        'ヤフオクストア','エンパワー ヤフーショップ','オークション代行クイックドゥ',
         'すまりく ヤフオク！ショップ','pleasure','ECO BASEヤフー店','リアクロ','エルミ ヤフーSHOP',
       ],
     },
