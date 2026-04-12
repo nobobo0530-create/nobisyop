@@ -204,6 +204,39 @@ const normalizeStores = (appData) => {
   };
 };
 
+// 仕入れ日文字列をYYYY-MM-DD形式に正規化する共通ヘルパー
+// 対応フォーマット: YYYY-MM-DD / YYYY/MM/DD / YYYY年M月D日 / M月D日 / MM/DD / MM-DD / YYYY-M-D
+// 年が省略 or 現在年より古い場合は現在年で補完
+const parsePurchaseDate = (raw) => {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  const cy = new Date().getFullYear();
+  const pad = n => String(n).padStart(2, '0');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const patterns = [
+      // YYYY/MM/DD or YYYY-M-D (year-first with slash or dash)
+      [/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/, m => `${m[1]}-${pad(m[2])}-${pad(m[3])}`],
+      // YYYY年M月D日
+      [/^(\d{4})年(\d{1,2})月(\d{1,2})日/, m => `${m[1]}-${pad(m[2])}-${pad(m[3])}`],
+      // M月D日（年なし）
+      [/^(\d{1,2})月(\d{1,2})日/, m => `${cy}-${pad(m[1])}-${pad(m[2])}`],
+      // MM/DD（年なし）
+      [/^(\d{1,2})\/(\d{1,2})/, m => `${cy}-${pad(m[1])}-${pad(m[2])}`],
+      // MM-DD（年なし、2桁ずつ）
+      [/^(\d{1,2})-(\d{1,2})$/, m => `${cy}-${pad(m[1])}-${pad(m[2])}`],
+    ];
+    for (const [pat, fn] of patterns) {
+      const m = s.match(pat);
+      if (m) { s = fn(m); break; }
+    }
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  // 年が現在年より古い場合（AIのモデル訓練年誤作動を防ぐ）は現在年に補正
+  const y = parseInt(s.slice(0, 4), 10);
+  if (y < cy) s = `${cy}${s.slice(4)}`;
+  return s;
+};
+
 // 登録済み仕入れ先候補の中から最も近いものをファジーマッチで探す
 // 1. 完全一致(正規化後) → 2. 大文字小文字無視一致 → 3. バイグラムDice係数(≥0.5で採用)
 // → なければ null（生テキストを使う）
@@ -1999,9 +2032,10 @@ const PurchaseTab = () => {
           if (typeResult.type === 'online') setF('paymentMethod', 'PayPay');
         }
       }
-      // 購入日の自動入力
-      if (result.purchase_date && /^\d{4}-\d{2}-\d{2}$/.test(result.purchase_date)) {
-        setForm(prev => ({ ...prev, purchaseDate: result.purchase_date }));
+      // 購入日の自動入力（parsePurchaseDateで全フォーマット対応）
+      const parsedDate = parsePurchaseDate(result.purchase_date);
+      if (parsedDate) {
+        setForm(prev => ({ ...prev, purchaseDate: parsedDate }));
       }
       // with_price モード: 仕入れ価格・ストア名の自動入力
       const priceFilledItems = [];
@@ -2130,28 +2164,10 @@ const PurchaseTab = () => {
         updates.productName = result.product_title;
       }
 
-      // 仕入れ日（落札終了日）– 年が省略 or 誤った年の場合は現在年を補完
-      if (result.purchase_date) {
-        let dateStr = String(result.purchase_date).trim();
-        const currentYear = new Date().getFullYear();
-        if (!dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
-          // YYYY-MM-DD形式でなければ変換
-          const slashM = dateStr.match(/^(\d{1,2})\/(\d{1,2})/);   // MM/DD(曜) 形式
-          const jpM    = dateStr.match(/^(\d{1,2})月(\d{1,2})日/);  // M月D日（曜） 形式
-          const dashM  = dateStr.match(/^(\d{1,2})-(\d{1,2})$/);    // MM-DD 形式
-          if (slashM) dateStr = `${currentYear}-${slashM[1].padStart(2,'0')}-${slashM[2].padStart(2,'0')}`;
-          else if (jpM)   dateStr = `${currentYear}-${jpM[1].padStart(2,'0')}-${jpM[2].padStart(2,'0')}`;
-          else if (dashM) dateStr = `${currentYear}-${dashM[1].padStart(2,'0')}-${dashM[2].padStart(2,'0')}`;
-        }
-        // YYYY-MM-DD形式になった場合、年が現在年より古ければ現在年に強制補正
-        // （AIがモデル訓練時の年を返す誤作動を防ぐ）
-        if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-          const parsedYear = parseInt(dateStr.slice(0, 4), 10);
-          if (parsedYear < currentYear) {
-            dateStr = `${currentYear}${dateStr.slice(4)}`;
-          }
-          updates.purchaseDate = dateStr;
-        }
+      // 仕入れ日（落札終了日）– parsePurchaseDateで全フォーマット対応、年誤作動も補正
+      const auctionParsedDate = parsePurchaseDate(result.purchase_date);
+      if (auctionParsedDate) {
+        updates.purchaseDate = auctionParsedDate;
       }
 
       // ストア名（登録済み候補ファジーマッチ → なければ正規化した生テキスト）
