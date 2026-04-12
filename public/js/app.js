@@ -1533,22 +1533,54 @@ const PurchaseTab = () => {
   const savingTimeoutRef = React.useRef(null); // saving状態の安全タイムアウト
   const draftSaveTimerRef = React.useRef(null); // 編集下書き保存デバウンス用（編集モード）
   const newRegDraftTimerRef = React.useRef(null); // 新規登録下書き保存デバウンス用
-  // ★ iOS Safariキーボード座標ズレ対策: キーボード高さをvisualViewportで追跡
+  // ★ iOS Safariキーボード座標ズレ根本対策（3層構造）
+  // ① visualViewport でキーボード高さを追跡しボタン位置を動的補正
+  // ② キーボード閉じ検出 → window.scrollTo(0,scrollY) 強制リフロー（複数タイミング）
+  // ③ input/textarea の blur 毎に強制リフロー（ブランド入力後の不具合も捕捉）
   const [kbOffset, setKbOffset] = React.useState(0);
   React.useEffect(() => {
+    // ── ① + ② visualViewport ──────────────────────────────
     const vv = window.visualViewport;
-    if (!vv) return;
-    const update = () => {
-      // キーボード高さ = 画面の物理高さ - 見えている高さ - スクロールオフセット
-      const kbH = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      setKbOffset(kbH > 50 ? kbH : 0); // 50px未満は誤検知として無視
+    let prevKbH = 0;
+    const reflow = () => { try { window.scrollTo(0, window.scrollY); } catch(_) {} };
+
+    const onVVChange = () => {
+      const kbH = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+      // キーボードが閉じた瞬間（100px超 → 50px以下に急減）を検知
+      if (prevKbH > 100 && kbH < 50) {
+        // iOSタッチ座標マップを強制リセット（0ms / 100ms / 300ms の3段発火）
+        reflow();
+        setTimeout(reflow, 100);
+        setTimeout(reflow, 300);
+      }
+      prevKbH = kbH;
+      setKbOffset(kbH > 50 ? kbH : 0);
     };
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    update();
+
+    if (vv) {
+      vv.addEventListener('resize', onVVChange);
+      vv.addEventListener('scroll', onVVChange);
+      onVVChange();
+    }
+
+    // ── ③ input/textarea blur → 強制リフロー ────────────────
+    // ブランド・商品名など任意の入力フィールドを閉じた後も確実に座標を修正する
+    const onFocusOut = (e) => {
+      const tag = e.target?.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') return;
+      reflow();
+      setTimeout(reflow, 50);
+      setTimeout(reflow, 150);
+      setTimeout(reflow, 350);
+    };
+    document.addEventListener('focusout', onFocusOut, { passive: true, capture: true });
+
     return () => {
-      vv.removeEventListener('resize', update);
-      vv.removeEventListener('scroll', update);
+      if (vv) {
+        vv.removeEventListener('resize', onVVChange);
+        vv.removeEventListener('scroll', onVVChange);
+      }
+      document.removeEventListener('focusout', onFocusOut, { capture: true });
     };
   }, []);
 
@@ -3947,7 +3979,12 @@ const PurchaseTab = () => {
           left:0,right:0,
           background:'white',padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',
           zIndex:9000,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)',
-          touchAction:'manipulation'}}>
+          touchAction:'manipulation',
+          // ★ iOSコンポジットレイヤー強制生成: ボタンバーを独立レイヤーに昇格させ
+          //    ページの再描画ループからの影響を切り離す（タッチ不能バグの根本対策）
+          WebkitTransform:'translateZ(0)',transform:'translateZ(0)',
+          WebkitBackfaceVisibility:'hidden',backfaceVisibility:'hidden',
+          willChange:'bottom'}}>
           {/* 出品ステータス選択 */}
           <div style={{display:'flex',gap:8,marginBottom:10}}>
             {[
@@ -9835,6 +9872,24 @@ const App = () => {
       syncToSupabase(oldFull, newFull);
       return newFull;
     });
+  }, []);
+
+  // ★★★ iOS Safari タッチ不能バグ 全域対策 ★★★
+  // input/textarea blur 時に window.scrollTo(0,scrollY) 強制リフロー
+  // → ブランド・商品名など全フィールドのキーボード閉じ後に座標をリセット
+  // PurchaseTab内でも同様に行っているが、App全体でも保険として実行
+  React.useEffect(() => {
+    const reflow = () => { try { window.scrollTo(0, window.scrollY); } catch(_) {} };
+    const onFocusOut = (e) => {
+      const tag = e.target?.tagName;
+      if (tag !== 'INPUT' && tag !== 'TEXTAREA') return;
+      reflow();
+      setTimeout(reflow, 80);
+      setTimeout(reflow, 200);
+      setTimeout(reflow, 400);
+    };
+    document.addEventListener('focusout', onFocusOut, { passive: true, capture: true });
+    return () => document.removeEventListener('focusout', onFocusOut, { capture: true });
   }, []);
 
   // ── アプリ終了・バックグラウンド移行時に同期保存（データ消失防止）──
