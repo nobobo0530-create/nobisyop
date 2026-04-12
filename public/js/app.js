@@ -1848,6 +1848,16 @@ const PurchaseTab = () => {
       }
       setPhotos(loaded);
     })();
+    // まとめ仕入れ：兄弟アイテムの現在価格を全件初期化（インライン一括編集用）
+    if (editingItem.bundleGroup) {
+      const prices = {};
+      data.inventory
+        .filter(i => i.bundleGroup === editingItem.bundleGroup && i.id !== editingItem.id)
+        .forEach(i => { prices[i.id] = String(i.purchasePrice || 0); });
+      setBundleAllPrices(prices);
+    } else {
+      setBundleAllPrices({});
+    }
     setStep(3);
   }, [editingItem]);
 
@@ -2457,27 +2467,17 @@ const PurchaseTab = () => {
           updatedAt: new Date().toISOString(),
         };
         let updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
-        // ★ まとめ仕入れ: 価格変更を兄弟アイテムの最後1件に自動連動（合計固定）
-        if (editingItem.bundleGroup) {
-          const siblings = data.inventory
-            .filter(i => i.bundleGroup === editingItem.bundleGroup && i.id !== editingItem.id)
-            .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
-          if (siblings.length > 0) {
-            const bundleTotal = data.inventory
-              .filter(i => i.bundleGroup === editingItem.bundleGroup)
-              .reduce((s, i) => s + (i.purchasePrice || 0), 0);
-            const lastSibling = siblings[siblings.length - 1];
-            const otherSiblingsSum = siblings.slice(0, -1).reduce((s, i) => s + (i.purchasePrice || 0), 0);
-            const newLastPrice = Math.max(0, bundleTotal - totalPurchaseTaxIn - otherSiblingsSum);
-            if (newLastPrice !== (lastSibling.purchasePrice || 0)) {
-              updated = updated.map(i => i.id !== lastSibling.id ? i : {
-                ...i,
-                purchasePrice: newLastPrice,
-                purchaseCost: { ...i.purchaseCost, totalTaxIn: newLastPrice, totalTaxEx: newLastPrice },
-                updatedAt: new Date().toISOString(),
-              });
-            }
-          }
+        // ★ まとめ仕入れ: bundleAllPricesで指定された兄弟アイテムの価格を一括更新
+        if (editingItem.bundleGroup && Object.keys(bundleAllPrices).length > 0) {
+          updated = updated.map(inv => {
+            const newPriceStr = bundleAllPrices[inv.id];
+            if (newPriceStr === undefined) return inv;
+            const np = Math.max(0, Number(newPriceStr) || 0);
+            if (np === (inv.purchasePrice || 0)) return inv;
+            return { ...inv, purchasePrice: np,
+              purchaseCost: { ...inv.purchaseCost, totalTaxIn: np, totalTaxEx: np },
+              updatedAt: new Date().toISOString() };
+          });
         }
         setData({ ...data, inventory: updated });
         toast('✅ 商品情報を更新しました！');
@@ -3588,30 +3588,95 @@ const PurchaseTab = () => {
                 {purchaseType === 'store' ? '🏪 仕入れ費用（税込入力）' : '💻 仕入れ費用内訳（税込入力）'}
               </div>
 
-              {/* 商品価格 */}
-              <div style={{marginBottom:10}}>
-                <label className="field-label">
-                  商品価格（税込）⚡
-                  {form.itemPriceTaxIn ? (
-                    <span style={{color:'#888',fontWeight:400,marginLeft:6,fontSize:11}}>
-                      税抜 ¥{calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate).toLocaleString()}
-                    </span>
-                  ) : null}
-                </label>
-                <div style={{display:'flex',gap:6}}>
-                  <input type="number" className="input-field" style={{flex:1}}
-                    value={form.itemPriceTaxIn}
-                    onChange={e => setF('itemPriceTaxIn', e.target.value)}
-                    placeholder="8000"/>
-                  <select className="input-field" style={{width:76,padding:'12px 4px',fontSize:13}}
-                    value={form.itemTaxRate}
-                    onChange={e => setF('itemTaxRate', Number(e.target.value))}>
-                    <option value={10}>10%</option>
-                    <option value={8}>8%</option>
-                    <option value={0}>非課税</option>
-                  </select>
+              {/* 商品価格 ── まとめ仕入れ時は全商品一括入力、通常は単品入力 */}
+              {editingItem?.bundleGroup ? (() => {
+                const allGrp = data.inventory
+                  .filter(i => i.bundleGroup === editingItem.bundleGroup)
+                  .sort((a, b) => (a.createdAt||'').localeCompare(b.createdAt||''));
+                const allGrpTotal = allGrp.reduce((s, gi) => {
+                  const v = gi.id === editingItem.id
+                    ? (Number(form.itemPriceTaxIn) || 0)
+                    : (Number(bundleAllPrices[gi.id]) || gi.purchasePrice || 0);
+                  return s + v;
+                }, 0);
+                return (
+                  <div style={{marginBottom:10}}>
+                    <label className="field-label">
+                      📦 各商品の仕入れ金額（税込）
+                      <span style={{color:'#888',fontWeight:400,marginLeft:6,fontSize:11}}>
+                        まとめ仕入れ全{allGrp.length}点
+                      </span>
+                    </label>
+                    {allGrp.map((gi, idx) => {
+                      const isMe = gi.id === editingItem.id;
+                      const val = isMe
+                        ? form.itemPriceTaxIn
+                        : (bundleAllPrices[gi.id] ?? String(gi.purchasePrice || 0));
+                      return (
+                        <div key={gi.id} style={{display:'flex',alignItems:'center',gap:6,marginBottom:7}}>
+                          <span style={{fontSize:12, flexShrink:0, width:62, textAlign:'right',
+                            fontWeight: isMe ? 700 : 400,
+                            color: isMe ? 'var(--color-primary)' : '#555'}}>
+                            {gi.bundleLabel ? `商品${gi.bundleLabel}` : `商品${idx+1}`}{isMe ? '✏️' : ''}
+                          </span>
+                          <input type="number" className="input-field" style={{flex:1,
+                            border: isMe ? '2px solid var(--color-primary)' : '1.5px solid #e0e0e0',
+                            borderRadius:10}}
+                            value={val}
+                            onChange={e => {
+                              if (isMe) setF('itemPriceTaxIn', e.target.value);
+                              else setBundleAllPrices(prev => ({...prev, [gi.id]: e.target.value}));
+                            }}
+                            placeholder="0"/>
+                          <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
+                        </div>
+                      );
+                    })}
+                    <div style={{borderTop:'1.5px solid #e5e7eb',paddingTop:6,marginTop:2,
+                      display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:13}}>
+                      <span style={{color:'#555',fontWeight:600}}>合計</span>
+                      <span style={{fontWeight:800,color:'var(--color-primary)',fontSize:16}}>
+                        ¥{allGrpTotal.toLocaleString()}
+                        <span style={{fontSize:11,color:'#999',fontWeight:400}}> 税込</span>
+                      </span>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginTop:8}}>
+                      <span style={{fontSize:12,color:'#666',flexShrink:0}}>税率（全商品共通）</span>
+                      <select className="input-field" style={{flex:1,padding:'8px 4px',fontSize:13}}
+                        value={form.itemTaxRate}
+                        onChange={e => setF('itemTaxRate', Number(e.target.value))}>
+                        <option value={10}>10%</option>
+                        <option value={8}>8%</option>
+                        <option value={0}>非課税</option>
+                      </select>
+                    </div>
+                  </div>
+                );
+              })() : (
+                <div style={{marginBottom:10}}>
+                  <label className="field-label">
+                    商品価格（税込）⚡
+                    {form.itemPriceTaxIn ? (
+                      <span style={{color:'#888',fontWeight:400,marginLeft:6,fontSize:11}}>
+                        税抜 ¥{calcTaxEx(form.itemPriceTaxIn, form.itemTaxRate).toLocaleString()}
+                      </span>
+                    ) : null}
+                  </label>
+                  <div style={{display:'flex',gap:6}}>
+                    <input type="number" className="input-field" style={{flex:1}}
+                      value={form.itemPriceTaxIn}
+                      onChange={e => setF('itemPriceTaxIn', e.target.value)}
+                      placeholder="8000"/>
+                    <select className="input-field" style={{width:76,padding:'12px 4px',fontSize:13}}
+                      value={form.itemTaxRate}
+                      onChange={e => setF('itemTaxRate', Number(e.target.value))}>
+                      <option value={10}>10%</option>
+                      <option value={8}>8%</option>
+                      <option value={0}>非課税</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* 電脳仕入れ: 送料 */}
               {purchaseType === 'online' && (
@@ -3714,124 +3779,48 @@ const PurchaseTab = () => {
               )}
             </div>
 
-            {/* ── まとめ仕入れ合計の後修正パネル ── */}
+            {/* ── まとめ仕入れ合計の比率/均等リスケールパネル ── */}
             {editingItem?.bundleGroup && (() => {
               const grpItems = data.inventory
                 .filter(i => i.bundleGroup === editingItem.bundleGroup)
                 .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
               const grpTotal = grpItems.reduce((s, i) => s + (i.purchasePrice || 0), 0);
-              const isManual = bundleRescaleMethod === 'manual';
-              // 手動モード時の入力合計
-              const manualInputTotal = isManual
-                ? grpItems.reduce((s, gi) => s + (Number(bundleManualPrices[gi.id]) || gi.purchasePrice || 0), 0)
-                : 0;
-              // ボタンが有効か
-              const canApply = isManual || !!bundleRescaleTotal;
               return (
                 <div style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderRadius:10,padding:12,marginBottom:12}}>
-                  <div style={{fontWeight:700,fontSize:13,color:'#92400e',marginBottom:8}}>📦 まとめ仕入れ金額の修正</div>
-
-                  {/* 再計算方法の選択（上に移動） */}
-                  <div style={{display:'flex',gap:0,marginBottom:10,borderRadius:8,overflow:'hidden',border:'1.5px solid #fcd34d'}}>
-                    {[['ratio','比率を維持'],['equal','均等に分配'],['manual','手動で指定']].map(([val, label]) => (
+                  <div style={{fontWeight:700,fontSize:12,color:'#92400e',marginBottom:8}}>
+                    🔄 まとめ合計から比率/均等で再配分
+                  </div>
+                  {/* 再計算方法選択 */}
+                  <div style={{display:'flex',gap:0,marginBottom:8,borderRadius:8,overflow:'hidden',border:'1.5px solid #fcd34d'}}>
+                    {[['ratio','比率を維持'],['equal','均等に分配']].map(([val, label], vi) => (
                       <button key={val} type="button"
-                        onClick={() => {
-                          setBundleRescaleMethod(val);
-                          if (val === 'manual') {
-                            const prices = {};
-                            grpItems.forEach(gi => { prices[gi.id] = String(gi.purchasePrice || 0); });
-                            setBundleManualPrices(prices);
-                          }
-                        }}
-                        style={{flex:1,padding:'8px 0',border:'none',borderRight: val !== 'manual' ? '1px solid #fcd34d' : 'none',
+                        onClick={() => setBundleRescaleMethod(val)}
+                        style={{flex:1,padding:'8px 0',border:'none',
+                          borderRight: vi === 0 ? '1px solid #fcd34d' : 'none',
                           background: bundleRescaleMethod === val ? '#d97706' : '#fef9c3',
                           color: bundleRescaleMethod === val ? 'white' : '#92400e',
-                          fontWeight:700,fontSize:11,cursor:'pointer',touchAction:'manipulation',lineHeight:'1.3'}}>
+                          fontWeight:700,fontSize:11,cursor:'pointer',touchAction:'manipulation'}}>
                         {label}
                       </button>
                     ))}
                   </div>
-
-                  {/* 比率維持 / 均等分配モード：合計金額入力 */}
-                  {!isManual && (
-                    <>
-                      <div style={{marginBottom:6,background:'#fef9c3',borderRadius:7,padding:'6px 8px',fontSize:12,color:'#78350f'}}>
-                        <div style={{fontWeight:600,marginBottom:2}}>現在の合計</div>
-                        <div style={{display:'flex',justifyContent:'space-between'}}>
-                          {grpItems.map((gi, idx) => (
-                            <span key={gi.id} style={{color: gi.id === editingItem.id ? '#92400e' : '#555', fontWeight: gi.id === editingItem.id ? 700 : 400}}>
-                              {gi.bundleLabel||`${idx+1}`}: ¥{(gi.purchasePrice||0).toLocaleString()}
-                            </span>
-                          ))}
-                        </div>
-                        <div style={{borderTop:'1px solid #fcd34d',marginTop:4,paddingTop:4,fontWeight:700,color:'#92400e',textAlign:'right'}}>
-                          合計 ¥{grpTotal.toLocaleString()}
-                        </div>
-                      </div>
-                      <div style={{marginBottom:10}}>
-                        <label style={{fontSize:12,fontWeight:600,color:'#555',display:'block',marginBottom:4}}>
-                          新しい合計金額（税込）
-                        </label>
-                        <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                          <input type="number" className="input-field" style={{flex:1}}
-                            value={bundleRescaleTotal}
-                            onChange={e => setBundleRescaleTotal(e.target.value)}
-                            placeholder={String(grpTotal)}/>
-                          <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {/* 手動指定モード：各商品の個別入力 */}
-                  {isManual && (
-                    <div style={{marginBottom:10}}>
-                      {grpItems.map((gi, idx) => {
-                        const isEditing = gi.id === editingItem.id;
-                        const val = bundleManualPrices[gi.id] ?? String(gi.purchasePrice || 0);
-                        return (
-                          <div key={gi.id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:7}}>
-                            <span style={{fontSize:12,fontWeight: isEditing ? 700 : 400,
-                              color: isEditing ? '#92400e' : '#555',
-                              flexShrink:0,width:64,textAlign:'right'}}>
-                              {gi.bundleLabel ? `商品${gi.bundleLabel}` : `商品${idx+1}`}
-                              {isEditing ? '✏️' : ''}
-                            </span>
-                            <input type="number" className="input-field"
-                              style={{flex:1,padding:'9px 10px',
-                                border: isEditing ? '2px solid #d97706' : '1.5px solid #e5e7eb',
-                                borderRadius:8,fontSize:14}}
-                              value={val}
-                              onChange={e => setBundleManualPrices(prev => ({...prev, [gi.id]: e.target.value}))}/>
-                            <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
-                          </div>
-                        );
-                      })}
-                      {/* 入力合計 */}
-                      <div style={{borderTop:'1.5px solid #fcd34d',marginTop:6,paddingTop:6,
-                        display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:13}}>
-                        <span style={{color:'#78350f',fontWeight:600}}>入力合計</span>
-                        <span style={{fontWeight:800,color:'#d97706',fontSize:16}}>
-                          ¥{manualInputTotal.toLocaleString()}
-                        </span>
-                      </div>
-                      {manualInputTotal !== grpTotal && (
-                        <div style={{fontSize:11,color:'#16a34a',textAlign:'right',marginTop:2}}>
-                          現在より {manualInputTotal > grpTotal ? '+' : ''}{(manualInputTotal - grpTotal).toLocaleString()}円
-                        </div>
-                      )}
-                    </div>
-                  )}
-
+                  {/* 新しい合計入力 */}
+                  <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
+                    <input type="number" className="input-field" style={{flex:1}}
+                      value={bundleRescaleTotal}
+                      onChange={e => setBundleRescaleTotal(e.target.value)}
+                      placeholder={`現在の合計 ${grpTotal.toLocaleString()}円`}/>
+                    <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
+                  </div>
                   <button type="button"
                     onClick={handleBundleRescale}
-                    style={{width:'100%',padding:'11px 0',borderRadius:8,border:'none',
-                      background: canApply ? '#d97706' : '#e5e7eb',
-                      color: canApply ? 'white' : '#9ca3af',
+                    style={{width:'100%',padding:'9px 0',borderRadius:8,border:'none',
+                      background: bundleRescaleTotal ? '#d97706' : '#e5e7eb',
+                      color: bundleRescaleTotal ? 'white' : '#9ca3af',
                       fontWeight:700,fontSize:13,
-                      cursor: canApply ? 'pointer' : 'default',
+                      cursor: bundleRescaleTotal ? 'pointer' : 'default',
                       touchAction:'manipulation'}}>
-                    {isManual ? `全${grpItems.length}点の金額を保存する` : `全${grpItems.length}点を再配分する`}
+                    全{grpItems.length}点を再配分する
                   </button>
                 </div>
               );
