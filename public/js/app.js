@@ -25,9 +25,16 @@ const CONFIG = {
   ],
   // ストア名の表記ゆれ正規化テーブル（正規表現 → 正しいストア名）
   STORE_NAME_ALIASES: [
-    { pattern: /オークション代行.*(ドゥ|どぅ)/,  correct: 'オークション代行クイックドゥ' },
-    { pattern: /エンパワー\s+ヤフーショップ/,   correct: 'エンパワーヤフーショップ' },
-    { pattern: /エンパワー\s+ヤフー\s*SHOP/i,   correct: 'エンパワーヤフーショップ' },
+    { pattern: /オークション代行.*(ドゥ|どぅ)/i,           correct: 'オークション代行クイックドゥ' },
+    { pattern: /エンパワー[\s　]*ヤフーショップ/,           correct: 'エンパワーヤフーショップ' },
+    { pattern: /エンパワー[\s　]*ヤフー[\s　]*SHOP/i,       correct: 'エンパワーヤフーショップ' },
+    { pattern: /エンパワー[\s　]*Yahoo[\s　]*(ショップ|shop)/i, correct: 'エンパワーヤフーショップ' },
+    { pattern: /ECO[\s　]*BASE[\s　]*ヤフー/i,             correct: 'ECO BASEヤフー店' },
+    { pattern: /エルミ[\s　]*ヤフー[\s　]*SHOP/i,           correct: 'エルミ ヤフーSHOP' },
+    { pattern: /エルミ[\s　]*Yahoo/i,                       correct: 'エルミ ヤフーSHOP' },
+    { pattern: /すまりく[\s　]*ヤフオク/i,                  correct: 'すまりく ヤフオク！ショップ' },
+    { pattern: /リア[\s　]*クロ/,                           correct: 'リアクロ' },
+    { pattern: /クイック[\s　]*ドゥ/i,                      correct: 'オークション代行クイックドゥ' },
   ],
   TAG_PRICE_PROMPT: `この写真の値札・価格タグ・価格シールに書かれた金額を読み取ってください。
 【重要】数字が多少不鮮明でも、見えている桁数や文脈から最もありえる価格を推定して回答してください。「読めない」ではなく必ずベストの数値を出してください。
@@ -161,6 +168,43 @@ const normalizeStores = (appData) => {
       },
     },
   };
+};
+
+// 登録済み仕入れ先候補の中から最も近いものをファジーマッチで探す
+// 1. 完全一致(正規化後) → 2. 大文字小文字無視一致 → 3. バイグラムDice係数(≥0.5で採用)
+// → なければ null（生テキストを使う）
+const findClosestStore = (rawName, knownStores) => {
+  if (!rawName || !knownStores || !knownStores.length) return null;
+  const norm = normalizeStoreName(rawName);
+  // 1. 完全一致
+  if (knownStores.includes(norm)) return norm;
+  // 2. 大文字/小文字・全角半角を無視
+  const toKey = s => s.toLowerCase()
+    .replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)) // 全角→半角
+    .replace(/[\s　]/g, '');
+  const normKey = toKey(norm);
+  const ci = knownStores.find(s => toKey(s) === normKey);
+  if (ci) return ci;
+  // 3. バイグラムDice係数
+  const bigrams = s => {
+    const t = s.replace(/[\s　]/g, '');
+    const set = new Set();
+    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
+    return set;
+  };
+  const dice = (a, b) => {
+    const ba = bigrams(toKey(a)), bb = bigrams(toKey(b));
+    if (!ba.size || !bb.size) return 0;
+    let common = 0;
+    for (const g of ba) if (bb.has(g)) common++;
+    return (2 * common) / (ba.size + bb.size);
+  };
+  let best = null, bestScore = 0;
+  for (const store of knownStores) {
+    const score = dice(norm, store);
+    if (score > bestScore) { bestScore = score; best = store; }
+  }
+  return bestScore >= 0.5 ? best : null;
 };
 
 // ============================================================
@@ -1896,11 +1940,19 @@ const PurchaseTab = () => {
         if (result.item_price > 0) { priceUpdates.itemPriceTaxIn = result.item_price; priceFilledItems.push(`¥${result.item_price.toLocaleString()}`); }
         if (result.item_shipping > 0) { priceUpdates.shippingTaxIn = result.item_shipping; priceFilledItems.push(`送料¥${result.item_shipping.toLocaleString()}`); }
         if (result.item_store_name) {
-          priceUpdates.purchaseStore = result.item_store_name;
-          priceFilledItems.push(`ストア: ${result.item_store_name}`);
+          // ★ 登録済み候補からベストマッチを探す → なければ正規化した生テキストを使用
           const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
-          const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[])];
-          setStoreCustomText(allKnown.includes(result.item_store_name) ? null : result.item_store_name);
+          const settingsYahooNames = (data.settings?.yahooStores||[]).map(s => s.storeName);
+          const allKnown = [
+            ...(master.normalStores||[]),
+            ...(master.yahooStores||[]),
+            ...settingsYahooNames,
+          ];
+          const matched = findClosestStore(result.item_store_name, allKnown);
+          const storeName = matched || normalizeStoreName(result.item_store_name);
+          priceUpdates.purchaseStore = storeName;
+          priceFilledItems.push(`ストア: ${storeName}`);
+          setStoreCustomText(matched ? null : storeName);
         }
         if (Object.keys(priceUpdates).length > 0) {
           setForm(prev => ({ ...prev, ...priceUpdates }));
@@ -2029,18 +2081,15 @@ const PurchaseTab = () => {
         }
       }
 
-      // ストア名（正規化してからマスタ照合）
+      // ストア名（登録済み候補ファジーマッチ → なければ正規化した生テキスト）
       if (result.store_name) {
-        const cleanName = normalizeStoreName(result.store_name); // 「さん」除去＋表記ゆれ正規化
         const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
         const settingsYahooNames = (data.settings?.yahooStores||[]).map(s => s.storeName);
         const allKnown = [...(master.normalStores||[]), ...(master.yahooStores||[]), ...settingsYahooNames];
+        const matched = findClosestStore(result.store_name, allKnown);
+        const cleanName = matched || normalizeStoreName(result.store_name);
         updates.purchaseStore = cleanName;
-        if (allKnown.includes(cleanName)) {
-          setStoreCustomText(null);
-        } else {
-          setStoreCustomText(cleanName);
-        }
+        setStoreCustomText(matched ? null : cleanName);
       }
 
       setForm(prev => ({ ...prev, ...updates }));
@@ -2381,6 +2430,8 @@ const PurchaseTab = () => {
             ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
             ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
             purchaseType,
+            purchaseTypeSource,
+            purchaseStoreType,
             bundleGroup: bundleGroupId,
             bundleLabel: bi.label,
             updatedAt: new Date().toISOString(),
@@ -3747,8 +3798,20 @@ const PurchaseTab = () => {
                           <div style={{display:'flex',alignItems:'center',gap:6}}>
                             <span style={{fontSize:12,color:'#666',flexShrink:0}}>仕入れ値</span>
                             <input type="number" value={bi.purchasePrice} placeholder="0"
-                              onChange={e => setBundleItems(prev => prev.map((b,i) =>
-                                i===idx ? {...b,purchasePrice:e.target.value} : b))}
+                              onChange={e => {
+                                const newVal = e.target.value;
+                                setBundleItems(prev => {
+                                  const updated = prev.map((b, i) => i === idx ? {...b, purchasePrice: newVal} : b);
+                                  // ★ 手動分割モードで最後以外の商品を変更 → 最後の商品に残額を自動セット
+                                  if (bundleSplitMethod === 'manual' && idx < prev.length - 1 && totalBudget > 0) {
+                                    const sumOthers = updated.slice(0, -1).reduce((s, b) => s + (Number(b.purchasePrice) || 0), 0);
+                                    const remaining = Math.max(0, totalBudget - sumOthers);
+                                    const lastIdx = updated.length - 1;
+                                    return updated.map((b, i) => i === lastIdx ? {...b, purchasePrice: String(remaining)} : b);
+                                  }
+                                  return updated;
+                                });
+                              }}
                               style={{flex:1,padding:'6px 8px',borderRadius:8,border:'1px solid #e2e8f0',
                                 fontSize:14,fontWeight:700,background:'white',textAlign:'right'}}/>
                             <span style={{fontSize:12,color:'#666'}}>円</span>
