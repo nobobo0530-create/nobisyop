@@ -1560,6 +1560,7 @@ const PurchaseTab = () => {
   const [bundleRescaleTotal, setBundleRescaleTotal] = React.useState('');
   const [bundleRescaleMethod, setBundleRescaleMethod] = React.useState('ratio');
   const [bundleManualPrices, setBundleManualPrices] = React.useState({}); // 手動指定モード用 {id: string}
+  const [bundleAllPrices, setBundleAllPrices] = React.useState({});     // 兄弟アイテム価格インライン編集用 {id: string}
   const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
   const [formError, setFormError] = React.useState(null); // インラインバリデーションエラー
 
