@@ -1559,6 +1559,7 @@ const PurchaseTab = () => {
   // まとめ仕入れ合計後修正用
   const [bundleRescaleTotal, setBundleRescaleTotal] = React.useState('');
   const [bundleRescaleMethod, setBundleRescaleMethod] = React.useState('ratio');
+  const [bundleManualPrices, setBundleManualPrices] = React.useState({}); // 手動指定モード用 {id: string}
   const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
   const [formError, setFormError] = React.useState(null); // インラインバリデーションエラー
 
@@ -2613,38 +2614,47 @@ const PurchaseTab = () => {
   };
 
   // ── まとめ仕入れ合計金額の一括再配分 ────────────────────────
-  // 全グループアイテムを比率維持 or 均等で一括更新し、フォーム値も同期する
+  // 全グループアイテムを比率維持 / 均等 / 手動で一括更新し、フォーム値も同期する
   const handleBundleRescale = () => {
     if (!editingItem?.bundleGroup) return;
-    const newTotal = Number(bundleRescaleTotal);
-    if (!newTotal || newTotal <= 0) { toast('❌ 新しい合計金額を入力してください'); return; }
     const allBundled = data.inventory
       .filter(i => i.bundleGroup === editingItem.bundleGroup)
       .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
     if (allBundled.length === 0) return;
     const count = allBundled.length;
-    const currentTotal = allBundled.reduce((s, i) => s + (i.purchasePrice || 0), 0);
     let newPrices;
-    if (bundleRescaleMethod === 'equal') {
-      const base = Math.floor(newTotal / count);
-      newPrices = allBundled.map((_, idx) =>
-        idx === count - 1 ? Math.max(0, newTotal - base * (count - 1)) : base
-      );
+    let methodLabel;
+    if (bundleRescaleMethod === 'manual') {
+      // 手動指定：各フィールドの入力値をそのまま使用
+      newPrices = allBundled.map(item => Math.max(0, Number(bundleManualPrices[item.id]) || item.purchasePrice || 0));
+      methodLabel = '手動指定';
     } else {
-      // 比率維持（currentTotal=0 の場合は均等フォールバック）
-      if (currentTotal === 0) {
+      const newTotal = Number(bundleRescaleTotal);
+      if (!newTotal || newTotal <= 0) { toast('❌ 新しい合計金額を入力してください'); return; }
+      const currentTotal = allBundled.reduce((s, i) => s + (i.purchasePrice || 0), 0);
+      if (bundleRescaleMethod === 'equal') {
         const base = Math.floor(newTotal / count);
         newPrices = allBundled.map((_, idx) =>
           idx === count - 1 ? Math.max(0, newTotal - base * (count - 1)) : base
         );
+        methodLabel = '均等';
       } else {
-        let sum = 0;
-        newPrices = allBundled.map((item, idx) => {
-          if (idx === count - 1) return Math.max(0, newTotal - sum);
-          const p = Math.round(newTotal * (item.purchasePrice || 0) / currentTotal);
-          sum += p;
-          return p;
-        });
+        // 比率維持（currentTotal=0 の場合は均等フォールバック）
+        if (currentTotal === 0) {
+          const base = Math.floor(newTotal / count);
+          newPrices = allBundled.map((_, idx) =>
+            idx === count - 1 ? Math.max(0, newTotal - base * (count - 1)) : base
+          );
+        } else {
+          let sum = 0;
+          newPrices = allBundled.map((item, idx) => {
+            if (idx === count - 1) return Math.max(0, newTotal - sum);
+            const p = Math.round(newTotal * (item.purchasePrice || 0) / currentTotal);
+            sum += p;
+            return p;
+          });
+        }
+        methodLabel = '比率維持';
       }
     }
     const updatedInv = data.inventory.map(inv => {
@@ -2659,9 +2669,10 @@ const PurchaseTab = () => {
     // 現在編集中アイテムのフォーム値も同期
     const myIdx = allBundled.findIndex(i => i.id === editingItem.id);
     if (myIdx !== -1) setForm(prev => ({ ...prev, itemPriceTaxIn: newPrices[myIdx] }));
+    const savedTotal = newPrices.reduce((s, p) => s + p, 0);
     setBundleRescaleTotal('');
-    const methodLabel = bundleRescaleMethod === 'equal' ? '均等' : '比率維持';
-    toast(`✅ まとめ仕入れ合計を ¥${newTotal.toLocaleString()} に再配分しました（${count}点・${methodLabel}）`);
+    setBundleManualPrices({});
+    toast(`✅ まとめ仕入れを更新しました（${count}点・${methodLabel}・合計¥${savedTotal.toLocaleString()}）`);
   };
 
   const setF = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
@@ -3709,61 +3720,118 @@ const PurchaseTab = () => {
                 .filter(i => i.bundleGroup === editingItem.bundleGroup)
                 .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
               const grpTotal = grpItems.reduce((s, i) => s + (i.purchasePrice || 0), 0);
+              const isManual = bundleRescaleMethod === 'manual';
+              // 手動モード時の入力合計
+              const manualInputTotal = isManual
+                ? grpItems.reduce((s, gi) => s + (Number(bundleManualPrices[gi.id]) || gi.purchasePrice || 0), 0)
+                : 0;
+              // ボタンが有効か
+              const canApply = isManual || !!bundleRescaleTotal;
               return (
                 <div style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderRadius:10,padding:12,marginBottom:12}}>
-                  <div style={{fontWeight:700,fontSize:13,color:'#92400e',marginBottom:6}}>📦 まとめ仕入れ合計の修正</div>
-                  {/* 現在の配分一覧 */}
-                  <div style={{marginBottom:8,background:'#fef9c3',borderRadius:7,padding:'6px 8px'}}>
-                    <div style={{fontSize:11,color:'#78350f',fontWeight:600,marginBottom:4}}>現在の配分（全{grpItems.length}点）</div>
-                    {grpItems.map((gi, idx) => (
-                      <div key={gi.id} style={{display:'flex',justifyContent:'space-between',fontSize:12,
-                        color: gi.id === editingItem.id ? '#92400e' : '#555',
-                        fontWeight: gi.id === editingItem.id ? 700 : 400, lineHeight:'1.7'}}>
-                        <span>{gi.bundleLabel ? `商品${gi.bundleLabel}` : `商品${idx+1}`}
-                          {gi.id === editingItem.id ? ' ← 編集中' : ''}</span>
-                        <span>¥{(gi.purchasePrice||0).toLocaleString()}</span>
-                      </div>
-                    ))}
-                    <div style={{borderTop:'1px solid #fcd34d',marginTop:4,paddingTop:4,
-                      display:'flex',justifyContent:'space-between',fontSize:12,fontWeight:700,color:'#92400e'}}>
-                      <span>合計</span>
-                      <span>¥{grpTotal.toLocaleString()}</span>
-                    </div>
-                  </div>
-                  {/* 新しい合計入力 */}
-                  <div style={{marginBottom:8}}>
-                    <label style={{fontSize:12,fontWeight:600,color:'#555',display:'block',marginBottom:4}}>
-                      新しい合計金額（税込）
-                    </label>
-                    <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                      <input type="number" className="input-field" style={{flex:1}}
-                        value={bundleRescaleTotal}
-                        onChange={e => setBundleRescaleTotal(e.target.value)}
-                        placeholder={String(grpTotal)}/>
-                      <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
-                    </div>
-                  </div>
-                  {/* 再計算方法 */}
-                  <div style={{display:'flex',gap:16,marginBottom:10}}>
-                    {[['ratio','比率を維持'],['equal','均等に分配']].map(([val, label]) => (
-                      <label key={val} style={{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',userSelect:'none'}}>
-                        <input type="radio" name="bundleRescaleMethod" value={val}
-                          checked={bundleRescaleMethod === val}
-                          onChange={() => setBundleRescaleMethod(val)}
-                          style={{accentColor:'#d97706'}}/>
+                  <div style={{fontWeight:700,fontSize:13,color:'#92400e',marginBottom:8}}>📦 まとめ仕入れ金額の修正</div>
+
+                  {/* 再計算方法の選択（上に移動） */}
+                  <div style={{display:'flex',gap:0,marginBottom:10,borderRadius:8,overflow:'hidden',border:'1.5px solid #fcd34d'}}>
+                    {[['ratio','比率を維持'],['equal','均等に分配'],['manual','手動で指定']].map(([val, label]) => (
+                      <button key={val} type="button"
+                        onClick={() => {
+                          setBundleRescaleMethod(val);
+                          if (val === 'manual') {
+                            const prices = {};
+                            grpItems.forEach(gi => { prices[gi.id] = String(gi.purchasePrice || 0); });
+                            setBundleManualPrices(prices);
+                          }
+                        }}
+                        style={{flex:1,padding:'8px 0',border:'none',borderRight: val !== 'manual' ? '1px solid #fcd34d' : 'none',
+                          background: bundleRescaleMethod === val ? '#d97706' : '#fef9c3',
+                          color: bundleRescaleMethod === val ? 'white' : '#92400e',
+                          fontWeight:700,fontSize:11,cursor:'pointer',touchAction:'manipulation',lineHeight:'1.3'}}>
                         {label}
-                      </label>
+                      </button>
                     ))}
                   </div>
+
+                  {/* 比率維持 / 均等分配モード：合計金額入力 */}
+                  {!isManual && (
+                    <>
+                      <div style={{marginBottom:6,background:'#fef9c3',borderRadius:7,padding:'6px 8px',fontSize:12,color:'#78350f'}}>
+                        <div style={{fontWeight:600,marginBottom:2}}>現在の合計</div>
+                        <div style={{display:'flex',justifyContent:'space-between'}}>
+                          {grpItems.map((gi, idx) => (
+                            <span key={gi.id} style={{color: gi.id === editingItem.id ? '#92400e' : '#555', fontWeight: gi.id === editingItem.id ? 700 : 400}}>
+                              {gi.bundleLabel||`${idx+1}`}: ¥{(gi.purchasePrice||0).toLocaleString()}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{borderTop:'1px solid #fcd34d',marginTop:4,paddingTop:4,fontWeight:700,color:'#92400e',textAlign:'right'}}>
+                          合計 ¥{grpTotal.toLocaleString()}
+                        </div>
+                      </div>
+                      <div style={{marginBottom:10}}>
+                        <label style={{fontSize:12,fontWeight:600,color:'#555',display:'block',marginBottom:4}}>
+                          新しい合計金額（税込）
+                        </label>
+                        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                          <input type="number" className="input-field" style={{flex:1}}
+                            value={bundleRescaleTotal}
+                            onChange={e => setBundleRescaleTotal(e.target.value)}
+                            placeholder={String(grpTotal)}/>
+                          <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* 手動指定モード：各商品の個別入力 */}
+                  {isManual && (
+                    <div style={{marginBottom:10}}>
+                      {grpItems.map((gi, idx) => {
+                        const isEditing = gi.id === editingItem.id;
+                        const val = bundleManualPrices[gi.id] ?? String(gi.purchasePrice || 0);
+                        return (
+                          <div key={gi.id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:7}}>
+                            <span style={{fontSize:12,fontWeight: isEditing ? 700 : 400,
+                              color: isEditing ? '#92400e' : '#555',
+                              flexShrink:0,width:64,textAlign:'right'}}>
+                              {gi.bundleLabel ? `商品${gi.bundleLabel}` : `商品${idx+1}`}
+                              {isEditing ? '✏️' : ''}
+                            </span>
+                            <input type="number" className="input-field"
+                              style={{flex:1,padding:'9px 10px',
+                                border: isEditing ? '2px solid #d97706' : '1.5px solid #e5e7eb',
+                                borderRadius:8,fontSize:14}}
+                              value={val}
+                              onChange={e => setBundleManualPrices(prev => ({...prev, [gi.id]: e.target.value}))}/>
+                            <span style={{fontSize:12,color:'#666',flexShrink:0}}>円</span>
+                          </div>
+                        );
+                      })}
+                      {/* 入力合計 */}
+                      <div style={{borderTop:'1.5px solid #fcd34d',marginTop:6,paddingTop:6,
+                        display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:13}}>
+                        <span style={{color:'#78350f',fontWeight:600}}>入力合計</span>
+                        <span style={{fontWeight:800,color:'#d97706',fontSize:16}}>
+                          ¥{manualInputTotal.toLocaleString()}
+                        </span>
+                      </div>
+                      {manualInputTotal !== grpTotal && (
+                        <div style={{fontSize:11,color:'#16a34a',textAlign:'right',marginTop:2}}>
+                          現在より {manualInputTotal > grpTotal ? '+' : ''}{(manualInputTotal - grpTotal).toLocaleString()}円
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <button type="button"
                     onClick={handleBundleRescale}
-                    style={{width:'100%',padding:'10px 0',borderRadius:8,border:'none',
-                      background: bundleRescaleTotal ? '#d97706' : '#e5e7eb',
-                      color: bundleRescaleTotal ? 'white' : '#9ca3af',
+                    style={{width:'100%',padding:'11px 0',borderRadius:8,border:'none',
+                      background: canApply ? '#d97706' : '#e5e7eb',
+                      color: canApply ? 'white' : '#9ca3af',
                       fontWeight:700,fontSize:13,
-                      cursor: bundleRescaleTotal ? 'pointer' : 'default',
+                      cursor: canApply ? 'pointer' : 'default',
                       touchAction:'manipulation'}}>
-                    全{grpItems.length}点を再配分する
+                    {isManual ? `全${grpItems.length}点の金額を保存する` : `全${grpItems.length}点を再配分する`}
                   </button>
                 </div>
               );
