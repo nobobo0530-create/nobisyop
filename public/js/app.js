@@ -997,10 +997,9 @@ const ProfitChart = ({ summarySales, now }) => {
   const TOTAL_W = MONTHS * COL_W;
   const SVG_H   = 130;
   const TOP_PAD = 14;
-  const BOT_PAD = 22; // month label
+  const BOT_PAD = 22;
   const DRAW_H  = SVG_H - TOP_PAD - BOT_PAD;
 
-  // 過去12ヶ月のデータを構築
   const monthData = React.useMemo(() => {
     const thisKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     const result = [];
@@ -1011,24 +1010,17 @@ const ProfitChart = ({ summarySales, now }) => {
       const profit  = sales.reduce((a, s) => a + (s.profit  || 0), 0);
       const revenue = sales.reduce((a, s) => a + (s.salePrice || 0), 0);
       const cost    = revenue - profit;
-      result.push({
-        key,
-        label:     `${d.getMonth()+1}月`,
+      result.push({ key, label:`${d.getMonth()+1}月`,
         yearLabel: d.getMonth() === 0 ? `${d.getFullYear()}` : '',
-        profit, revenue, cost,
-        count: sales.length,
-        isCurrent: key === thisKey,
-      });
+        profit, revenue, cost, count: sales.length, isCurrent: key === thisKey });
     }
     return result;
   }, [summarySales, now]);
 
-  // マウント時に右端（最新月）へスクロール
   React.useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
   }, []);
 
-  // Y スケール（0を必ず含む）
   const profits = monthData.map(d => d.profit);
   const maxP    = Math.max(0, ...profits);
   const minP    = Math.min(0, ...profits);
@@ -1037,12 +1029,9 @@ const ProfitChart = ({ summarySales, now }) => {
   const yOf = v => TOP_PAD + (maxP - v) / range * DRAW_H;
   const zeroY = yOf(0);
 
-  // 折れ線パス
   const linePath = monthData
     .map((d, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(d.profit).toFixed(1)}`)
     .join(' ');
-
-  // 塗りつぶし（ゼロ線で閉じる）
   const areaPath = monthData.length > 0
     ? `${linePath} L${xOf(monthData.length-1).toFixed(1)},${zeroY.toFixed(1)} L${xOf(0).toFixed(1)},${zeroY.toFixed(1)} Z`
     : '';
@@ -1052,76 +1041,68 @@ const ProfitChart = ({ summarySales, now }) => {
 
   return (
     <div>
-      {/* グラフカード */}
-      <div style={{background:'#0f172a', borderRadius:16, overflow:'hidden',
-        border:'1px solid rgba(255,255,255,0.06)'}}>
+      {/* グラフカード ── 白背景 */}
+      <div style={{background:'#ffffff', borderRadius:14, overflow:'hidden',
+        border:'1.5px solid #e5e7eb', boxShadow:'0 1px 4px rgba(0,0,0,0.04)'}}>
 
-        {/* タイトル */}
-        <div style={{padding:'12px 14px 6px',
+        <div style={{padding:'10px 14px 4px',
           display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-          <div style={{fontSize:10, color:'rgba(255,255,255,0.4)', fontWeight:700, letterSpacing:'0.08em'}}>
+          <div style={{fontSize:10, color:'#9ca3af', fontWeight:700, letterSpacing:'0.06em'}}>
             利益推移（過去12ヶ月）
           </div>
-          <div style={{fontSize:10, color:'rgba(74,222,128,0.8)', fontWeight:600}}>── 純利益</div>
+          <div style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:'#16a34a',fontWeight:600}}>
+            <span style={{display:'inline-block',width:16,height:2,background:'#16a34a',borderRadius:1}}/>
+            純利益
+          </div>
         </div>
 
-        {/* スクロール可能なSVGエリア */}
         <div ref={scrollRef}
           style={{overflowX:'auto', overflowY:'hidden', paddingBottom:2,
-            /* スクロールバー非表示 */
             msOverflowStyle:'none', scrollbarWidth:'none'}}>
           <svg width={TOTAL_W} height={SVG_H}
             style={{display:'block', overflow:'visible', userSelect:'none'}}>
 
-            {/* ゼロ基準線 */}
+            {/* 補助線（薄グレー） */}
             <line x1={0} y1={zeroY} x2={TOTAL_W} y2={zeroY}
-              stroke="rgba(255,255,255,0.12)" strokeWidth={1} strokeDasharray="3,4"/>
+              stroke="#e5e7eb" strokeWidth={1} strokeDasharray="3,4"/>
 
             {/* 選択列ハイライト */}
             {selectedIdx !== null && (
               <rect x={selectedIdx * COL_W} y={0}
                 width={COL_W} height={SVG_H - BOT_PAD}
-                fill="rgba(255,255,255,0.06)" rx={4}/>
+                fill="#f3f4f6" rx={4}/>
             )}
 
             {hasData && (
               <>
-                {/* 面積塗りつぶし */}
-                <path d={areaPath} fill="rgba(74,222,128,0.12)" stroke="none"/>
-                {/* 折れ線 */}
+                {/* 面積塗りつぶし（薄緑） */}
+                <path d={areaPath} fill="rgba(22,163,74,0.08)" stroke="none"/>
+                {/* 折れ線（緑） */}
                 <path d={linePath} fill="none"
-                  stroke="#4ade80" strokeWidth={2.2}
+                  stroke="#16a34a" strokeWidth={2.2}
                   strokeLinecap="round" strokeLinejoin="round"/>
               </>
             )}
 
-            {/* 各月のドットとタップ領域・ラベル */}
             {monthData.map((d, i) => {
               const cx = xOf(i);
               const cy = yOf(d.profit);
               const isSel = selectedIdx === i;
-              const dotColor = d.profit < 0 ? '#f87171' : '#4ade80';
+              const dotColor = d.profit < 0 ? '#dc2626' : '#16a34a';
               return (
-                <g key={d.key}
-                  onClick={() => setSelectedIdx(isSel ? null : i)}
+                <g key={d.key} onClick={() => setSelectedIdx(isSel ? null : i)}
                   style={{cursor:'pointer'}}>
-                  {/* タップ領域（透明な縦長の長方形） */}
-                  <rect x={i * COL_W} y={0} width={COL_W} height={SVG_H - BOT_PAD}
-                    fill="transparent"/>
-
-                  {/* データポイントのドット */}
+                  <rect x={i * COL_W} y={0} width={COL_W} height={SVG_H - BOT_PAD} fill="transparent"/>
                   {hasData && (
                     <circle cx={cx} cy={cy}
                       r={isSel ? 5.5 : 3.5}
-                      fill={dotColor}
-                      stroke={isSel ? 'white' : '#0f172a'}
-                      strokeWidth={isSel ? 2 : 1.5}/>
+                      fill={isSel ? dotColor : 'white'}
+                      stroke={dotColor}
+                      strokeWidth={isSel ? 0 : 2}/>
                   )}
-
-                  {/* 月ラベル */}
                   <text x={cx} y={SVG_H - 5}
                     textAnchor="middle" fontSize={9}
-                    fill={d.isCurrent ? '#4ade80' : 'rgba(255,255,255,0.3)'}
+                    fill={d.isCurrent ? '#16a34a' : '#9ca3af'}
                     fontWeight={d.isCurrent ? 700 : 400}>
                     {d.yearLabel ? d.yearLabel : d.label}
                   </text>
@@ -1131,51 +1112,44 @@ const ProfitChart = ({ summarySales, now }) => {
           </svg>
         </div>
 
-        {/* データなし表示 */}
         {!hasData && (
-          <div style={{textAlign:'center', padding:'4px 0 12px',
-            fontSize:11, color:'rgba(255,255,255,0.2)'}}>
+          <div style={{textAlign:'center', padding:'4px 0 14px',
+            fontSize:11, color:'#d1d5db'}}>
             売上データが登録されると表示されます
           </div>
         )}
       </div>
 
-      {/* 月別詳細パネル（タップ時に展開） */}
+      {/* 月別詳細パネル（タップ時） */}
       {selected && (
-        <div style={{background:'white', borderRadius:14, padding:'14px',
-          marginTop:8, border:'1.5px solid #f0f0f0',
-          boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
-          <div style={{fontSize:11, color:'#9ca3af', fontWeight:700, marginBottom:10}}>
+        <div style={{background:'#f9fafb', borderRadius:12, padding:'14px',
+          marginTop:6, border:'1.5px solid #e5e7eb'}}>
+          <div style={{fontSize:11, color:'#6b7280', fontWeight:700, marginBottom:10}}>
             {selected.key.slice(0,4)}年{parseInt(selected.key.slice(5),10)}月
           </div>
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8}}>
             <div>
-              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600,
-                letterSpacing:'0.05em', marginBottom:4}}>純利益</div>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600, letterSpacing:'0.05em', marginBottom:4}}>純利益</div>
               <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px',
                 color: selected.profit >= 0 ? '#16a34a' : '#dc2626', lineHeight:1}}>
                 {selected.profit >= 0 ? '' : '−'}¥{formatMoney(Math.abs(selected.profit))}
               </div>
             </div>
             <div>
-              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600,
-                letterSpacing:'0.05em', marginBottom:4}}>売上</div>
-              <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px',
-                color:'#1d4ed8', lineHeight:1}}>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600, letterSpacing:'0.05em', marginBottom:4}}>売上</div>
+              <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px', color:'#1d4ed8', lineHeight:1}}>
                 ¥{formatMoney(selected.revenue)}
               </div>
             </div>
             <div>
-              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600,
-                letterSpacing:'0.05em', marginBottom:4}}>件数</div>
-              <div style={{fontSize:20, fontWeight:900, color:'#374151', lineHeight:1}}>
-                {selected.count}
-                <span style={{fontSize:11, color:'#9ca3af', fontWeight:500, marginLeft:2}}>件</span>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600, letterSpacing:'0.05em', marginBottom:4}}>件数</div>
+              <div style={{fontSize:20, fontWeight:900, color:'#111827', lineHeight:1}}>
+                {selected.count}<span style={{fontSize:11, color:'#9ca3af', fontWeight:500, marginLeft:2}}>件</span>
               </div>
             </div>
           </div>
           {selected.count > 0 && selected.revenue > 0 && (
-            <div style={{marginTop:10, paddingTop:10, borderTop:'1px solid #f3f4f6',
+            <div style={{marginTop:10, paddingTop:10, borderTop:'1px solid #e5e7eb',
               display:'flex', gap:16, fontSize:11, color:'#9ca3af'}}>
               <span>仕入コスト ¥{formatMoney(selected.cost)}</span>
               <span>利益率 {Math.round(selected.profit / selected.revenue * 100)}%</span>
@@ -1249,27 +1223,31 @@ const HomeTab = () => {
   };
 
   return (
-    <div className="fade-in" style={{background:'#f1f5f9',minHeight:'100vh'}}>
+    <div className="fade-in" style={{background:'#ffffff',minHeight:'100vh'}}>
 
-      {/* ── ヘッダー ── */}
+      {/* ── ヘッダー（白ベース） ── */}
       <div style={{
-        background:'#0f172a',
-        padding:'14px 20px 12px',
-        paddingTop:'calc(14px + env(safe-area-inset-top))',
+        background:'#ffffff',
+        borderBottom:'1px solid #e5e7eb',
+        padding:'12px 18px 10px',
+        paddingTop:'calc(12px + env(safe-area-inset-top))',
         display:'flex',justifyContent:'space-between',alignItems:'center',
       }}>
         <div>
-          <div style={{fontSize:18,fontWeight:800,letterSpacing:'-0.5px',color:'white'}}>SalesLog</div>
-          <div style={{fontSize:10,color:'rgba(255,255,255,0.4)',marginTop:1,letterSpacing:'0.05em'}}>SALES MANAGEMENT</div>
+          <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT</div>
         </div>
         <div style={{textAlign:'right'}}>
-          <div style={{fontSize:12,color:'rgba(255,255,255,0.5)',fontWeight:600}}>
+          <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
             {now.getFullYear()}年{now.getMonth()+1}月
+          </div>
+          <div style={{fontSize:10,color:'#9ca3af',marginTop:1}}>
+            {now.getDate()}日
           </div>
         </div>
       </div>
 
-      <div style={{padding:'14px 14px',display:'flex',flexDirection:'column',gap:10}}>
+      <div style={{padding:'12px 14px 24px',display:'flex',flexDirection:'column',gap:10}}>
 
         {/* ── アラート：売上未記録 ── */}
         {unrecordedSoldCount > 0 && (
@@ -1284,98 +1262,100 @@ const HomeTab = () => {
           </div>
         )}
 
-        {/* ── HERO: 今月の利益 ── */}
-        <div style={{background:'#0f172a',borderRadius:18,padding:'20px 20px 18px',position:'relative',overflow:'hidden'}}>
-          {/* 装飾ライン */}
-          <div style={{position:'absolute',top:0,right:0,width:120,height:120,
-            background:'rgba(232,64,64,0.12)',borderRadius:'0 0 0 100%',pointerEvents:'none'}}/>
-          <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',fontWeight:600,letterSpacing:'0.08em',marginBottom:6}}>
+        {/* ── HERO: 今月の純利益（白カード） ── */}
+        <div style={{background:'#ffffff',borderRadius:16,padding:'18px 18px 14px',
+          border:'1.5px solid #e5e7eb',boxShadow:'0 1px 6px rgba(0,0,0,0.05)'}}>
+          <div style={{fontSize:10,color:'#9ca3af',fontWeight:700,letterSpacing:'0.08em',marginBottom:4}}>
             今月の純利益
           </div>
-          <div style={{fontSize:44,fontWeight:900,letterSpacing:'-2px',
-            color: totalProfit >= 0 ? '#4ade80' : '#f87171',lineHeight:1,marginBottom:8}}>
+          {/* メイン金額：黒・大きく */}
+          <div style={{fontSize:42,fontWeight:900,letterSpacing:'-2px',
+            color:'#111827',lineHeight:1,marginBottom:10}}>
             ¥{formatMoney(totalProfit)}
           </div>
-          {/* 前月比 */}
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
+          {/* 前月比・前月金額 */}
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
             {profitDiffPct !== null ? (
               <span style={{fontSize:12,fontWeight:700,
-                color: profitDiff >= 0 ? '#4ade80' : '#f87171',
-                background: profitDiff >= 0 ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
+                color: profitDiff >= 0 ? '#16a34a' : '#dc2626',
+                background: profitDiff >= 0 ? '#f0fdf4' : '#fef2f2',
+                border: `1px solid ${profitDiff >= 0 ? '#bbf7d0' : '#fecaca'}`,
                 borderRadius:99,padding:'2px 10px'}}>
                 {profitDiff >= 0 ? '▲' : '▼'} {Math.abs(profitDiffPct)}% 前月比
               </span>
             ) : (
-              <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>前月データなし</span>
+              <span style={{fontSize:11,color:'#9ca3af'}}>前月データなし</span>
             )}
             {prevMonthProfit > 0 && (
-              <span style={{fontSize:11,color:'rgba(255,255,255,0.3)'}}>前月 ¥{formatMoney(prevMonthProfit)}</span>
+              <span style={{fontSize:11,color:'#9ca3af'}}>前月 ¥{formatMoney(prevMonthProfit)}</span>
             )}
           </div>
           {/* 目標プログレスバー */}
-          <div style={{marginBottom:6}}>
+          <div>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
-              <span style={{fontSize:10,color:'rgba(255,255,255,0.4)',fontWeight:600}}>
+              <span style={{fontSize:10,color:'#9ca3af',fontWeight:600}}>
                 目標 ¥{formatMoney(monthlyGoal)}
               </span>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:12,fontWeight:800,color: progressPct>=100 ? '#4ade80' : 'white'}}>
+                <span style={{fontSize:12,fontWeight:800,
+                  color: progressPct>=100 ? '#16a34a' : '#111827'}}>
                   {progressPct}%
                 </span>
                 <button onClick={openGoalEdit}
-                  style={{fontSize:10,color:'rgba(255,255,255,0.5)',background:'rgba(255,255,255,0.08)',
-                    border:'1px solid rgba(255,255,255,0.12)',borderRadius:6,padding:'2px 8px',
+                  style={{fontSize:10,color:'#6b7280',background:'#f3f4f6',
+                    border:'1px solid #e5e7eb',borderRadius:6,padding:'2px 8px',
                     cursor:'pointer',fontWeight:600,touchAction:'manipulation'}}>
                   変更
                 </button>
               </div>
             </div>
-            <div style={{background:'rgba(255,255,255,0.1)',borderRadius:99,height:6,overflow:'hidden'}}>
+            <div style={{background:'#f3f4f6',borderRadius:99,height:6,overflow:'hidden'}}>
               <div style={{height:'100%',borderRadius:99,
-                background: progressPct>=100 ? '#4ade80' : '#E84040',
+                background: progressPct>=100 ? '#16a34a' : '#E84040',
                 width:`${progressPct}%`,transition:'width 0.8s cubic-bezier(0.4,0,0.2,1)'}}/>
             </div>
             {remaining > 0 && (
-              <div style={{fontSize:10,color:'rgba(255,255,255,0.35)',marginTop:4,textAlign:'right'}}>
-                あと ¥{formatMoney(remaining)} で達成
+              <div style={{fontSize:10,color:'#9ca3af',marginTop:4,textAlign:'right'}}>
+                あと ¥{formatMoney(remaining)} で目標達成
               </div>
             )}
             {remaining === 0 && (
-              <div style={{fontSize:11,color:'#4ade80',marginTop:4,textAlign:'right',fontWeight:700}}>🎉 今月の目標達成！</div>
+              <div style={{fontSize:11,color:'#16a34a',marginTop:4,textAlign:'right',fontWeight:700}}>🎉 今月の目標達成！</div>
             )}
           </div>
         </div>
 
         {/* ── 在庫ステータス 3分割 ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-          {/* 未出品 */}
+          {/* 未出品：赤 */}
           <div onClick={() => setTab('inventory')}
-            style={{background: unlistedCount > 0 ? '#fff7ed' : 'white',
-              borderRadius:14,padding:'14px 10px',textAlign:'center',cursor:'pointer',touchAction:'manipulation',
-              border: unlistedCount > 0 ? '1.5px solid #fed7aa' : '1.5px solid #f0f0f0',
-              boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
-            <div style={{fontSize:9,color: unlistedCount>0?'#ea580c':'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>
-              未出品
-            </div>
-            <div style={{fontSize:28,fontWeight:900,color: unlistedCount>0?'#c2410c':'#374151',lineHeight:1,marginBottom:2}}>
+            style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
+              cursor:'pointer',touchAction:'manipulation',
+              border: unlistedCount > 0 ? '1.5px solid #fca5a5' : '1.5px solid #e5e7eb',
+              boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:9,color: unlistedCount>0?'#dc2626':'#9ca3af',
+              fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>未出品</div>
+            <div style={{fontSize:28,fontWeight:900,lineHeight:1,marginBottom:2,
+              color: unlistedCount>0?'#dc2626':'#374151'}}>
               {unlistedCount}
             </div>
             <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
           </div>
-          {/* 出品中 */}
+          {/* 出品中：黒 */}
           <div onClick={() => setTab('inventory')}
-            style={{background:'white',borderRadius:14,padding:'14px 10px',textAlign:'center',
-              cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #f0f0f0',
-              boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
-            <div style={{fontSize:9,color:'#2563eb',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>出品中</div>
-            <div style={{fontSize:28,fontWeight:900,color:'#1d4ed8',lineHeight:1,marginBottom:2}}>{listedCount}</div>
+            style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
+              cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #e5e7eb',
+              boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+            <div style={{fontSize:9,color:'#374151',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>出品中</div>
+            <div style={{fontSize:28,fontWeight:900,color:'#111827',lineHeight:1,marginBottom:2}}>{listedCount}</div>
             <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
           </div>
-          {/* 今月売上 */}
+          {/* 今月売上：緑 */}
           <div onClick={() => setTab('sales')}
-            style={{background:'white',borderRadius:14,padding:'14px 10px',textAlign:'center',
-              cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #f0f0f0',
-              boxShadow:'0 1px 4px rgba(0,0,0,0.05)'}}>
+            style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
+              cursor:'pointer',touchAction:'manipulation',
+              border: monthlySales.length>0 ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',
+              boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
             <div style={{fontSize:9,color:'#16a34a',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月売上</div>
             <div style={{fontSize:28,fontWeight:900,color:'#15803d',lineHeight:1,marginBottom:2}}>{monthlySales.length}</div>
             <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
@@ -1384,19 +1364,31 @@ const HomeTab = () => {
 
         {/* ── サブ指標 2列 ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-          <div style={{background:'white',borderRadius:14,padding:'14px',boxShadow:'0 1px 4px rgba(0,0,0,0.05)',border:'1.5px solid #f0f0f0'}}>
+          <div style={{background:'#ffffff',borderRadius:14,padding:'14px',
+            border:'1.5px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
             <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月 利益率</div>
             <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,
-              color: profitRate >= 20 ? '#16a34a' : profitRate >= 10 ? '#f59e0b' : '#dc2626'}}>
+              color: profitRate >= 20 ? '#16a34a' : profitRate >= 10 ? '#d97706' : '#dc2626'}}>
               {totalRevenue > 0 ? `${profitRate}%` : '−'}
             </div>
+            {totalRevenue > 0 && (
+              <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
+                売上 ¥{formatMoney(totalRevenue)}
+              </div>
+            )}
           </div>
-          <div style={{background:'white',borderRadius:14,padding:'14px',boxShadow:'0 1px 4px rgba(0,0,0,0.05)',border:'1.5px solid #f0f0f0'}}>
+          <div style={{background:'#ffffff',borderRadius:14,padding:'14px',
+            border:'1.5px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
             <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>平均回転日数</div>
-            <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,color:'#374151'}}>
+            <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,color:'#111827'}}>
               {avgTurnover !== null ? avgTurnover : '−'}
               {avgTurnover !== null && <span style={{fontSize:13,color:'#9ca3af',fontWeight:500,marginLeft:2}}>日</span>}
             </div>
+            {avgTurnover !== null && (
+              <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
+                {monthlySales.length}件の平均
+              </div>
+            )}
           </div>
         </div>
 
@@ -1422,16 +1414,18 @@ const HomeTab = () => {
         {/* ── クイックアクション ── */}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:2}}>
           <button onClick={() => setTab('purchase')}
-            style={{background:'#0f172a',border:'none',borderRadius:14,padding:'14px',
+            style={{background:'#111827',border:'none',borderRadius:14,padding:'14px',
               display:'flex',alignItems:'center',justifyContent:'center',gap:8,
-              cursor:'pointer',touchAction:'manipulation',boxShadow:'0 2px 8px rgba(15,23,42,0.2)'}}>
+              cursor:'pointer',touchAction:'manipulation',
+              boxShadow:'0 2px 6px rgba(0,0,0,0.15)'}}>
             <span style={{fontSize:18}}>📥</span>
             <span style={{fontSize:14,fontWeight:700,color:'white'}}>仕入れ登録</span>
           </button>
           <button onClick={() => setTab('sales')}
-            style={{background:'#E84040',border:'none',borderRadius:14,padding:'14px',
+            style={{background:'#16a34a',border:'none',borderRadius:14,padding:'14px',
               display:'flex',alignItems:'center',justifyContent:'center',gap:8,
-              cursor:'pointer',touchAction:'manipulation',boxShadow:'0 2px 8px rgba(232,64,64,0.3)'}}>
+              cursor:'pointer',touchAction:'manipulation',
+              boxShadow:'0 2px 6px rgba(22,163,74,0.25)'}}>
             <span style={{fontSize:18}}>💰</span>
             <span style={{fontSize:14,fontWeight:700,color:'white'}}>売上記録</span>
           </button>
