@@ -25,16 +25,19 @@ const CONFIG = {
   ],
   // ストア名の表記ゆれ正規化テーブル（正規表現 → 正しいストア名）
   STORE_NAME_ALIASES: [
-    { pattern: /オークション代行.*(ドゥ|どぅ)/i,           correct: 'オークション代行クイックドゥ' },
-    { pattern: /エンパワー[\s　]*ヤフーショップ/,           correct: 'エンパワーヤフーショップ' },
-    { pattern: /エンパワー[\s　]*ヤフー[\s　]*SHOP/i,       correct: 'エンパワーヤフーショップ' },
-    { pattern: /エンパワー[\s　]*Yahoo[\s　]*(ショップ|shop)/i, correct: 'エンパワーヤフーショップ' },
-    { pattern: /ECO[\s　]*BASE[\s　]*ヤフー/i,             correct: 'ECO BASEヤフー店' },
-    { pattern: /エルミ[\s　]*ヤフー[\s　]*SHOP/i,           correct: 'エルミ ヤフーSHOP' },
-    { pattern: /エルミ[\s　]*Yahoo/i,                       correct: 'エルミ ヤフーSHOP' },
-    { pattern: /すまりく[\s　]*ヤフオク/i,                  correct: 'すまりく ヤフオク！ショップ' },
-    { pattern: /リア[\s　]*クロ/,                           correct: 'リアクロ' },
-    { pattern: /クイック[\s　]*ドゥ/i,                      correct: 'オークション代行クイックドゥ' },
+    { pattern: /オークション代行.*(ドゥ|どぅ)/i,                   correct: 'オークション代行クイックドゥ' },
+    { pattern: /クイック[\s　]*ドゥ/i,                              correct: 'オークション代行クイックドゥ' },
+    { pattern: /エンパワー[\s　]*ヤフーショップ/,                   correct: 'エンパワーヤフーショップ' },
+    { pattern: /エンパワー[\s　]*ヤフー[\s　]*SHOP/i,               correct: 'エンパワーヤフーショップ' },
+    { pattern: /エンパワー[\s　]*Yahoo[\s　]*(ショップ|shop)/i,     correct: 'エンパワーヤフーショップ' },
+    // ECO BASE系: "ECO BASE"単体・スペースあり・なし → 全て'ECO BASEヤフー店'へ統一
+    { pattern: /^ECO[\s　]*BASE$/i,                                  correct: 'ECO BASEヤフー店' },
+    { pattern: /ECO[\s　]*BASE[\s　]+ヤフー/i,                       correct: 'ECO BASEヤフー店' },
+    { pattern: /ECO[\s　]*BASEヤフー/i,                              correct: 'ECO BASEヤフー店' },
+    { pattern: /エルミ[\s　]*ヤフー[\s　]*SHOP/i,                    correct: 'エルミ ヤフーSHOP' },
+    { pattern: /エルミ[\s　]*Yahoo/i,                                correct: 'エルミ ヤフーSHOP' },
+    { pattern: /すまりく[\s　]*ヤフオク/i,                           correct: 'すまりく ヤフオク！ショップ' },
+    { pattern: /リア[\s　]*クロ/,                                    correct: 'リアクロ' },
   ],
   TAG_PRICE_PROMPT: `この写真の値札・価格タグ・価格シールに書かれた金額を読み取ってください。
 【重要】数字が多少不鮮明でも、見えている桁数や文脈から最もありえる価格を推定して回答してください。「読めない」ではなく必ずベストの数値を出してください。
@@ -123,13 +126,15 @@ const normalizeStoreName = (name) => {
 };
 
 // ストア名の表記ゆれを全データに一括適用 + 仕入れで使ったストアをstoreMasterに自動登録
-// ・inventory.purchaseStore を normalizeStoreName で正規化
-// ・yahooタイプ仕入れで使われているストア名を storeMaster.yahooStores に自動追加
+// Step1: inventory.purchaseStore を正規化
+// Step2: storeMaster.yahooStores 自体も正規化・重複排除
+// Step3: settings.yahooStores[].storeName も正規化・重複統合（ライセンス情報を保持）
+// Step4: inventory で使われているストア名を storeMaster に自動追加
 const normalizeStores = (appData) => {
   const initial = getInitialData();
   const master = appData.settings?.storeMaster || initial.settings.storeMaster;
 
-  // Step1: purchaseStore を正規化
+  // Step1: inventory.purchaseStore を正規化
   let storeChanged = false;
   const newInventory = (appData.inventory || []).map(item => {
     if (!item.purchaseStore) return item;
@@ -139,22 +144,53 @@ const normalizeStores = (appData) => {
     return { ...item, purchaseStore: norm };
   });
 
-  // Step2: online/yahooタイプ仕入れで使われているストア名を収集 → storeMasterに未登録なら追加
-  const masterYahooStores = master.yahooStores || [];
-  const existingSet = new Set(masterYahooStores);
-  const newNames = [];
+  // Step2: storeMaster.yahooStores を正規化・重複排除
+  const rawMasterYahoo = master.yahooStores || [];
+  const normalizedMasterYahoo = [...new Set(rawMasterYahoo.map(s => normalizeStoreName(s)).filter(Boolean))];
+  const masterNormChanged = JSON.stringify(normalizedMasterYahoo) !== JSON.stringify(rawMasterYahoo);
+
+  // Step3: settings.yahooStores を正規化・重複統合（ライセンス情報はマージして保持）
+  const rawYahooStores = appData.settings?.yahooStores || [];
+  const yahooStoreMap = new Map(); // normalizedName → entry
+  for (const s of rawYahooStores) {
+    if (!s.storeName) continue;
+    const normName = normalizeStoreName(s.storeName);
+    if (!normName) continue;
+    if (yahooStoreMap.has(normName)) {
+      const ex = yahooStoreMap.get(normName);
+      yahooStoreMap.set(normName, {
+        ...ex,
+        storeName: normName,
+        license:     ex.license     || s.license     || '',
+        companyName: ex.companyName || s.companyName || '',
+      });
+    } else {
+      yahooStoreMap.set(normName, { ...s, storeName: normName });
+    }
+  }
+  const normalizedYahooStores = [...yahooStoreMap.values()];
+  const settingsYahooChanged =
+    normalizedYahooStores.length !== rawYahooStores.length ||
+    normalizedYahooStores.some((s, i) => s.storeName !== (rawYahooStores[i]?.storeName));
+
+  // Step4: online/yahooタイプ仕入れで使われているストア名 → storeMasterに未登録なら追加
+  const masterSet = new Set([
+    ...normalizedMasterYahoo,
+    ...normalizedYahooStores.map(s => s.storeName),
+  ]);
+  const newMasterNames = [];
   for (const item of newInventory) {
     const n = item.purchaseStore;
     if (!n) continue;
-    if ((item.purchaseStoreType === 'yahoo' || item.purchaseType === 'online') && !existingSet.has(n)) {
-      existingSet.add(n);
-      newNames.push(n);
+    if ((item.purchaseStoreType === 'yahoo' || item.purchaseType === 'online') && !masterSet.has(n)) {
+      masterSet.add(n);
+      newMasterNames.push(n);
     }
   }
 
-  if (!storeChanged && newNames.length === 0) return appData; // 変更なし
+  if (!storeChanged && !masterNormChanged && !settingsYahooChanged && newMasterNames.length === 0) return appData;
 
-  const updatedMasterYahooStores = [...new Set([...masterYahooStores, ...newNames])]
+  const updatedMasterYahoo = [...new Set([...normalizedMasterYahoo, ...newMasterNames])]
     .sort((a, b) => a.localeCompare(b, 'ja'));
 
   return {
@@ -162,10 +198,8 @@ const normalizeStores = (appData) => {
     inventory: newInventory,
     settings: {
       ...(appData.settings || initial.settings),
-      storeMaster: {
-        ...master,
-        yahooStores: updatedMasterYahooStores,
-      },
+      yahooStores: normalizedYahooStores,
+      storeMaster: { ...master, yahooStores: updatedMasterYahoo },
     },
   };
 };
@@ -2361,7 +2395,29 @@ const PurchaseTab = () => {
           descriptionText: generatedDesc || form.descriptionText || '',
           updatedAt: new Date().toISOString(),
         };
-        const updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
+        let updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
+        // ★ まとめ仕入れ: 価格変更を兄弟アイテムの最後1件に自動連動（合計固定）
+        if (editingItem.bundleGroup) {
+          const siblings = data.inventory
+            .filter(i => i.bundleGroup === editingItem.bundleGroup && i.id !== editingItem.id)
+            .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+          if (siblings.length > 0) {
+            const bundleTotal = data.inventory
+              .filter(i => i.bundleGroup === editingItem.bundleGroup)
+              .reduce((s, i) => s + (i.purchasePrice || 0), 0);
+            const lastSibling = siblings[siblings.length - 1];
+            const otherSiblingsSum = siblings.slice(0, -1).reduce((s, i) => s + (i.purchasePrice || 0), 0);
+            const newLastPrice = Math.max(0, bundleTotal - totalPurchaseTaxIn - otherSiblingsSum);
+            if (newLastPrice !== (lastSibling.purchasePrice || 0)) {
+              updated = updated.map(i => i.id !== lastSibling.id ? i : {
+                ...i,
+                purchasePrice: newLastPrice,
+                purchaseCost: { ...i.purchaseCost, totalTaxIn: newLastPrice, totalTaxEx: newLastPrice },
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          }
+        }
         setData({ ...data, inventory: updated });
         toast('✅ 商品情報を更新しました！');
         const savedId = editingItem.id;
