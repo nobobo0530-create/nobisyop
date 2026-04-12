@@ -1453,6 +1453,24 @@ const PurchaseTab = () => {
   const savingTimeoutRef = React.useRef(null); // saving状態の安全タイムアウト
   const draftSaveTimerRef = React.useRef(null); // 編集下書き保存デバウンス用（編集モード）
   const newRegDraftTimerRef = React.useRef(null); // 新規登録下書き保存デバウンス用
+  // ★ iOS Safariキーボード座標ズレ対策: キーボード高さをvisualViewportで追跡
+  const [kbOffset, setKbOffset] = React.useState(0);
+  React.useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      // キーボード高さ = 画面の物理高さ - 見えている高さ - スクロールオフセット
+      const kbH = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      setKbOffset(kbH > 50 ? kbH : 0); // 50px未満は誤検知として無視
+    };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+    return () => {
+      vv.removeEventListener('resize', update);
+      vv.removeEventListener('scroll', update);
+    };
+  }, []);
 
   // 起動時に下書きチェック
   React.useEffect(() => {
@@ -2219,6 +2237,16 @@ const PurchaseTab = () => {
 
       // バリデーション通過 → UI を「保存中」に（同期的に保存するのでUIには一瞬しか見えない）
       setSaving(true);
+      // ★ 安全タイムアウト: 保存処理が何らかの理由でハングした場合に10秒後に自動リセット
+      if (savingTimeoutRef.current) clearTimeout(savingTimeoutRef.current);
+      savingTimeoutRef.current = setTimeout(() => {
+        if (savingLockRef.current) {
+          console.warn('[Save] safety timeout: auto-reset saving state');
+          savingLockRef.current = false;
+          setSaving(false);
+          savingTimeoutRef.current = null;
+        }
+      }, 10000);
 
       // ★ 保存前の緊急バックアップ（保存失敗時もフォームデータを復元できるように）
       try {
@@ -3754,12 +3782,15 @@ const PurchaseTab = () => {
       {step >= 3 && <div style={{height:'200px'}} aria-hidden="true" />}
 
       {/* 保存ボタン：ReactDOM.createPortal で body 直下にレンダリング
-          → position:fixed がコンテナのスタッキングコンテキストに依存しなくなる
-          → iOS Safari のタッチ座標ズレ問題を回避 */}
+          ★ kbOffset: iOS Safari visualViewport API でキーボード高さを追跡し座標ズレを根本解決
+          ★ zIndex:9000: すべてのオーバーレイ（modal-overlay:200, 各種modal:300/1000）より上 */}
       {step >= 3 && ReactDOM.createPortal(
-        <div style={{position:'fixed',bottom:'calc(64px + env(safe-area-inset-bottom))',left:0,right:0,
+        <div style={{
+          position:'fixed',
+          bottom: kbOffset > 0 ? `${kbOffset + 4}px` : 'calc(64px + env(safe-area-inset-bottom))',
+          left:0,right:0,
           background:'white',padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',
-          zIndex:150,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)',
+          zIndex:9000,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)',
           touchAction:'manipulation'}}>
           {/* 出品ステータス選択 */}
           <div style={{display:'flex',gap:8,marginBottom:10}}>
