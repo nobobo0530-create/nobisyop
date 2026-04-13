@@ -7404,67 +7404,80 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
 
   // ── Sheets API helpers ──────────────────────────────────────
   const GSHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+  const LOG = (...a) => console.log('[SYNC]', ...a);
+
+  // 汎用リクエスト — エラー時は必ず throw
   const sheetsReq = async (token, url, opts = {}) => {
-    const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) } });
+    LOG('REQ', opts.method || 'GET', url.replace(GSHEETS, ''));
+    const r = await fetch(url, {
+      ...opts,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+    });
     const j = await r.json();
-    if (!r.ok) throw new Error(j.error?.message || `HTTP ${r.status}`);
+    if (!r.ok) {
+      const msg = j.error?.message || `HTTP ${r.status}`;
+      LOG('ERROR', msg, JSON.stringify(j).slice(0, 200));
+      throw new Error(msg);
+    }
+    LOG('OK', opts.method || 'GET', JSON.stringify(j).slice(0, 120));
     return j;
   };
-  const sheetsGet = (token, sid, range) =>
-    fetch(`${GSHEETS}/${sid}/values/${encodeURIComponent(range)}`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(r => r.json()).then(j => { if (j.error) throw new Error(j.error.message); return j; })
-      .catch(() => ({ values: [] }));
+
+  // GET values — 「範囲が見つからない＝シートが空」は空配列で返す、それ以外は throw
+  const sheetsGet = async (token, sid, range) => {
+    const r = await fetch(`${GSHEETS}/${sid}/values/${encodeURIComponent(range)}`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const j = await r.json();
+    if (!r.ok) {
+      const msg = j.error?.message || `HTTP ${r.status}`;
+      // "Unable to parse range" = タブは存在するが行データが0件 → 空扱い
+      if (r.status === 400 && msg.toLowerCase().includes('parse range')) {
+        LOG('sheetsGet: empty range (no data rows)', range);
+        return { values: [] };
+      }
+      LOG('sheetsGet ERROR', msg);
+      throw new Error(msg);
+    }
+    return j;
+  };
+
+  // batchUpdate (値書き込み)
   const sheetsBatchUpdate = (token, sid, rangeData) =>
     sheetsReq(token, `${GSHEETS}/${sid}/values:batchUpdate`, {
-      method: 'POST', body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: rangeData })
+      method: 'POST',
+      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: rangeData })
     });
+
+  // append (行追加)
   const sheetsAppend = (token, sid, sheetName, rows) =>
-    sheetsReq(token, `${GSHEETS}/${sid}/values/${encodeURIComponent(sheetName + '!A1')}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
-      method: 'POST', body: JSON.stringify({ values: rows })
-    });
+    sheetsReq(token,
+      `${GSHEETS}/${sid}/values/${encodeURIComponent(sheetName + '!A1')}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      { method: 'POST', body: JSON.stringify({ values: rows }) }
+    );
+
+  // clear (データ行削除)
   const sheetsClearRange = (token, sid, range) =>
-    fetch(`${GSHEETS}/${sid}/values/${encodeURIComponent(range)}:clear`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+    sheetsReq(token,
+      `${GSHEETS}/${sid}/values/${encodeURIComponent(range)}:clear`,
+      { method: 'POST' }
+    );
 
+  // タブが存在しなければ作成
   const ensureSheetTab = async (token, sid, title) => {
+    LOG('ensureSheetTab:', title);
     const meta = await sheetsReq(token, `${GSHEETS}/${sid}`);
-    if (!meta.sheets?.some(s => s.properties?.title === title)) {
+    const exists = meta.sheets?.some(s => s.properties?.title === title);
+    LOG('tab exists?', title, exists);
+    if (!exists) {
       await sheetsReq(token, `${GSHEETS}/${sid}:batchUpdate`, {
-        method: 'POST', body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
+        method: 'POST',
+        body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
       });
+      LOG('tab created:', title);
     }
   };
 
-  // Upsert: read existing IDs → update matching rows, append new rows
-  const upsertSheet = async (token, sid, sheetName, headers, localRows) => {
-    const existing = (await sheetsGet(token, sid, `${sheetName}!A:A`)).values || [];
-    if (existing.length === 0) {
-      await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
-    }
-    const idToRow = {};
-    existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
-    const toUpdate = [], toAppend = [];
-    localRows.forEach(row => {
-      const id = String(row[0] || '');
-      if (id && idToRow[id]) toUpdate.push({ range: `${sheetName}!A${idToRow[id]}`, values: [row] });
-      else toAppend.push(row);
-    });
-    for (let i = 0; i < toUpdate.length; i += 100)
-      await sheetsBatchUpdate(token, sid, toUpdate.slice(i, i + 100));
-    for (let i = 0; i < toAppend.length; i += 500)
-      await sheetsAppend(token, sid, sheetName, toAppend.slice(i, i + 500));
-    return { updated: toUpdate.length, added: toAppend.length };
-  };
-
-  // Full re-sync: clear data rows then write all
-  const fullResyncSheet = async (token, sid, sheetName, headers, localRows) => {
-    await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
-    await sheetsClearRange(token, sid, `${sheetName}!A2:ZZ`);
-    for (let i = 0; i < localRows.length; i += 500)
-      await sheetsAppend(token, sid, sheetName, localRows.slice(i, i + 500));
-    return { updated: 0, added: localRows.length };
-  };
-
-  // Row builders
+  // ── 行ビルダー ───────────────────────────────────────────────
   const INV_HEADERS  = ['ID','商品名','ステータス','仕入れ日','仕入れ金額(税込)','出品価格','仕入先','プラットフォーム','カテゴリー','ブランド','管理番号','メモ','作成日時','更新日時'];
   const SALE_HEADERS = ['ID','在庫ID','商品名','売上日','売上金額','純利益','仕入れ金額','利益率%','プラットフォーム','手数料','配送料','作成日時'];
   const statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
@@ -7480,49 +7493,134 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       s.platform||inv.platform||'', Math.round((s.salePrice||0)*(s.feeRate||0)), s.shipping||0, fmtDt(s.createdAt)];
   };
 
+  // ── upsert（差分同期）───────────────────────────────────────
+  const upsertSheet = async (token, sid, sheetName, headers, localRows) => {
+    LOG(`upsertSheet [${sheetName}] localRows=${localRows.length}`);
+    // A列のID一覧を取得
+    const existing = (await sheetsGet(token, sid, `${sheetName}!A:A`)).values || [];
+    LOG(`existing rows (incl header): ${existing.length}`);
+
+    // ヘッダーがなければ書く
+    if (existing.length === 0) {
+      LOG('writing headers to A1');
+      await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
+    }
+
+    // ID → 行番号マップ（1行目はヘッダーなのでスキップ）
+    const idToRow = {};
+    existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
+
+    const toUpdate = [], toAppend = [];
+    localRows.forEach(row => {
+      const id = String(row[0] || '');
+      if (id && idToRow[id]) toUpdate.push({ range: `${sheetName}!A${idToRow[id]}`, values: [row] });
+      else toAppend.push(row);
+    });
+    LOG(`toUpdate=${toUpdate.length} toAppend=${toAppend.length}`);
+
+    // 既存行を更新（100件ずつ）
+    for (let i = 0; i < toUpdate.length; i += 100) {
+      LOG(`batchUpdate chunk ${i}-${Math.min(i+100, toUpdate.length)}`);
+      await sheetsBatchUpdate(token, sid, toUpdate.slice(i, i + 100));
+    }
+    // 新規行を追加（500件ずつ）
+    for (let i = 0; i < toAppend.length; i += 500) {
+      LOG(`append chunk ${i}-${Math.min(i+500, toAppend.length)}`);
+      await sheetsAppend(token, sid, sheetName, toAppend.slice(i, i + 500));
+    }
+    LOG(`upsertSheet [${sheetName}] done`);
+    return { updated: toUpdate.length, added: toAppend.length };
+  };
+
+  // ── 全件再同期（クリア→書き直し）───────────────────────────
+  const fullResyncSheet = async (token, sid, sheetName, headers, localRows) => {
+    LOG(`fullResyncSheet [${sheetName}] localRows=${localRows.length}`);
+    // ヘッダー行を書く
+    await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
+    // データ行をクリア
+    LOG('clearing A2:Z10000');
+    await sheetsClearRange(token, sid, `${sheetName}!A2:Z10000`);
+    // 全行を追加
+    for (let i = 0; i < localRows.length; i += 500) {
+      LOG(`append chunk ${i}-${Math.min(i+500, localRows.length)}`);
+      await sheetsAppend(token, sid, sheetName, localRows.slice(i, i + 500));
+    }
+    LOG(`fullResyncSheet [${sheetName}] done`);
+    return { updated: 0, added: localRows.length };
+  };
+
+  // ── メイン同期処理 ───────────────────────────────────────────
   const doSheetsSync = async (token, mode) => {
     setGSyncing(true);
     setSyncResult(null);
     try {
-      // Ensure / create spreadsheet
-      let sid = spreadsheetId || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
+      LOG('=== doSheetsSync start ===', 'mode:', mode);
+      LOG('inventory:', data.inventory.length, 'sales:', data.sales.length);
+
+      // spreadsheetId を確定
+      let sid = (settings.googleSpreadsheetId || '').trim()
+             || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
+      LOG('spreadsheetId (resolved):', sid || '(none → will create)');
+
       if (!sid) {
+        // 新規スプレッドシート作成
+        LOG('creating new spreadsheet...');
         const cr = await sheetsReq(token, GSHEETS, {
           method: 'POST',
-          body: JSON.stringify({ properties: { title: 'SalesLog データ' },
-            sheets: [{ properties: { title: '在庫データ' } }, { properties: { title: '売上データ' } }] })
+          body: JSON.stringify({
+            properties: { title: 'SalesLog データ' },
+            sheets: [
+              { properties: { title: '在庫データ' } },
+              { properties: { title: '売上データ' } }
+            ]
+          })
         });
         sid = cr.spreadsheetId;
+        LOG('created spreadsheetId:', sid);
         setSetting('googleSpreadsheetId', sid);
         setSpreadsheetInput(`https://docs.google.com/spreadsheets/d/${sid}`);
       } else {
+        // 既存スプレッドシートにタブを確保（直列で実行）
         await ensureSheetTab(token, sid, '在庫データ');
         await ensureSheetTab(token, sid, '売上データ');
       }
 
+      // 行データ構築
       const invMap = {};
       data.inventory.forEach(i => { invMap[i.id] = i; });
       const invRows  = data.inventory.map(invRow);
       const saleRows = data.sales.map(s => saleRow(s, invMap));
+      LOG('invRows:', invRows.length, 'saleRows:', saleRows.length);
 
       const syncFn = mode === 'full' ? fullResyncSheet : upsertSheet;
-      const [invRes, saleRes] = await Promise.all([
-        syncFn(token, sid, '在庫データ',  INV_HEADERS,  invRows),
-        syncFn(token, sid, '売上データ', SALE_HEADERS, saleRows),
-      ]);
+
+      // 直列で実行（API競合を避ける）
+      LOG('--- syncing 在庫データ ---');
+      const invRes  = await syncFn(token, sid, '在庫データ',  INV_HEADERS,  invRows);
+      LOG('--- syncing 売上データ ---');
+      const saleRes = await syncFn(token, sid, '売上データ', SALE_HEADERS, saleRows);
 
       const now = new Date().toISOString();
       setSetting('googleLastSyncTime', now);
-      const result = { invAdded: invRes.added, invUpdated: invRes.updated,
-        saleAdded: saleRes.added, saleUpdated: saleRes.updated, time: now, sid };
+      const result = {
+        invAdded: invRes.added, invUpdated: invRes.updated,
+        saleAdded: saleRes.added, saleUpdated: saleRes.updated,
+        time: now, sid
+      };
       setSyncResult(result);
-      toast(`✅ 同期完了 — 在庫 ${invRes.added}件追加/${invRes.updated}件更新、売上 ${saleRes.added}件追加/${saleRes.updated}件更新`);
+      LOG('=== doSheetsSync complete ===', result);
+      toast(`✅ 同期完了 — 在庫 +${invRes.added}件 更新${invRes.updated}件 / 売上 +${saleRes.added}件 更新${saleRes.updated}件`);
+
     } catch(err) {
-      if (String(err.message).includes('401') || String(err.message).includes('invalid_token')) {
+      LOG('=== doSheetsSync FAILED ===', err.message, err.stack);
+      const msg = err.message || String(err);
+      if (msg.includes('401') || msg.includes('invalid_token')) {
         setGToken(null);
         toast('⚠️ 認証が切れました。再度ログインしてください');
       } else {
-        toast('❌ 同期失敗: ' + err.message);
+        // エラー内容を alert で確実に見せる
+        alert('❌ 同期失敗\n\n' + msg);
+        toast('❌ 同期失敗: ' + msg);
       }
     } finally {
       setGSyncing(false);

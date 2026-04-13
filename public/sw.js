@@ -1,11 +1,10 @@
-// SalesLog Service Worker v20260413d
-// キャッシュ優先戦略 + Google APIはスキップ
-var CACHE = 'nobushop-20260413d';
+// SalesLog Service Worker v20260413e
+var CACHE = 'nobushop-20260413e';
 
 var PRECACHE = [
   '/',
   '/manifest.json',
-  '/js/app.js?v=20260413d',
+  '/js/app.js?v=20260413e',
   '/js/google-config.js?v=20260413d',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
@@ -39,17 +38,11 @@ self.addEventListener('activate', function(e) {
 self.addEventListener('fetch', function(e) {
   if (e.request.method !== 'GET') return;
   var url = e.request.url;
-
-  // Google API / 動的エンドポイントはスキップ
   if (url.includes('accounts.google.com')) return;
   if (url.includes('googleapis.com')) return;
   if (url.includes('anthropic.com')) return;
   if (url.includes('api.remove.bg')) return;
-
-  // Tailwind CDN はネットワーク優先（動的生成のため）
   if (url.includes('cdn.tailwindcss.com')) return;
-
-  // Babel は初回コンパイル時のみ必要 → キャッシュしない（容量節約）
   if (url.includes('@babel/standalone')) return;
 
   e.respondWith(
@@ -62,7 +55,6 @@ self.addEventListener('fetch', function(e) {
         }
         return resp;
       }).catch(function() {
-        // オフライン時はindex.htmlにフォールバック
         if (e.request.destination === 'document') return caches.match('/');
         return new Response('', { status: 503 });
       });
