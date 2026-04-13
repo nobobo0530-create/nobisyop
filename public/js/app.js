@@ -7478,26 +7478,178 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   };
 
   // ── 行ビルダー ───────────────────────────────────────────────
-  const INV_HEADERS  = ['ID','商品名','ステータス','仕入れ日','仕入れ金額(税込)','出品価格','仕入先','プラットフォーム','カテゴリー','ブランド','管理番号','メモ','作成日時','更新日時'];
-  const SALE_HEADERS = ['ID','在庫ID','商品名','売上日','売上金額','純利益','仕入れ金額','利益率%','プラットフォーム','手数料','配送料','作成日時'];
+  // 重要な列を左側に配置（アプリ画面の並び順に近づける）
+  //   在庫: 商品名・ステータス・ブランド・カテゴリー・仕入れ情報 → 管理番号・ID
+  //   売上: 売上日・商品名・金額系 → プラットフォーム → ID
+  //   古物台帳: 取得日・品名・取得情報 → 売却情報 → 許可証
+
+  const INV_HEADERS = [
+    '商品名','ステータス','ブランド','カテゴリー',
+    '仕入れ日','仕入れ金額(税込)','出品価格',
+    '仕入先','プラットフォーム','管理番号','メモ',
+    'ID','作成日時','更新日時'
+  ];
+  const INV_COL_W = [220,75,110,110, 90,105,90, 150,105,100,160, 220,135,135];
+  // ステータス列 = index 1
+
+  const SALE_HEADERS = [
+    '売上日','商品名','売上金額','純利益','利益率%',
+    '仕入れ金額','プラットフォーム','手数料','配送料',
+    'ID','在庫ID','作成日時'
+  ];
+  const SALE_COL_W = [90,220,90,90,65, 95,105,75,75, 220,220,135];
+
+  const KOBOTSU_HEADERS = [
+    '取得日','品名','ブランド','カテゴリー','管理番号','数量',
+    '取得価格','取得先名称','会社名','許可証番号',
+    '売却日','売却価格','売却先（プラットフォーム）',
+    '在庫ID'
+  ];
+  const KOBOTSU_COL_W = [90,220,110,110,100,55, 90,160,160,130, 90,90,140, 220];
+
   const statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
   const fmtDt = s => s ? String(s).slice(0,19).replace('T',' ') : '';
-  const invRow = item => [item.id||'', item.productName||'', statusLabel(item.status), item.purchaseDate||'',
-    item.purchasePrice||0, item.listPrice||'', item.purchaseStore||item.storeName||'', item.platform||'',
-    item.category||'', item.brand||'', item.mgmtNo||'', item.memo||'', fmtDt(item.createdAt), fmtDt(item.updatedAt)];
+
+  const invRow = item => [
+    item.productName||'', statusLabel(item.status), item.brand||'', item.category||'',
+    item.purchaseDate||'', item.purchasePrice||0, item.listPrice||'',
+    item.purchaseStore||item.storeName||'', item.platform||'', item.mgmtNo||'', item.memo||'',
+    item.id||'', fmtDt(item.createdAt), fmtDt(item.updatedAt)
+  ];
+  // upsert用のID列インデックス（invRowではindex 11 = ID）
+  const INV_ID_COL = 11;
+
   const saleRow = (s, invMap) => {
     const inv = invMap[s.inventoryId] || {};
     const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
-    return [s.id||'', s.inventoryId||'', inv.productName||'', s.saleDate||'',
-      s.salePrice||0, s.profit||0, s.purchasePrice||inv.purchasePrice||0, rate,
-      s.platform||inv.platform||'', Math.round((s.salePrice||0)*(s.feeRate||0)), s.shipping||0, fmtDt(s.createdAt)];
+    return [
+      s.saleDate||'', inv.productName||'', s.salePrice||0, s.profit||0, rate,
+      s.purchasePrice||inv.purchasePrice||0, s.platform||inv.platform||'',
+      Math.round((s.salePrice||0)*(s.feeRate||0)), s.shipping||0,
+      s.id||'', s.inventoryId||'', fmtDt(s.createdAt)
+    ];
+  };
+  const SALE_ID_COL = 9;
+
+  const kobotsuRow = (item, sale) => {
+    const lic = resolveLicense(item);
+    const co  = resolveCompanyName(item);
+    return [
+      item.purchaseDate||'', item.productName||'', item.brand||'', item.category||'',
+      item.mgmtNo||'', 1,
+      item.purchasePrice||0, item.purchaseStore||item.storeName||'', co, lic,
+      sale?.saleDate||'', sale?.salePrice||'', sale ? (sale.platform||'') : '',
+      item.id||''
+    ];
+  };
+  const KOBOTSU_ID_COL = 13;
+
+  // ── シート書式設定（ヘッダー色・列幅・フィルター・条件付き書式）───
+  const formatSheet = async (token, sid, sheetTitle, colWidths, statusColIdx) => {
+    try {
+      LOG('formatSheet:', sheetTitle);
+      const meta = await sheetsReq(token, `${GSHEETS}/${sid}`);
+      const sheet = meta.sheets?.find(s => s.properties?.title === sheetTitle);
+      if (!sheet) { LOG('formatSheet: sheet not found', sheetTitle); return; }
+      const sheetId = sheet.properties.sheetId;
+
+      // ヘッダー色: 緑系（在庫=緑, 売上=青緑, 古物台帳=紺）
+      const headerBg = sheetTitle === '在庫データ'
+        ? { red:0.07, green:0.49, blue:0.26 }
+        : sheetTitle === '売上データ'
+          ? { red:0.05, green:0.39, blue:0.52 }
+          : { red:0.18, green:0.27, blue:0.45 };
+
+      const requests = [
+        // 1行目を固定
+        {
+          updateSheetProperties: {
+            properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+            fields: 'gridProperties.frozenRowCount'
+          }
+        },
+        // ヘッダー行の書式
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex:0, endRowIndex:1 },
+            cell: {
+              userEnteredFormat: {
+                backgroundColor: headerBg,
+                textFormat: { bold:true, foregroundColor:{red:1,green:1,blue:1}, fontSize:10 },
+                verticalAlignment: 'MIDDLE',
+                horizontalAlignment: 'CENTER',
+                wrapStrategy: 'CLIP'
+              }
+            },
+            fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)'
+          }
+        },
+        // データ行の共通書式（折り返しなし・縦中央）
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex:1 },
+            cell: {
+              userEnteredFormat: {
+                verticalAlignment: 'MIDDLE',
+                wrapStrategy: 'CLIP'
+              }
+            },
+            fields: 'userEnteredFormat(verticalAlignment,wrapStrategy)'
+          }
+        },
+        // 列幅を設定
+        ...colWidths.map((w, i) => ({
+          updateDimensionProperties: {
+            range: { sheetId, dimension:'COLUMNS', startIndex:i, endIndex:i+1 },
+            properties: { pixelSize: w },
+            fields: 'pixelSize'
+          }
+        })),
+        // フィルター（ソート・絞り込み可能に）
+        {
+          setBasicFilter: {
+            filter: { range: { sheetId, startRowIndex:0, startColumnIndex:0 } }
+          }
+        },
+      ];
+
+      // ステータス列の条件付き書式
+      if (statusColIdx >= 0) {
+        [
+          { v:'未出品', bg:{ red:1.0, green:0.88, blue:0.88 } },
+          { v:'出品中', bg:{ red:0.87, green:0.93, blue:1.0  } },
+          { v:'売却済', bg:{ red:0.85, green:0.97, blue:0.87 } },
+        ].forEach(({ v, bg }) => {
+          requests.push({
+            addConditionalFormatRule: {
+              rule: {
+                ranges: [{ sheetId, startColumnIndex:statusColIdx, endColumnIndex:statusColIdx+1, startRowIndex:1 }],
+                booleanRule: {
+                  condition: { type:'TEXT_EQ', values:[{ userEnteredValue:v }] },
+                  format: { backgroundColor: bg }
+                }
+              },
+              index: 0
+            }
+          });
+        });
+      }
+
+      await sheetsReq(token, `${GSHEETS}/${sid}:batchUpdate`, {
+        method: 'POST', body: JSON.stringify({ requests })
+      });
+      LOG('formatSheet done:', sheetTitle);
+    } catch(e) {
+      LOG('formatSheet warning (non-fatal):', e.message);
+    }
   };
 
-  // ── upsert（差分同期）───────────────────────────────────────
-  const upsertSheet = async (token, sid, sheetName, headers, localRows) => {
-    LOG(`upsertSheet [${sheetName}] localRows=${localRows.length}`);
-    // A列のID一覧を取得
-    const existing = (await sheetsGet(token, sid, `${sheetName}!A:A`)).values || [];
+  // ── upsert（差分同期）idCol = ID列のインデックス ─────────────
+  const upsertSheet = async (token, sid, sheetName, headers, localRows, idCol) => {
+    LOG(`upsertSheet [${sheetName}] rows=${localRows.length} idCol=${idCol}`);
+    // ID列のみ取得（列番号をA1記法に変換）
+    const colLetter = String.fromCharCode(65 + idCol); // 0→A, 11→L etc.
+    const existing = (await sheetsGet(token, sid, `${sheetName}!${colLetter}:${colLetter}`)).values || [];
     LOG(`existing rows (incl header): ${existing.length}`);
 
     // ヘッダーがなければ書く
@@ -7506,26 +7658,24 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
     }
 
-    // ID → 行番号マップ（1行目はヘッダーなのでスキップ）
+    // ID → 行番号マップ（ヘッダー行スキップ）
     const idToRow = {};
     existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
 
     const toUpdate = [], toAppend = [];
     localRows.forEach(row => {
-      const id = String(row[0] || '');
+      const id = String(row[idCol] || '');
       if (id && idToRow[id]) toUpdate.push({ range: `${sheetName}!A${idToRow[id]}`, values: [row] });
       else toAppend.push(row);
     });
     LOG(`toUpdate=${toUpdate.length} toAppend=${toAppend.length}`);
 
-    // 既存行を更新（100件ずつ）
     for (let i = 0; i < toUpdate.length; i += 100) {
-      LOG(`batchUpdate chunk ${i}-${Math.min(i+100, toUpdate.length)}`);
+      LOG(`batchUpdate chunk ${i}`);
       await sheetsBatchUpdate(token, sid, toUpdate.slice(i, i + 100));
     }
-    // 新規行を追加（500件ずつ）
     for (let i = 0; i < toAppend.length; i += 500) {
-      LOG(`append chunk ${i}-${Math.min(i+500, toAppend.length)}`);
+      LOG(`append chunk ${i}`);
       await sheetsAppend(token, sid, sheetName, toAppend.slice(i, i + 500));
     }
     LOG(`upsertSheet [${sheetName}] done`);
@@ -7534,15 +7684,12 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
 
   // ── 全件再同期（クリア→書き直し）───────────────────────────
   const fullResyncSheet = async (token, sid, sheetName, headers, localRows) => {
-    LOG(`fullResyncSheet [${sheetName}] localRows=${localRows.length}`);
-    // ヘッダー行を書く
+    LOG(`fullResyncSheet [${sheetName}] rows=${localRows.length}`);
     await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
-    // データ行をクリア
     LOG('clearing A2:Z10000');
     await sheetsClearRange(token, sid, `${sheetName}!A2:Z10000`);
-    // 全行を追加
     for (let i = 0; i < localRows.length; i += 500) {
-      LOG(`append chunk ${i}-${Math.min(i+500, localRows.length)}`);
+      LOG(`append chunk ${i}`);
       await sheetsAppend(token, sid, sheetName, localRows.slice(i, i + 500));
     }
     LOG(`fullResyncSheet [${sheetName}] done`);
@@ -7562,17 +7709,15 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
              || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
       LOG('spreadsheetId (resolved):', sid || '(none → will create)');
 
+      const TAB_NAMES = ['在庫データ','売上データ','古物台帳'];
+
       if (!sid) {
-        // 新規スプレッドシート作成
         LOG('creating new spreadsheet...');
         const cr = await sheetsReq(token, GSHEETS, {
           method: 'POST',
           body: JSON.stringify({
             properties: { title: 'SalesLog データ' },
-            sheets: [
-              { properties: { title: '在庫データ' } },
-              { properties: { title: '売上データ' } }
-            ]
+            sheets: TAB_NAMES.map(title => ({ properties: { title } }))
           })
         });
         sid = cr.spreadsheetId;
@@ -7580,36 +7725,52 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
         setSetting('googleSpreadsheetId', sid);
         setSpreadsheetInput(`https://docs.google.com/spreadsheets/d/${sid}`);
       } else {
-        // 既存スプレッドシートにタブを確保（直列で実行）
-        await ensureSheetTab(token, sid, '在庫データ');
-        await ensureSheetTab(token, sid, '売上データ');
+        for (const t of TAB_NAMES) await ensureSheetTab(token, sid, t);
       }
 
       // 行データ構築
       const invMap = {};
       data.inventory.forEach(i => { invMap[i.id] = i; });
-      const invRows  = data.inventory.map(invRow);
-      const saleRows = data.sales.map(s => saleRow(s, invMap));
-      LOG('invRows:', invRows.length, 'saleRows:', saleRows.length);
+      const invRows      = data.inventory.map(invRow);
+      const saleRows     = data.sales.map(s => saleRow(s, invMap));
+      const kobotsuRows  = data.inventory.map(item =>
+        kobotsuRow(item, data.sales.find(s => s.inventoryId === item.id))
+      );
+      LOG(`invRows=${invRows.length} saleRows=${saleRows.length} kobotsuRows=${kobotsuRows.length}`);
 
-      const syncFn = mode === 'full' ? fullResyncSheet : upsertSheet;
-
-      // 直列で実行（API競合を避ける）
+      // 直列同期（API競合を避ける）
       LOG('--- syncing 在庫データ ---');
-      const invRes  = await syncFn(token, sid, '在庫データ',  INV_HEADERS,  invRows);
+      const invRes = mode === 'full'
+        ? await fullResyncSheet(token, sid, '在庫データ', INV_HEADERS, invRows)
+        : await upsertSheet(token, sid, '在庫データ', INV_HEADERS, invRows, INV_ID_COL);
+
       LOG('--- syncing 売上データ ---');
-      const saleRes = await syncFn(token, sid, '売上データ', SALE_HEADERS, saleRows);
+      const saleRes = mode === 'full'
+        ? await fullResyncSheet(token, sid, '売上データ', SALE_HEADERS, saleRows)
+        : await upsertSheet(token, sid, '売上データ', SALE_HEADERS, saleRows, SALE_ID_COL);
+
+      LOG('--- syncing 古物台帳 ---');
+      const kobotsuRes = mode === 'full'
+        ? await fullResyncSheet(token, sid, '古物台帳', KOBOTSU_HEADERS, kobotsuRows)
+        : await upsertSheet(token, sid, '古物台帳', KOBOTSU_HEADERS, kobotsuRows, KOBOTSU_ID_COL);
+
+      // 書式設定（同期後に適用 — 失敗してもデータには影響しない）
+      LOG('--- formatting sheets ---');
+      await formatSheet(token, sid, '在庫データ',  INV_COL_W,     1); // ステータス=col1
+      await formatSheet(token, sid, '売上データ',  SALE_COL_W,   -1); // ステータス列なし
+      await formatSheet(token, sid, '古物台帳',    KOBOTSU_COL_W,-1);
 
       const now = new Date().toISOString();
       setSetting('googleLastSyncTime', now);
       const result = {
         invAdded: invRes.added, invUpdated: invRes.updated,
         saleAdded: saleRes.added, saleUpdated: saleRes.updated,
+        kobotsuAdded: kobotsuRes.added,
         time: now, sid
       };
       setSyncResult(result);
       LOG('=== doSheetsSync complete ===', result);
-      toast(`✅ 同期完了 — 在庫 +${invRes.added}件 更新${invRes.updated}件 / 売上 +${saleRes.added}件 更新${saleRes.updated}件`);
+      toast(`✅ 同期完了 — 在庫 +${invRes.added}/更新${invRes.updated} · 売上 +${saleRes.added}/更新${saleRes.updated} · 古物台帳 ${kobotsuRes.added}件`);
 
     } catch(err) {
       LOG('=== doSheetsSync FAILED ===', err.message, err.stack);
@@ -7618,7 +7779,6 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
         setGToken(null);
         toast('⚠️ 認証が切れました。再度ログインしてください');
       } else {
-        // エラー内容を alert で確実に見せる
         alert('❌ 同期失敗\n\n' + msg);
         toast('❌ 同期失敗: ' + msg);
       }
@@ -7799,15 +7959,16 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
             <div style={{fontSize:11,fontWeight:700,color:'#16a34a',marginBottom:6}}>
               ✅ 同期完了 — {new Date(syncResult.time).toLocaleString('ja-JP')}
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}}>
-              {[['📦 在庫データ', syncResult.invAdded, syncResult.invUpdated],
-                ['💰 売上データ', syncResult.saleAdded, syncResult.saleUpdated]].map(([label,added,updated]) => (
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4}}>
+              {[['📦 在庫', syncResult.invAdded, syncResult.invUpdated],
+                ['💰 売上', syncResult.saleAdded, syncResult.saleUpdated],
+                ['📋 古物台帳', syncResult.kobotsuAdded, null]].map(([label,added,updated]) => (
                 <div key={label} style={{background:'#fff',borderRadius:7,padding:'6px 8px',fontSize:11}}>
                   <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,marginBottom:3}}>{label}</div>
                   <span style={{color:'#16a34a',fontWeight:700}}>+{added}件</span>
-                  <span style={{color:'#9ca3af',fontSize:10,marginLeft:3}}>追加</span>
-                  <span style={{color:'#f59e0b',fontWeight:700,marginLeft:8}}>{updated}件</span>
-                  <span style={{color:'#9ca3af',fontSize:10,marginLeft:3}}>更新</span>
+                  {updated !== null && <><span style={{color:'#9ca3af',fontSize:10,marginLeft:3}}>追加</span>
+                  <span style={{color:'#f59e0b',fontWeight:700,marginLeft:6}}>{updated}件</span>
+                  <span style={{color:'#9ca3af',fontSize:10,marginLeft:3}}>更新</span></>}
                 </div>
               ))}
             </div>
