@@ -6141,6 +6141,13 @@ const SalesTab = () => {
                         </span>
                       )}
                     </div>
+                    {(item?.purchaseDate || item?.purchaseStore || item?.storeName || item?.category) && (
+                      <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginTop:3}}>
+                        {item.purchaseDate && <span style={{fontSize:10,color:'#9ca3af'}}>仕入: {item.purchaseDate}</span>}
+                        {(item.purchaseStore || item.storeName) && <span style={{fontSize:10,color:'#9ca3af'}}>・{item.purchaseStore||item.storeName}</span>}
+                        {item.category && <span style={{fontSize:10,color:'#9ca3af'}}>・{item.category}</span>}
+                      </div>
+                    )}
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
                     <div style={{fontWeight:800,fontSize:15,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(s.salePrice)}</div>
@@ -7478,34 +7485,35 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   };
 
   // ── 行ビルダー ───────────────────────────────────────────────
-  // 重要な列を左側に配置（アプリ画面の並び順に近づける）
-  //   在庫: 商品名・ステータス・ブランド・カテゴリー・仕入れ情報 → 管理番号・ID
-  //   売上: 売上日・商品名・金額系 → プラットフォーム → ID
-  //   古物台帳: 取得日・品名・取得情報 → 売却情報 → 許可証
-
+  // 在庫データ
   const INV_HEADERS = [
     '商品名','ステータス','ブランド','カテゴリー',
     '仕入れ日','仕入れ金額(税込)','出品価格',
-    '仕入先','プラットフォーム','管理番号','メモ',
-    'ID','作成日時','更新日時'
+    '仕入先','プラットフォーム','管理番号','メモ','ID'
   ];
-  const INV_COL_W = [220,75,110,110, 90,105,90, 150,105,100,160, 220,135,135];
-  // ステータス列 = index 1
+  const INV_COL_W    = [220,70,110,110, 90,105,90, 150,105,100,150, 220];
+  const INV_DATE_COLS = [4];
+  const INV_ID_COL   = 11;
 
+  // 売上データ（仕入れ情報 + 売上情報の統合ビュー、仕入れ日順）
   const SALE_HEADERS = [
-    '売上日','商品名','売上金額','純利益','利益率%',
-    '仕入れ金額','プラットフォーム','手数料','配送料',
-    'ID','在庫ID','作成日時'
+    'No.','仕入れ日','商品名','ブランド','カテゴリー',
+    '仕入れ金額','出品価格','仕入先',
+    '売上日','売上金額','純利益','利益率%',
+    'プラットフォーム','手数料','配送料','ID'
   ];
-  const SALE_COL_W = [90,220,90,90,65, 95,105,75,75, 220,220,135];
+  const SALE_COL_W    = [40,90,220,110,110, 95,85,150, 90,90,90,60, 105,70,70, 220];
+  const SALE_DATE_COLS = [1, 8];
+  const SALE_ID_COL   = 15;
 
+  // 古物台帳（管理番号を末尾に、在庫ID不要）
   const KOBOTSU_HEADERS = [
-    '取得日','品名','ブランド','カテゴリー','管理番号','数量',
+    '取得日','品名','ブランド','カテゴリー','数量',
     '取得価格','取得先名称','会社名','許可証番号',
-    '売却日','売却価格','売却先（プラットフォーム）',
-    '在庫ID'
+    '売却日','売却価格','売却先（プラットフォーム）','管理番号'
   ];
-  const KOBOTSU_COL_W = [90,220,110,110,100,55, 90,160,160,130, 90,90,140, 220];
+  const KOBOTSU_COL_W    = [90,220,110,110,50, 90,160,160,130, 90,90,130, 100];
+  const KOBOTSU_DATE_COLS = [0, 9];
 
   const statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
   const fmtDt = s => s ? String(s).slice(0,19).replace('T',' ') : '';
@@ -7514,90 +7522,91 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
     item.productName||'', statusLabel(item.status), item.brand||'', item.category||'',
     item.purchaseDate||'', item.purchasePrice||0, item.listPrice||'',
     item.purchaseStore||item.storeName||'', item.platform||'', item.mgmtNo||'', item.memo||'',
-    item.id||'', fmtDt(item.createdAt), fmtDt(item.updatedAt)
+    item.id||''
   ];
-  // upsert用のID列インデックス（invRowではindex 11 = ID）
-  const INV_ID_COL = 11;
 
-  const saleRow = (s, invMap) => {
+  // 売上行：仕入れ情報（在庫から）+ 売上情報、先頭に連番
+  const saleRow = (s, invMap, rowNum) => {
     const inv = invMap[s.inventoryId] || {};
     const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
     return [
-      s.saleDate||'', inv.productName||'', s.salePrice||0, s.profit||0, rate,
-      s.purchasePrice||inv.purchasePrice||0, s.platform||inv.platform||'',
-      Math.round((s.salePrice||0)*(s.feeRate||0)), s.shipping||0,
-      s.id||'', s.inventoryId||'', fmtDt(s.createdAt)
+      rowNum,
+      inv.purchaseDate||'',
+      inv.productName||'',
+      inv.brand||'',
+      inv.category||'',
+      inv.purchasePrice||0,
+      inv.listPrice||'',
+      inv.purchaseStore||inv.storeName||'',
+      s.saleDate||'',
+      s.salePrice||0,
+      s.profit||0,
+      rate,
+      s.platform||inv.platform||'',
+      Math.round((s.salePrice||0)*(s.feeRate||0)),
+      s.shipping||0,
+      s.id||''
     ];
   };
-  const SALE_ID_COL = 9;
 
+  // 古物台帳行（在庫ID列なし）
   const kobotsuRow = (item, sale) => {
     const lic = resolveLicense(item);
     const co  = resolveCompanyName(item);
     return [
-      item.purchaseDate||'', item.productName||'', item.brand||'', item.category||'',
-      item.mgmtNo||'', 1,
-      item.purchasePrice||0, item.purchaseStore||item.storeName||'', co, lic,
-      sale?.saleDate||'', sale?.salePrice||'', sale ? (sale.platform||'') : '',
-      item.id||''
+      item.purchaseDate||'',
+      item.productName||'',
+      item.brand||'',
+      item.category||'',
+      1,
+      item.purchasePrice||0,
+      item.purchaseStore||item.storeName||'',
+      co, lic,
+      sale?.saleDate||'',
+      sale?.salePrice||'',
+      sale ? (sale.platform||'') : '',
+      item.mgmtNo||''
     ];
   };
-  const KOBOTSU_ID_COL = 13;
 
-  // ── シート書式設定（ヘッダー色・列幅・フィルター・条件付き書式）───
-  const formatSheet = async (token, sid, sheetTitle, colWidths, statusColIdx) => {
+  // ── シート書式設定（白ベース・グレーヘッダー・列幅・フィルター・日付書式）──
+  const formatSheet = async (token, sid, sheetTitle, colWidths, dateColIdxs) => {
     try {
       LOG('formatSheet:', sheetTitle);
       const meta = await sheetsReq(token, `${GSHEETS}/${sid}`);
       const sheet = meta.sheets?.find(s => s.properties?.title === sheetTitle);
-      if (!sheet) { LOG('formatSheet: sheet not found', sheetTitle); return; }
+      if (!sheet) { LOG('formatSheet: not found', sheetTitle); return; }
       const sheetId = sheet.properties.sheetId;
 
-      // ヘッダー色: 緑系（在庫=緑, 売上=青緑, 古物台帳=紺）
-      const headerBg = sheetTitle === '在庫データ'
-        ? { red:0.07, green:0.49, blue:0.26 }
-        : sheetTitle === '売上データ'
-          ? { red:0.05, green:0.39, blue:0.52 }
-          : { red:0.18, green:0.27, blue:0.45 };
-
       const requests = [
-        // 1行目を固定
-        {
-          updateSheetProperties: {
+        // 1行目固定
+        { updateSheetProperties: {
             properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
             fields: 'gridProperties.frozenRowCount'
-          }
-        },
-        // ヘッダー行の書式
-        {
-          repeatCell: {
+        } },
+        // ヘッダー行：薄グレー背景・黒太字（白ベースの見やすいデザイン）
+        { repeatCell: {
             range: { sheetId, startRowIndex:0, endRowIndex:1 },
-            cell: {
-              userEnteredFormat: {
-                backgroundColor: headerBg,
-                textFormat: { bold:true, foregroundColor:{red:1,green:1,blue:1}, fontSize:10 },
-                verticalAlignment: 'MIDDLE',
-                horizontalAlignment: 'CENTER',
-                wrapStrategy: 'CLIP'
-              }
-            },
+            cell: { userEnteredFormat: {
+              backgroundColor: { red:0.91, green:0.91, blue:0.91 },
+              textFormat: { bold:true, foregroundColor:{red:0.07,green:0.07,blue:0.07}, fontSize:10 },
+              verticalAlignment: 'MIDDLE',
+              horizontalAlignment: 'CENTER',
+              wrapStrategy: 'CLIP'
+            }},
             fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)'
-          }
-        },
-        // データ行の共通書式（折り返しなし・縦中央）
-        {
-          repeatCell: {
+        } },
+        // データ行：白背景・折り返しなし・縦中央
+        { repeatCell: {
             range: { sheetId, startRowIndex:1 },
-            cell: {
-              userEnteredFormat: {
-                verticalAlignment: 'MIDDLE',
-                wrapStrategy: 'CLIP'
-              }
-            },
-            fields: 'userEnteredFormat(verticalAlignment,wrapStrategy)'
-          }
-        },
-        // 列幅を設定
+            cell: { userEnteredFormat: {
+              backgroundColor: { red:1, green:1, blue:1 },
+              verticalAlignment: 'MIDDLE',
+              wrapStrategy: 'CLIP'
+            }},
+            fields: 'userEnteredFormat(backgroundColor,verticalAlignment,wrapStrategy)'
+        } },
+        // 列幅
         ...colWidths.map((w, i) => ({
           updateDimensionProperties: {
             range: { sheetId, dimension:'COLUMNS', startIndex:i, endIndex:i+1 },
@@ -7605,38 +7614,20 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
             fields: 'pixelSize'
           }
         })),
-        // フィルター（ソート・絞り込み可能に）
-        {
-          setBasicFilter: {
-            filter: { range: { sheetId, startRowIndex:0, startColumnIndex:0 } }
+        // フィルター
+        { setBasicFilter: { filter: { range: { sheetId, startRowIndex:0, startColumnIndex:0 } } } },
+        // 日付列を yyyy/mm/dd 形式に
+        ...(dateColIdxs||[]).map(ci => ({
+          repeatCell: {
+            range: { sheetId, startRowIndex:1, startColumnIndex:ci, endColumnIndex:ci+1 },
+            cell: { userEnteredFormat: { numberFormat: { type:'DATE', pattern:'yyyy/mm/dd' } } },
+            fields: 'userEnteredFormat.numberFormat'
           }
-        },
+        })),
       ];
 
-      // ステータス列の条件付き書式
-      if (statusColIdx >= 0) {
-        [
-          { v:'未出品', bg:{ red:1.0, green:0.88, blue:0.88 } },
-          { v:'出品中', bg:{ red:0.87, green:0.93, blue:1.0  } },
-          { v:'売却済', bg:{ red:0.85, green:0.97, blue:0.87 } },
-        ].forEach(({ v, bg }) => {
-          requests.push({
-            addConditionalFormatRule: {
-              rule: {
-                ranges: [{ sheetId, startColumnIndex:statusColIdx, endColumnIndex:statusColIdx+1, startRowIndex:1 }],
-                booleanRule: {
-                  condition: { type:'TEXT_EQ', values:[{ userEnteredValue:v }] },
-                  format: { backgroundColor: bg }
-                }
-              },
-              index: 0
-            }
-          });
-        });
-      }
-
       await sheetsReq(token, `${GSHEETS}/${sid}:batchUpdate`, {
-        method: 'POST', body: JSON.stringify({ requests })
+        method:'POST', body: JSON.stringify({ requests })
       });
       LOG('formatSheet done:', sheetTitle);
     } catch(e) {
@@ -7732,7 +7723,14 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       const invMap = {};
       data.inventory.forEach(i => { invMap[i.id] = i; });
       const invRows      = data.inventory.map(invRow);
-      const saleRows     = data.sales.map(s => saleRow(s, invMap));
+      // 売上：仕入れ日昇順でソートしてから連番付与
+      const sortedSales  = [...data.sales].sort((a, b) => {
+        const da = (invMap[a.inventoryId]||{}).purchaseDate||'';
+        const db = (invMap[b.inventoryId]||{}).purchaseDate||'';
+        return da < db ? -1 : da > db ? 1 : 0;
+      });
+      const saleRows     = sortedSales.map((s, i) => saleRow(s, invMap, i + 1));
+      // 古物台帳：全在庫を対象
       const kobotsuRows  = data.inventory.map(item =>
         kobotsuRow(item, data.sales.find(s => s.inventoryId === item.id))
       );
@@ -7750,15 +7748,14 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
         : await upsertSheet(token, sid, '売上データ', SALE_HEADERS, saleRows, SALE_ID_COL);
 
       LOG('--- syncing 古物台帳 ---');
-      const kobotsuRes = mode === 'full'
-        ? await fullResyncSheet(token, sid, '古物台帳', KOBOTSU_HEADERS, kobotsuRows)
-        : await upsertSheet(token, sid, '古物台帳', KOBOTSU_HEADERS, kobotsuRows, KOBOTSU_ID_COL);
+      // 古物台帳はIDなし → 常にフルリセット
+      const kobotsuRes = await fullResyncSheet(token, sid, '古物台帳', KOBOTSU_HEADERS, kobotsuRows);
 
       // 書式設定（同期後に適用 — 失敗してもデータには影響しない）
       LOG('--- formatting sheets ---');
-      await formatSheet(token, sid, '在庫データ',  INV_COL_W,     1); // ステータス=col1
-      await formatSheet(token, sid, '売上データ',  SALE_COL_W,   -1); // ステータス列なし
-      await formatSheet(token, sid, '古物台帳',    KOBOTSU_COL_W,-1);
+      await formatSheet(token, sid, '在庫データ',  INV_COL_W,     INV_DATE_COLS);
+      await formatSheet(token, sid, '売上データ',  SALE_COL_W,    SALE_DATE_COLS);
+      await formatSheet(token, sid, '古物台帳',    KOBOTSU_COL_W, KOBOTSU_DATE_COLS);
 
       const now = new Date().toISOString();
       setSetting('googleLastSyncTime', now);
