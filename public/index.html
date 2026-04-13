@@ -21,6 +21,8 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google OAuth 設定（Client IDをここで一元管理） -->
+  <script src="/js/google-config.js"></script>
   <!-- Google OAuth（非同期） -->
   <script src="https://accounts.google.com/gsi/client" async></script>
 
@@ -333,7 +335,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260413b';
+    var VERSION = '20260413c';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');

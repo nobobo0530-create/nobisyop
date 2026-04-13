@@ -7389,16 +7389,16 @@ const SalesTab = () => {
 const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, setPendingReturnSection }) => {
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
-  const [showClientIdSetup, setShowClientIdSetup] = React.useState(false);
   const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
   const [showAllSales, setShowAllSales]           = React.useState(false); // 売上管理表全件表示
   const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
   const [kobotsuSelected, setKobotsuSelected] = React.useState(null); // 古物台帳 商品詳細モーダル
-  const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
   const [syncMode, setSyncMode]               = React.useState('normal'); // 'normal' | 'full'
   const [syncResult, setSyncResult]           = React.useState(null);
   const [spreadsheetInput, setSpreadsheetInput] = React.useState(settings.googleSpreadsheetId || '');
   const tcRef = React.useRef(null);
+  // Client IDはgoogle-config.jsで一元管理 — ユーザー入力不要
+  const gClientId = (typeof window !== 'undefined' && window.GOOGLE_CLIENT_ID) || '';
 
   const spreadsheetId = settings.googleSpreadsheetId || '';
 
@@ -7530,20 +7530,23 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   };
 
   const handleGoogleLogin = (mode) => {
-    const cid = (clientIdInput || settings.googleClientId || '').trim();
-    if (!cid) { setShowClientIdSetup(true); return; }
-    if (!window.google?.accounts?.oauth2) { toast('⚠️ Google APIを読み込み中です。少し待って再試行してください'); return; }
-    if (!tcRef.current || tcRef.current._cid !== cid) {
+    if (!gClientId) {
+      toast('⚠️ google-config.js に Client ID を設定してください');
+      return;
+    }
+    if (!window.google?.accounts?.oauth2) {
+      toast('⚠️ Google APIを読み込み中です。少し待って再試行してください');
+      return;
+    }
+    if (!tcRef.current) {
       tcRef.current = window.google.accounts.oauth2.initTokenClient({
-        client_id: cid,
+        client_id: gClientId,
         scope: 'https://www.googleapis.com/auth/spreadsheets',
         callback: () => {},
       });
-      tcRef.current._cid = cid;
     }
     tcRef.current.callback = (res) => {
       if (res.error) { toast('❌ ログイン失敗: ' + res.error); return; }
-      setSetting('googleClientId', cid);
       setGToken(res.access_token);
       doSheetsSync(res.access_token, mode || syncMode);
     };
@@ -7603,125 +7606,122 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
     <div>
       {/* ── Google Sheets連携カード ── */}
       <div className="card" style={{padding:16,marginBottom:12,border:'1.5px solid #d1fae5',borderRadius:14}}>
+
         {/* ヘッダー */}
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
           <div style={{width:40,height:40,borderRadius:10,background:'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>📗</div>
           <div style={{flex:1}}>
             <div style={{fontWeight:700,fontSize:15}}>Googleスプレッドシート連携</div>
-            <div style={{fontSize:11,color:'#9ca3af',marginTop:1}}>在庫・売上を自動でシートに同期</div>
+            <div style={{fontSize:11,color:'#9ca3af',marginTop:1}}>在庫・売上データをワンタップで同期</div>
           </div>
-          {gToken && <div style={{fontSize:10,color:'#16a34a',fontWeight:700,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:99,padding:'3px 9px'}}>接続中</div>}
+          {gToken && (
+            <div style={{fontSize:10,color:'#16a34a',fontWeight:700,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:99,padding:'3px 9px',flexShrink:0}}>
+              ✅ 接続中
+            </div>
+          )}
         </div>
 
-        {/* Client ID 設定パネル */}
-        {showClientIdSetup ? (
-          <div style={{background:'#f9fafb',borderRadius:10,padding:12,marginBottom:12}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:8}}>⚙️ Google OAuth クライアントID</div>
-            <input className="input-field" style={{marginBottom:6,fontSize:13}}
-              value={clientIdInput} onChange={e => setClientIdInput(e.target.value)}
-              placeholder="xxxx.apps.googleusercontent.com"/>
-            <div style={{fontSize:11,color:'#9ca3af',lineHeight:1.7,marginBottom:8}}>
-              <a href="https://console.cloud.google.com/" target="_blank" style={{color:'#2563eb',fontWeight:600}}>Google Cloud Console</a> →「APIとサービス」→「認証情報」→「OAuth 2.0 クライアントID（ウェブアプリ）」を作成し、このアプリのURLを「承認済みJavaScriptオリジン」に追加してください。
-            </div>
-            <div style={{display:'flex',gap:8}}>
-              <button className="btn-primary" style={{flex:1,background:'#16a34a',fontSize:13}}
-                onClick={() => { if(clientIdInput.trim()){ setSetting('googleClientId',clientIdInput.trim()); setShowClientIdSetup(false); toast('✅ Client IDを保存しました'); } }}>保存</button>
-              <button className="btn-secondary" style={{fontSize:13}} onClick={() => setShowClientIdSetup(false)}>キャンセル</button>
-            </div>
+        {/* Client ID未設定の場合は開発者向け注記のみ表示（エンドユーザーは触らない） */}
+        {!gClientId && (
+          <div style={{background:'#fef9c3',border:'1px solid #fde047',borderRadius:10,padding:'10px 12px',marginBottom:12,fontSize:11,color:'#854d0e',lineHeight:1.6}}>
+            <strong>⚙️ 開発者設定が必要：</strong><br/>
+            <code style={{fontSize:10}}>/public/js/google-config.js</code> に Google OAuth Client ID を設定してください。<br/>
+            設定後はエンドユーザーの操作は不要です。
           </div>
-        ) : null}
+        )}
 
-        {/* スプレッドシートURL入力 */}
-        {!showClientIdSetup && (
-          <div style={{marginBottom:12}}>
-            <div style={{fontSize:11,color:'#6b7280',fontWeight:600,marginBottom:4}}>連携先スプレッドシート（URLまたはID）</div>
-            <div style={{display:'flex',gap:6}}>
-              <input className="input-field" style={{flex:1,fontSize:12,padding:'7px 10px'}}
-                value={spreadsheetInput}
-                onChange={e => setSpreadsheetInput(e.target.value)}
-                placeholder="空欄 = 新規作成　または URL / シートID を貼り付け"/>
-              {spreadsheetInput && (
-                <button style={{background:'none',border:'1.5px solid #e5e7eb',borderRadius:8,padding:'0 10px',fontSize:12,color:'#2563eb',cursor:'pointer',whiteSpace:'nowrap'}}
-                  onClick={() => {
-                    const sid = spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim() || spreadsheetInput.trim();
-                    if (sid) { setSetting('googleSpreadsheetId', sid); toast('✅ スプレッドシートを設定しました'); }
-                  }}>保存</button>
-              )}
-            </div>
-            {spreadsheetId && (
-              <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
-                style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,color:'#2563eb',marginTop:5,textDecoration:'none'}}>
-                📊 <span style={{textDecoration:'underline'}}>シートを開く ↗</span>
-              </a>
+        {/* 連携先スプレッドシート指定（オプション） */}
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:'#6b7280',fontWeight:600,marginBottom:4}}>
+            連携先スプレッドシート
+            <span style={{fontWeight:400,color:'#9ca3af',marginLeft:4}}>（空欄 = 自動新規作成）</span>
+          </div>
+          <div style={{display:'flex',gap:6}}>
+            <input className="input-field" style={{flex:1,fontSize:12,padding:'8px 10px'}}
+              value={spreadsheetInput}
+              onChange={e => setSpreadsheetInput(e.target.value)}
+              placeholder="既存シートのURL または ID を貼り付け"/>
+            {spreadsheetInput.trim() && (
+              <button
+                style={{flexShrink:0,background:'#16a34a',color:'#fff',border:'none',borderRadius:8,padding:'0 12px',fontSize:12,cursor:'pointer',fontWeight:600}}
+                onClick={() => {
+                  const sid = spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim() || spreadsheetInput.trim();
+                  if (sid) { setSetting('googleSpreadsheetId', sid); toast('✅ スプレッドシートを設定しました'); }
+                }}>保存</button>
             )}
           </div>
-        )}
+          {spreadsheetId && (
+            <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
+              style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,color:'#2563eb',marginTop:5,textDecoration:'none'}}>
+              📊 <span style={{textDecoration:'underline'}}>連携中のシートを開く ↗</span>
+            </a>
+          )}
+        </div>
 
         {/* 同期モード選択 */}
-        {!showClientIdSetup && (
-          <div style={{display:'flex',gap:6,marginBottom:12}}>
-            {[['normal','通常同期','新規追加＋更新のみ'],['full','全件再同期','シートを最新状態に上書き']].map(([m,label,desc]) => (
-              <button key={m} onClick={() => setSyncMode(m)}
-                style={{flex:1,padding:'8px 6px',borderRadius:10,border:`1.5px solid ${syncMode===m?'#16a34a':'#e5e7eb'}`,
-                  background: syncMode===m ? '#f0fdf4' : '#ffffff',
-                  cursor:'pointer',textAlign:'center',transition:'all 0.15s'}}>
-                <div style={{fontSize:12,fontWeight:700,color: syncMode===m?'#16a34a':'#374151'}}>{label}</div>
-                <div style={{fontSize:9,color:'#9ca3af',marginTop:2,lineHeight:1.3}}>{desc}</div>
-              </button>
-            ))}
-          </div>
-        )}
+        <div style={{display:'flex',gap:6,marginBottom:12}}>
+          {[['normal','通常同期','新規追加＋更新のみ'],['full','全件再同期','シート全体を上書き']].map(([m,label,desc]) => (
+            <button key={m} onClick={() => setSyncMode(m)}
+              style={{flex:1,padding:'8px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',transition:'all 0.15s',
+                border:`1.5px solid ${syncMode===m?'#16a34a':'#e5e7eb'}`,
+                background: syncMode===m ? '#f0fdf4' : '#ffffff'}}>
+              <div style={{fontSize:12,fontWeight:700,color: syncMode===m?'#16a34a':'#374151'}}>{label}</div>
+              <div style={{fontSize:9,color:'#9ca3af',marginTop:2,lineHeight:1.3}}>{desc}</div>
+            </button>
+          ))}
+        </div>
 
-        {/* 同期ボタン */}
-        {!showClientIdSetup && (
-          <button className="btn-primary"
-            style={{width:'100%',background: gSyncing ? '#9ca3af' : '#16a34a',marginBottom:8,fontSize:15,borderRadius:10,padding:'12px'}}
-            onClick={() => gToken ? doSheetsSync(gToken, syncMode) : handleGoogleLogin(syncMode)}
-            disabled={gSyncing}>
-            {gSyncing
-              ? <><span className="spinner"/> 同期中...</>
-              : gToken
-                ? `🔄 ${syncMode === 'full' ? '全件再同期' : '同期する'}（在庫${data.inventory.length}件・売上${data.sales.length}件）`
-                : `🔑 Googleでログインして同期`}
-          </button>
-        )}
+        {/* ── メイン同期ボタン ── */}
+        <button
+          style={{width:'100%',padding:'14px',borderRadius:12,border:'none',cursor: gSyncing ? 'not-allowed' : 'pointer',
+            fontSize:15,fontWeight:700,color:'#fff',marginBottom:8,transition:'background 0.2s',
+            background: gSyncing ? '#9ca3af' : gToken ? '#16a34a' : '#4285f4'}}
+          onClick={() => gToken ? doSheetsSync(gToken, syncMode) : handleGoogleLogin(syncMode)}
+          disabled={gSyncing}>
+          {gSyncing ? (
+            <><span className="spinner"/> 同期中...</>
+          ) : gToken ? (
+            `🔄 ${syncMode === 'full' ? '全件再同期' : '同期する'}　在庫 ${data.inventory.length}件・売上 ${data.sales.length}件`
+          ) : (
+            <span style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10}}>
+              <svg width="18" height="18" viewBox="0 0 18 18" style={{flexShrink:0}}>
+                <path fill="#fff" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>
+                <path fill="#fff" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
+                <path fill="#fff" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/>
+                <path fill="#fff" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+              </svg>
+              Googleでログインして同期
+            </span>
+          )}
+        </button>
 
-        {/* 前回の同期結果 */}
+        {/* 同期結果カード */}
         {syncResult && !gSyncing && (
-          <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #bbf7d0'}}>
+          <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:6,border:'1px solid #bbf7d0'}}>
             <div style={{fontSize:11,fontWeight:700,color:'#16a34a',marginBottom:6}}>
               ✅ 同期完了 — {new Date(syncResult.time).toLocaleString('ja-JP')}
             </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4,fontSize:11,color:'#374151'}}>
-              <div style={{background:'#ffffff',borderRadius:7,padding:'6px 8px'}}>
-                <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,marginBottom:2}}>📦 在庫データ</div>
-                <span style={{color:'#16a34a',fontWeight:700}}>+{syncResult.invAdded}件</span>
-                <span style={{color:'#9ca3af',marginLeft:4}}>追加</span>
-                <span style={{color:'#f59e0b',fontWeight:700,marginLeft:8}}>{syncResult.invUpdated}件</span>
-                <span style={{color:'#9ca3af',marginLeft:4}}>更新</span>
-              </div>
-              <div style={{background:'#ffffff',borderRadius:7,padding:'6px 8px'}}>
-                <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,marginBottom:2}}>💰 売上データ</div>
-                <span style={{color:'#16a34a',fontWeight:700}}>+{syncResult.saleAdded}件</span>
-                <span style={{color:'#9ca3af',marginLeft:4}}>追加</span>
-                <span style={{color:'#f59e0b',fontWeight:700,marginLeft:8}}>{syncResult.saleUpdated}件</span>
-                <span style={{color:'#9ca3af',marginLeft:4}}>更新</span>
-              </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}}>
+              {[['📦 在庫データ', syncResult.invAdded, syncResult.invUpdated],
+                ['💰 売上データ', syncResult.saleAdded, syncResult.saleUpdated]].map(([label,added,updated]) => (
+                <div key={label} style={{background:'#fff',borderRadius:7,padding:'6px 8px',fontSize:11}}>
+                  <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,marginBottom:3}}>{label}</div>
+                  <span style={{color:'#16a34a',fontWeight:700}}>+{added}件</span>
+                  <span style={{color:'#9ca3af',fontSize:10,marginLeft:3}}>追加</span>
+                  <span style={{color:'#f59e0b',fontWeight:700,marginLeft:8}}>{updated}件</span>
+                  <span style={{color:'#9ca3af',fontSize:10,marginLeft:3}}>更新</span>
+                </div>
+              ))}
             </div>
           </div>
         )}
-        {/* 前回同期時刻（settingsから） */}
+
+        {/* 前回同期時刻 */}
         {!syncResult && settings.googleLastSyncTime && (
-          <div style={{fontSize:11,color:'#9ca3af',textAlign:'center',marginBottom:4}}>
+          <div style={{fontSize:11,color:'#9ca3af',textAlign:'center',paddingTop:2}}>
             前回の同期: {new Date(settings.googleLastSyncTime).toLocaleString('ja-JP')}
           </div>
         )}
-
-        {/* Client ID 設定リンク */}
-        <button style={{width:'100%',background:'none',border:'none',fontSize:11,color:'#9ca3af',cursor:'pointer',padding:'4px'}}
-          onClick={() => setShowClientIdSetup(v => !v)}>
-          {settings.googleClientId ? '⚙️ Client IDを変更する' : '⚙️ Client IDを設定する（初回のみ）'}
-        </button>
       </div>
 
       {/* まとめてDL */}
