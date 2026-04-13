@@ -665,6 +665,7 @@ const getInitialData = () => ({
     gasUrl: '',
     googleClientId: '',
     googleSpreadsheetId: '',
+    googleLastSyncTime: null,
   },
 });
 
@@ -7394,52 +7395,130 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
   const [kobotsuSelected, setKobotsuSelected] = React.useState(null); // 古物台帳 商品詳細モーダル
   const [clientIdInput, setClientIdInput]     = React.useState(settings.googleClientId || '');
+  const [syncMode, setSyncMode]               = React.useState('normal'); // 'normal' | 'full'
+  const [syncResult, setSyncResult]           = React.useState(null);
+  const [spreadsheetInput, setSpreadsheetInput] = React.useState(settings.googleSpreadsheetId || '');
+  const tcRef = React.useRef(null);
 
   const spreadsheetId = settings.googleSpreadsheetId || '';
 
-  const buildRows = () => {
-    const headers = ['売却日','ブランド','商品名','カテゴリー','プラットフォーム','販売価格','手数料','送料','純利益','仕入れ価格','仕入れ日','仕入れ先','商品ID','管理番号'];
-    const rows = [headers];
-    data.sales.forEach(s => {
-      const item = data.inventory.find(i => i.id === s.inventoryId) || {};
-      const fee = Math.round((s.salePrice||0) * (s.feeRate||0));
-      rows.push([s.saleDate||'', item.brand||'', item.productName||'', item.category||'',
-        s.platform||'', s.salePrice||0, fee, s.shipping||0, s.profit||0,
-        item.purchasePrice||0, item.purchaseDate||'', item.purchaseStore||'',
-        s.platformId||'', item.mgmtNo||'']);
+  // ── Sheets API helpers ──────────────────────────────────────
+  const GSHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+  const sheetsReq = async (token, url, opts = {}) => {
+    const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) } });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error?.message || `HTTP ${r.status}`);
+    return j;
+  };
+  const sheetsGet = (token, sid, range) =>
+    fetch(`${GSHEETS}/${sid}/values/${encodeURIComponent(range)}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json()).then(j => { if (j.error) throw new Error(j.error.message); return j; })
+      .catch(() => ({ values: [] }));
+  const sheetsBatchUpdate = (token, sid, rangeData) =>
+    sheetsReq(token, `${GSHEETS}/${sid}/values:batchUpdate`, {
+      method: 'POST', body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: rangeData })
     });
-    return rows;
+  const sheetsAppend = (token, sid, sheetName, rows) =>
+    sheetsReq(token, `${GSHEETS}/${sid}/values/${encodeURIComponent(sheetName + '!A1')}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+      method: 'POST', body: JSON.stringify({ values: rows })
+    });
+  const sheetsClearRange = (token, sid, range) =>
+    fetch(`${GSHEETS}/${sid}/values/${encodeURIComponent(range)}:clear`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+
+  const ensureSheetTab = async (token, sid, title) => {
+    const meta = await sheetsReq(token, `${GSHEETS}/${sid}`);
+    if (!meta.sheets?.some(s => s.properties?.title === title)) {
+      await sheetsReq(token, `${GSHEETS}/${sid}:batchUpdate`, {
+        method: 'POST', body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
+      });
+    }
   };
 
-  const doSheetsSync = async (token) => {
+  // Upsert: read existing IDs → update matching rows, append new rows
+  const upsertSheet = async (token, sid, sheetName, headers, localRows) => {
+    const existing = (await sheetsGet(token, sid, `${sheetName}!A:A`)).values || [];
+    if (existing.length === 0) {
+      await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
+    }
+    const idToRow = {};
+    existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
+    const toUpdate = [], toAppend = [];
+    localRows.forEach(row => {
+      const id = String(row[0] || '');
+      if (id && idToRow[id]) toUpdate.push({ range: `${sheetName}!A${idToRow[id]}`, values: [row] });
+      else toAppend.push(row);
+    });
+    for (let i = 0; i < toUpdate.length; i += 100)
+      await sheetsBatchUpdate(token, sid, toUpdate.slice(i, i + 100));
+    for (let i = 0; i < toAppend.length; i += 500)
+      await sheetsAppend(token, sid, sheetName, toAppend.slice(i, i + 500));
+    return { updated: toUpdate.length, added: toAppend.length };
+  };
+
+  // Full re-sync: clear data rows then write all
+  const fullResyncSheet = async (token, sid, sheetName, headers, localRows) => {
+    await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
+    await sheetsClearRange(token, sid, `${sheetName}!A2:ZZ`);
+    for (let i = 0; i < localRows.length; i += 500)
+      await sheetsAppend(token, sid, sheetName, localRows.slice(i, i + 500));
+    return { updated: 0, added: localRows.length };
+  };
+
+  // Row builders
+  const INV_HEADERS  = ['ID','商品名','ステータス','仕入れ日','仕入れ金額(税込)','出品価格','仕入先','プラットフォーム','カテゴリー','ブランド','管理番号','メモ','作成日時','更新日時'];
+  const SALE_HEADERS = ['ID','在庫ID','商品名','売上日','売上金額','純利益','仕入れ金額','利益率%','プラットフォーム','手数料','配送料','作成日時'];
+  const statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
+  const fmtDt = s => s ? String(s).slice(0,19).replace('T',' ') : '';
+  const invRow = item => [item.id||'', item.productName||'', statusLabel(item.status), item.purchaseDate||'',
+    item.purchasePrice||0, item.listPrice||'', item.purchaseStore||item.storeName||'', item.platform||'',
+    item.category||'', item.brand||'', item.mgmtNo||'', item.memo||'', fmtDt(item.createdAt), fmtDt(item.updatedAt)];
+  const saleRow = (s, invMap) => {
+    const inv = invMap[s.inventoryId] || {};
+    const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
+    return [s.id||'', s.inventoryId||'', inv.productName||'', s.saleDate||'',
+      s.salePrice||0, s.profit||0, s.purchasePrice||inv.purchasePrice||0, rate,
+      s.platform||inv.platform||'', Math.round((s.salePrice||0)*(s.feeRate||0)), s.shipping||0, fmtDt(s.createdAt)];
+  };
+
+  const doSheetsSync = async (token, mode) => {
     setGSyncing(true);
+    setSyncResult(null);
     try {
-      const rows = buildRows();
-      let sid = spreadsheetId;
+      // Ensure / create spreadsheet
+      let sid = spreadsheetId || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
       if (!sid) {
-        const cr = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+        const cr = await sheetsReq(token, GSHEETS, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ properties: { title: 'SalesLog 売上管理表' }, sheets: [{ properties: { title: '売上管理表' } }] }),
+          body: JSON.stringify({ properties: { title: 'SalesLog データ' },
+            sheets: [{ properties: { title: '在庫データ' } }, { properties: { title: '売上データ' } }] })
         });
-        const crJson = await cr.json();
-        if (!cr.ok) throw new Error(crJson.error?.message || 'シート作成失敗');
-        sid = crJson.spreadsheetId;
+        sid = cr.spreadsheetId;
         setSetting('googleSpreadsheetId', sid);
+        setSpreadsheetInput(`https://docs.google.com/spreadsheets/d/${sid}`);
+      } else {
+        await ensureSheetTab(token, sid, '在庫データ');
+        await ensureSheetTab(token, sid, '売上データ');
       }
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/%E5%A3%B2%E4%B8%8A%E7%AE%A1%E7%90%86%E8%A1%A8!A1:Z9999:clear`, {
-        method: 'POST', headers: { 'Authorization': `Bearer ${token}` },
-      });
-      const wr = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/%E5%A3%B2%E4%B8%8A%E7%AE%A1%E7%90%86%E8%A1%A8!A1?valueInputOption=RAW`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ values: rows }),
-      });
-      if (!wr.ok) throw new Error((await wr.json()).error?.message || '書き込み失敗');
-      toast(`✅ ${data.sales.length}件を同期しました`);
-      window.open(`https://docs.google.com/spreadsheets/d/${sid}`, '_blank');
+
+      const invMap = {};
+      data.inventory.forEach(i => { invMap[i.id] = i; });
+      const invRows  = data.inventory.map(invRow);
+      const saleRows = data.sales.map(s => saleRow(s, invMap));
+
+      const syncFn = mode === 'full' ? fullResyncSheet : upsertSheet;
+      const [invRes, saleRes] = await Promise.all([
+        syncFn(token, sid, '在庫データ',  INV_HEADERS,  invRows),
+        syncFn(token, sid, '売上データ', SALE_HEADERS, saleRows),
+      ]);
+
+      const now = new Date().toISOString();
+      setSetting('googleLastSyncTime', now);
+      const result = { invAdded: invRes.added, invUpdated: invRes.updated,
+        saleAdded: saleRes.added, saleUpdated: saleRes.updated, time: now, sid };
+      setSyncResult(result);
+      toast(`✅ 同期完了 — 在庫 ${invRes.added}件追加/${invRes.updated}件更新、売上 ${saleRes.added}件追加/${saleRes.updated}件更新`);
     } catch(err) {
-      if (err.message?.includes('401') || err.message?.includes('invalid_token')) {
+      if (String(err.message).includes('401') || String(err.message).includes('invalid_token')) {
         setGToken(null);
         toast('⚠️ 認証が切れました。再度ログインしてください');
       } else {
@@ -7450,22 +7529,25 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
     }
   };
 
-  const handleGoogleLogin = () => {
+  const handleGoogleLogin = (mode) => {
     const cid = (clientIdInput || settings.googleClientId || '').trim();
     if (!cid) { setShowClientIdSetup(true); return; }
     if (!window.google?.accounts?.oauth2) { toast('⚠️ Google APIを読み込み中です。少し待って再試行してください'); return; }
-    const tc = window.google.accounts.oauth2.initTokenClient({
-      client_id: cid,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
-      callback: (res) => {
-        if (res.error) { toast('❌ ログイン失敗: ' + res.error); return; }
-        setSetting('googleClientId', cid);
-        setGToken(res.access_token);
-        toast('✅ Googleアカウントに接続しました');
-        doSheetsSync(res.access_token);
-      },
-    });
-    tc.requestAccessToken({ prompt: gToken ? '' : 'consent' });
+    if (!tcRef.current || tcRef.current._cid !== cid) {
+      tcRef.current = window.google.accounts.oauth2.initTokenClient({
+        client_id: cid,
+        scope: 'https://www.googleapis.com/auth/spreadsheets',
+        callback: () => {},
+      });
+      tcRef.current._cid = cid;
+    }
+    tcRef.current.callback = (res) => {
+      if (res.error) { toast('❌ ログイン失敗: ' + res.error); return; }
+      setSetting('googleClientId', cid);
+      setGToken(res.access_token);
+      doSheetsSync(res.access_token, mode || syncMode);
+    };
+    tcRef.current.requestAccessToken({ prompt: gToken ? '' : 'consent' });
   };
 
   const salesPreview = [...data.sales].sort((a,b) => {
@@ -7520,62 +7602,126 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   return (
     <div>
       {/* ── Google Sheets連携カード ── */}
-      <div className="card" style={{padding:16,marginBottom:12,border:'1px solid #d1fae5'}}>
-        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-          <span style={{fontSize:22}}>📗</span>
-          <div>
+      <div className="card" style={{padding:16,marginBottom:12,border:'1.5px solid #d1fae5',borderRadius:14}}>
+        {/* ヘッダー */}
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+          <div style={{width:40,height:40,borderRadius:10,background:'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>📗</div>
+          <div style={{flex:1}}>
             <div style={{fontWeight:700,fontSize:15}}>Googleスプレッドシート連携</div>
-            <div style={{fontSize:11,color:'#999',marginTop:1}}>ワンタップで売上データをシートに同期</div>
+            <div style={{fontSize:11,color:'#9ca3af',marginTop:1}}>在庫・売上を自動でシートに同期</div>
           </div>
+          {gToken && <div style={{fontSize:10,color:'#16a34a',fontWeight:700,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:99,padding:'3px 9px'}}>接続中</div>}
         </div>
+
+        {/* Client ID 設定パネル */}
         {showClientIdSetup ? (
-          <div style={{marginBottom:12}}>
-            <label className="field-label">Google OAuth クライアントID</label>
+          <div style={{background:'#f9fafb',borderRadius:10,padding:12,marginBottom:12}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:8}}>⚙️ Google OAuth クライアントID</div>
             <input className="input-field" style={{marginBottom:6,fontSize:13}}
               value={clientIdInput} onChange={e => setClientIdInput(e.target.value)}
-              placeholder="xxxxx.apps.googleusercontent.com"/>
-            <div style={{fontSize:11,color:'#888',lineHeight:1.7,marginBottom:6}}>
-              取得方法：<a href="https://console.cloud.google.com/" target="_blank" style={{color:'#2563eb'}}>Google Cloud Console</a> →「APIとサービス」→「認証情報」→「OAuth 2.0 クライアント ID」を作成。アプリのURLを「承認済みJavaScriptオリジン」に追加してください。
+              placeholder="xxxx.apps.googleusercontent.com"/>
+            <div style={{fontSize:11,color:'#9ca3af',lineHeight:1.7,marginBottom:8}}>
+              <a href="https://console.cloud.google.com/" target="_blank" style={{color:'#2563eb',fontWeight:600}}>Google Cloud Console</a> →「APIとサービス」→「認証情報」→「OAuth 2.0 クライアントID（ウェブアプリ）」を作成し、このアプリのURLを「承認済みJavaScriptオリジン」に追加してください。
             </div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn-primary" style={{flex:1,background:'#16a34a',fontSize:13}}
-                onClick={() => { if(clientIdInput.trim()) { setSetting('googleClientId', clientIdInput.trim()); setShowClientIdSetup(false); toast('✅ Client IDを保存しました'); } }}>
-                保存
-              </button>
-              <button className="btn-secondary" style={{fontSize:13}} onClick={() => setShowClientIdSetup(false)}>
-                キャンセル
-              </button>
+                onClick={() => { if(clientIdInput.trim()){ setSetting('googleClientId',clientIdInput.trim()); setShowClientIdSetup(false); toast('✅ Client IDを保存しました'); } }}>保存</button>
+              <button className="btn-secondary" style={{fontSize:13}} onClick={() => setShowClientIdSetup(false)}>キャンセル</button>
             </div>
           </div>
-        ) : (
-          <>
-            {gToken && (
-              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10,padding:'6px 10px',background:'#d1fae5',borderRadius:8}}>
-                <span style={{fontSize:14}}>✅</span>
-                <span style={{fontSize:12,color:'#065f46',fontWeight:600}}>Googleアカウントに接続中</span>
-              </div>
-            )}
+        ) : null}
+
+        {/* スプレッドシートURL入力 */}
+        {!showClientIdSetup && (
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:'#6b7280',fontWeight:600,marginBottom:4}}>連携先スプレッドシート（URLまたはID）</div>
+            <div style={{display:'flex',gap:6}}>
+              <input className="input-field" style={{flex:1,fontSize:12,padding:'7px 10px'}}
+                value={spreadsheetInput}
+                onChange={e => setSpreadsheetInput(e.target.value)}
+                placeholder="空欄 = 新規作成　または URL / シートID を貼り付け"/>
+              {spreadsheetInput && (
+                <button style={{background:'none',border:'1.5px solid #e5e7eb',borderRadius:8,padding:'0 10px',fontSize:12,color:'#2563eb',cursor:'pointer',whiteSpace:'nowrap'}}
+                  onClick={() => {
+                    const sid = spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim() || spreadsheetInput.trim();
+                    if (sid) { setSetting('googleSpreadsheetId', sid); toast('✅ スプレッドシートを設定しました'); }
+                  }}>保存</button>
+              )}
+            </div>
             {spreadsheetId && (
-              <div style={{marginBottom:10}}>
-                <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
-                  style={{display:'flex',alignItems:'center',gap:6,fontSize:13,color:'#2563eb',textDecoration:'none',padding:'7px 10px',background:'#eff6ff',borderRadius:8}}>
-                  <span>📊</span><span style={{fontWeight:600}}>同期済みシートを開く</span>
-                  <span style={{marginLeft:'auto',fontSize:11,color:'#93c5fd'}}>↗</span>
-                </a>
-              </div>
+              <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
+                style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,color:'#2563eb',marginTop:5,textDecoration:'none'}}>
+                📊 <span style={{textDecoration:'underline'}}>シートを開く ↗</span>
+              </a>
             )}
-            <button className="btn-primary" style={{width:'100%',background:'#16a34a',marginBottom:8,fontSize:15}}
-              onClick={handleGoogleLogin} disabled={gSyncing}>
-              {gSyncing ? <><span className="spinner"/> 同期中...</>
-                : gToken ? `🔄 再同期する（${data.sales.length}件）`
-                : `📊 Googleでログイン＆同期（${data.sales.length}件）`}
-            </button>
-            <button style={{width:'100%',background:'none',border:'none',fontSize:11,color:'#aaa',cursor:'pointer',padding:'4px'}}
-              onClick={() => setShowClientIdSetup(true)}>
-              {settings.googleClientId ? '⚙️ Client IDを変更する' : '⚙️ Client IDを設定する（初回のみ）'}
-            </button>
-          </>
+          </div>
         )}
+
+        {/* 同期モード選択 */}
+        {!showClientIdSetup && (
+          <div style={{display:'flex',gap:6,marginBottom:12}}>
+            {[['normal','通常同期','新規追加＋更新のみ'],['full','全件再同期','シートを最新状態に上書き']].map(([m,label,desc]) => (
+              <button key={m} onClick={() => setSyncMode(m)}
+                style={{flex:1,padding:'8px 6px',borderRadius:10,border:`1.5px solid ${syncMode===m?'#16a34a':'#e5e7eb'}`,
+                  background: syncMode===m ? '#f0fdf4' : '#ffffff',
+                  cursor:'pointer',textAlign:'center',transition:'all 0.15s'}}>
+                <div style={{fontSize:12,fontWeight:700,color: syncMode===m?'#16a34a':'#374151'}}>{label}</div>
+                <div style={{fontSize:9,color:'#9ca3af',marginTop:2,lineHeight:1.3}}>{desc}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 同期ボタン */}
+        {!showClientIdSetup && (
+          <button className="btn-primary"
+            style={{width:'100%',background: gSyncing ? '#9ca3af' : '#16a34a',marginBottom:8,fontSize:15,borderRadius:10,padding:'12px'}}
+            onClick={() => gToken ? doSheetsSync(gToken, syncMode) : handleGoogleLogin(syncMode)}
+            disabled={gSyncing}>
+            {gSyncing
+              ? <><span className="spinner"/> 同期中...</>
+              : gToken
+                ? `🔄 ${syncMode === 'full' ? '全件再同期' : '同期する'}（在庫${data.inventory.length}件・売上${data.sales.length}件）`
+                : `🔑 Googleでログインして同期`}
+          </button>
+        )}
+
+        {/* 前回の同期結果 */}
+        {syncResult && !gSyncing && (
+          <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #bbf7d0'}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#16a34a',marginBottom:6}}>
+              ✅ 同期完了 — {new Date(syncResult.time).toLocaleString('ja-JP')}
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4,fontSize:11,color:'#374151'}}>
+              <div style={{background:'#ffffff',borderRadius:7,padding:'6px 8px'}}>
+                <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,marginBottom:2}}>📦 在庫データ</div>
+                <span style={{color:'#16a34a',fontWeight:700}}>+{syncResult.invAdded}件</span>
+                <span style={{color:'#9ca3af',marginLeft:4}}>追加</span>
+                <span style={{color:'#f59e0b',fontWeight:700,marginLeft:8}}>{syncResult.invUpdated}件</span>
+                <span style={{color:'#9ca3af',marginLeft:4}}>更新</span>
+              </div>
+              <div style={{background:'#ffffff',borderRadius:7,padding:'6px 8px'}}>
+                <div style={{fontSize:9,color:'#9ca3af',fontWeight:600,marginBottom:2}}>💰 売上データ</div>
+                <span style={{color:'#16a34a',fontWeight:700}}>+{syncResult.saleAdded}件</span>
+                <span style={{color:'#9ca3af',marginLeft:4}}>追加</span>
+                <span style={{color:'#f59e0b',fontWeight:700,marginLeft:8}}>{syncResult.saleUpdated}件</span>
+                <span style={{color:'#9ca3af',marginLeft:4}}>更新</span>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* 前回同期時刻（settingsから） */}
+        {!syncResult && settings.googleLastSyncTime && (
+          <div style={{fontSize:11,color:'#9ca3af',textAlign:'center',marginBottom:4}}>
+            前回の同期: {new Date(settings.googleLastSyncTime).toLocaleString('ja-JP')}
+          </div>
+        )}
+
+        {/* Client ID 設定リンク */}
+        <button style={{width:'100%',background:'none',border:'none',fontSize:11,color:'#9ca3af',cursor:'pointer',padding:'4px'}}
+          onClick={() => setShowClientIdSetup(v => !v)}>
+          {settings.googleClientId ? '⚙️ Client IDを変更する' : '⚙️ Client IDを設定する（初回のみ）'}
+        </button>
       </div>
 
       {/* まとめてDL */}
