@@ -992,13 +992,20 @@ const ProfitChart = ({ summarySales, now }) => {
   const [selectedIdx, setSelectedIdx] = React.useState(null);
   const scrollRef = React.useRef(null);
 
-  const MONTHS = 12;
-  const COL_W  = 54;
+  const MONTHS  = 12;
+  const COL_W   = 54;
   const TOTAL_W = MONTHS * COL_W;
-  const SVG_H   = 130;
-  const TOP_PAD = 14;
+  const SVG_H   = 150;
+  const TOP_PAD = 24;
   const BOT_PAD = 22;
   const DRAW_H  = SVG_H - TOP_PAD - BOT_PAD;
+
+  const yFmt = v => {
+    const abs = Math.abs(v);
+    if (abs >= 10000) return `${(v/10000).toFixed(abs % 10000 === 0 ? 0 : 1)}万`;
+    if (abs >= 1000)  return `${Math.round(v/1000)}k`;
+    return String(v);
+  };
 
   const monthData = React.useMemo(() => {
     const thisKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
@@ -1039,6 +1046,13 @@ const ProfitChart = ({ summarySales, now }) => {
   const selected = selectedIdx !== null ? monthData[selectedIdx] : null;
   const hasData  = profits.some(p => p !== 0);
 
+  // Y軸ラベル（最大・0・最小）
+  const yLabels = hasData ? [
+    { v: maxP, y: yOf(maxP) },
+    ...(minP < 0 ? [{ v: minP, y: yOf(minP) }] : []),
+    ...(maxP > 0 && minP < 0 ? [{ v: 0, y: zeroY }] : []),
+  ] : [];
+
   return (
     <div>
       {/* グラフカード ── 白背景 */}
@@ -1056,60 +1070,105 @@ const ProfitChart = ({ summarySales, now }) => {
           </div>
         </div>
 
-        <div ref={scrollRef}
-          style={{overflowX:'auto', overflowY:'hidden', paddingBottom:2,
-            msOverflowStyle:'none', scrollbarWidth:'none'}}>
-          <svg width={TOTAL_W} height={SVG_H}
-            style={{display:'block', overflow:'visible', userSelect:'none'}}>
+        {/* Y軸ラベル（固定）+ スクロールSVG */}
+        <div style={{display:'flex', alignItems:'flex-start'}}>
+          {/* Y軸ラベル列（固定・非スクロール） */}
+          <div style={{position:'relative', width:36, flexShrink:0, height: SVG_H - BOT_PAD}}>
+            {yLabels.map((yl, idx) => (
+              <div key={idx} style={{
+                position:'absolute', right:3,
+                top: yl.y - 6,
+                fontSize:8, color:'#9ca3af', fontWeight:600,
+                lineHeight:1, textAlign:'right', whiteSpace:'nowrap',
+              }}>{yFmt(yl.v)}</div>
+            ))}
+          </div>
 
-            {/* 補助線（薄グレー） */}
-            <line x1={0} y1={zeroY} x2={TOTAL_W} y2={zeroY}
-              stroke="#e5e7eb" strokeWidth={1} strokeDasharray="3,4"/>
+          <div ref={scrollRef}
+            style={{flex:1, overflowX:'auto', overflowY:'hidden', paddingBottom:2,
+              msOverflowStyle:'none', scrollbarWidth:'none'}}>
+            <svg width={TOTAL_W} height={SVG_H}
+              style={{display:'block', overflow:'visible', userSelect:'none'}}>
 
-            {/* 選択列ハイライト */}
-            {selectedIdx !== null && (
-              <rect x={selectedIdx * COL_W} y={0}
-                width={COL_W} height={SVG_H - BOT_PAD}
-                fill="#f3f4f6" rx={4}/>
-            )}
+              {/* 現在月カラム薄緑ハイライト */}
+              {monthData.map((d, i) => d.isCurrent ? (
+                <rect key="cur-bg" x={i * COL_W} y={0}
+                  width={COL_W} height={SVG_H - BOT_PAD}
+                  fill="rgba(22,163,74,0.07)" rx={4}/>
+              ) : null)}
 
-            {hasData && (
-              <>
-                {/* 面積塗りつぶし（薄緑） */}
-                <path d={areaPath} fill="rgba(22,163,74,0.08)" stroke="none"/>
-                {/* 折れ線（緑） */}
-                <path d={linePath} fill="none"
-                  stroke="#16a34a" strokeWidth={2.2}
-                  strokeLinecap="round" strokeLinejoin="round"/>
-              </>
-            )}
+              {/* ゼロ補助線（薄グレー） */}
+              <line x1={0} y1={zeroY} x2={TOTAL_W} y2={zeroY}
+                stroke="#e5e7eb" strokeWidth={1} strokeDasharray="3,4"/>
 
-            {monthData.map((d, i) => {
-              const cx = xOf(i);
-              const cy = yOf(d.profit);
-              const isSel = selectedIdx === i;
-              const dotColor = d.profit < 0 ? '#dc2626' : '#16a34a';
-              return (
-                <g key={d.key} onClick={() => setSelectedIdx(isSel ? null : i)}
-                  style={{cursor:'pointer'}}>
-                  <rect x={i * COL_W} y={0} width={COL_W} height={SVG_H - BOT_PAD} fill="transparent"/>
-                  {hasData && (
-                    <circle cx={cx} cy={cy}
-                      r={isSel ? 5.5 : 3.5}
-                      fill={isSel ? dotColor : 'white'}
-                      stroke={dotColor}
-                      strokeWidth={isSel ? 0 : 2}/>
-                  )}
-                  <text x={cx} y={SVG_H - 5}
-                    textAnchor="middle" fontSize={9}
-                    fill={d.isCurrent ? '#16a34a' : '#9ca3af'}
-                    fontWeight={d.isCurrent ? 700 : 400}>
-                    {d.yearLabel ? d.yearLabel : d.label}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
+              {/* 選択列ハイライト */}
+              {selectedIdx !== null && (
+                <rect x={selectedIdx * COL_W} y={0}
+                  width={COL_W} height={SVG_H - BOT_PAD}
+                  fill="#f3f4f6" rx={4}/>
+              )}
+
+              {hasData && (
+                <>
+                  {/* 面積塗りつぶし（薄緑） */}
+                  <path d={areaPath} fill="rgba(22,163,74,0.08)" stroke="none"/>
+                  {/* 折れ線（緑） */}
+                  <path d={linePath} fill="none"
+                    stroke="#16a34a" strokeWidth={2.2}
+                    strokeLinecap="round" strokeLinejoin="round"/>
+                </>
+              )}
+
+              {monthData.map((d, i) => {
+                const cx = xOf(i);
+                const cy = yOf(d.profit);
+                const isSel = selectedIdx === i;
+                const dotColor = d.profit < 0 ? '#dc2626' : '#16a34a';
+                // 現在月ドットは常時塗りつぶし
+                const fillColor = (isSel || d.isCurrent) ? dotColor : 'white';
+                const strokeW   = (isSel || d.isCurrent) ? 0 : 2;
+                return (
+                  <g key={d.key} onClick={() => setSelectedIdx(isSel ? null : i)}
+                    style={{cursor:'pointer'}}>
+                    <rect x={i * COL_W} y={0} width={COL_W} height={SVG_H - BOT_PAD} fill="transparent"/>
+                    {hasData && (
+                      <>
+                        <circle cx={cx} cy={cy}
+                          r={isSel ? 5.5 : (d.isCurrent ? 4.5 : 3.5)}
+                          fill={fillColor}
+                          stroke={dotColor}
+                          strokeWidth={strokeW}/>
+                        {/* 選択時バルーン（値表示） */}
+                        {isSel && (() => {
+                          const sign = d.profit >= 0 ? '+' : '−';
+                          const txt  = `${sign}¥${formatMoney(Math.abs(d.profit))}`;
+                          const bw   = Math.max(54, txt.length * 6.2 + 14);
+                          const bx   = Math.min(Math.max(cx - bw/2, 1), TOTAL_W - bw - 1);
+                          const by   = Math.max(2, cy - 28);
+                          return (
+                            <g>
+                              <rect x={bx} y={by} width={bw} height={18}
+                                rx={5} fill={dotColor} opacity={0.9}/>
+                              <text x={bx + bw/2} y={by + 12.5}
+                                textAnchor="middle" fontSize={9.5} fill="white" fontWeight={700}>
+                                {txt}
+                              </text>
+                            </g>
+                          );
+                        })()}
+                      </>
+                    )}
+                    <text x={cx} y={SVG_H - 5}
+                      textAnchor="middle" fontSize={9}
+                      fill={d.isCurrent ? '#16a34a' : '#9ca3af'}
+                      fontWeight={d.isCurrent ? 700 : 400}>
+                      {d.yearLabel ? d.yearLabel : d.label}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
         </div>
 
         {!hasData && (
@@ -1263,17 +1322,32 @@ const HomeTab = () => {
         )}
 
         {/* ── HERO: 今月の純利益（白カード） ── */}
-        <div style={{background:'#ffffff',borderRadius:16,padding:'18px 18px 14px',
-          border:'1.5px solid #e5e7eb',boxShadow:'0 1px 6px rgba(0,0,0,0.05)'}}>
-          <div style={{fontSize:10,color:'#9ca3af',fontWeight:700,letterSpacing:'0.08em',marginBottom:4}}>
-            今月の純利益
+        <div style={{background:'#ffffff',borderRadius:16,overflow:'hidden',
+          border:'1.5px solid #e5e7eb',boxShadow:'0 1px 6px rgba(0,0,0,0.05)',
+          display:'flex'}}>
+          {/* 左アクセントライン */}
+          <div style={{width:4,flexShrink:0,
+            background: totalProfit >= 0 ? '#16a34a' : '#dc2626'}}/>
+          <div style={{flex:1,padding:'18px 18px 14px'}}>
+          {/* タイトル行（右に経過日数） */}
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+            <div style={{fontSize:10,color:'#9ca3af',fontWeight:700,letterSpacing:'0.08em'}}>
+              今月の純利益
+            </div>
+            <div style={{fontSize:10,color:'#9ca3af'}}>
+              {now.getDate()}日経過 / {daysInMonth}日
+            </div>
           </div>
-          {/* メイン金額：黒・大きく */}
+          {/* メイン金額 */}
           <div style={{fontSize:42,fontWeight:900,letterSpacing:'-2px',
-            color:'#111827',lineHeight:1,marginBottom:10}}>
+            color: totalProfit >= 0 ? '#111827' : '#dc2626',lineHeight:1,marginBottom:4}}>
             ¥{formatMoney(totalProfit)}
           </div>
-          {/* 前月比・前月金額 */}
+          {/* 件数・売上（小さく） */}
+          <div style={{fontSize:11,color:'#9ca3af',marginBottom:10}}>
+            {monthlySales.length}件成約 · 売上 ¥{formatMoney(totalRevenue)}
+          </div>
+          {/* 前月比 + ±¥金額 */}
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
             {profitDiffPct !== null ? (
               <span style={{fontSize:12,fontWeight:700,
@@ -1286,8 +1360,11 @@ const HomeTab = () => {
             ) : (
               <span style={{fontSize:11,color:'#9ca3af'}}>前月データなし</span>
             )}
-            {prevMonthProfit > 0 && (
-              <span style={{fontSize:11,color:'#9ca3af'}}>前月 ¥{formatMoney(prevMonthProfit)}</span>
+            {profitDiffPct !== null && profitDiff !== 0 && (
+              <span style={{fontSize:11,fontWeight:600,
+                color: profitDiff >= 0 ? '#16a34a' : '#dc2626'}}>
+                {profitDiff >= 0 ? '+' : '−'}¥{formatMoney(Math.abs(profitDiff))}
+              </span>
             )}
           </div>
           {/* 目標プログレスバー */}
@@ -1323,6 +1400,7 @@ const HomeTab = () => {
               <div style={{fontSize:11,color:'#16a34a',marginTop:4,textAlign:'right',fontWeight:700}}>🎉 今月の目標達成！</div>
             )}
           </div>
+          </div>{/* /flex content */}
         </div>
 
         {/* ── 在庫ステータス 3分割 ── */}
