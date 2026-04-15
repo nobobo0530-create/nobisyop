@@ -2443,7 +2443,7 @@ const PurchaseTab = () => {
         setFormError('商品名を入力してください');
         return; // finally でロック解放
       }
-      if (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '') {
+      if (!bundlePurchase && (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '')) {
         setFormError('仕入れ価格を入力してください（0円より大きい金額）');
         return; // finally でロック解放
       }
