@@ -1335,7 +1335,7 @@ const HomeTab = () => {
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
           <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>
-            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260416c</span>
+            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260416d</span>
             <button onClick={()=>{ if(window._forceSwUpdate){window._forceSwUpdate();}else{window.location.reload();} }} style={{fontSize:8,padding:'1px 5px',borderRadius:4,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',cursor:'pointer',fontWeight:600,WebkitTapHighlightColor:'transparent'}}>更新</button>
             {/* ★ クラウド同期ステータスバッジ（タップで今すぐ同期） */}
             {(()=>{
@@ -4557,6 +4557,15 @@ const InventoryTab = () => {
     }
   }, []); // マウント時のみ実行
 
+  // ★ splitModeがtrueになったらモーダル内の分割UIへ自動スクロール（iOS対応）
+  React.useEffect(() => {
+    if (!splitMode) return;
+    setTimeout(() => {
+      const btn = document.querySelector('[data-split-register-btn]');
+      if (btn) btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+  }, [splitMode]);
+
   // 仕入れからの経過日数
   const daysSince = (dateStr) => {
     if (!dateStr) return null;
@@ -5281,7 +5290,7 @@ const InventoryTab = () => {
                   })()}
                   <div style={{display:'flex',gap:8}}>
                     <button onClick={() => { setSplitMode(false); setSplitItems([]); }}
-                      style={{flex:1,padding:'10px',borderRadius:10,border:'1px solid #d1d5db',background:'white',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+                      style={{flex:1,padding:'10px',borderRadius:10,border:'1px solid #d1d5db',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',touchAction:'manipulation'}}>
                       キャンセル
                     </button>
                     <button onClick={() => {
@@ -5304,15 +5313,18 @@ const InventoryTab = () => {
                         createdAt: new Date(ts + idx).toISOString(),
                         updatedAt: new Date().toISOString(),
                       }));
-                      // 元アイテムを削除して新アイテムを追加
+                      // ★ 元アイテムを削除：トゥームストーン記録（Supabase再起動時に復元されないよう）
+                      const nowTs = new Date().toISOString();
+                      const newDeletedIds = { ...(data.settings?._deletedIds || {}), [selected.id]: nowTs };
                       const newInventory = data.inventory.filter(i => i.id !== selected.id).concat(newItems);
-                      setData({ ...data, inventory: newInventory });
+                      setData({ ...data, inventory: newInventory, settings: { ...data.settings, _deletedIds: newDeletedIds } });
                       setSplitMode(false);
                       setSplitItems([]);
                       setSelected(null);
                       toast(`✅ ${splitItems.length}件に分割登録しました！`);
                     }}
-                      style={{flex:2,padding:'10px',borderRadius:10,border:'none',background:'#1e293b',color:'white',fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                      data-split-register-btn="1"
+                      style={{flex:2,padding:'10px',borderRadius:10,border:'none',background:'#1e293b',color:'white',fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent',touchAction:'manipulation'}}>
                       ✂️ 分割して登録する
                     </button>
                   </div>
