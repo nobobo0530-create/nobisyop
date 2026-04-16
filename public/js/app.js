@@ -1295,7 +1295,7 @@ const HomeTab = () => {
       }}>
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
-          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413l</span></div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413m</span></div>
         </div>
         <div style={{textAlign:'right'}}>
           <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
@@ -2453,11 +2453,14 @@ const PurchaseTab = () => {
   const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
 
   const handleSave = () => {
-    // ★★★ Refから最新の bundlePurchase / bundleItems を読む（クロージャの陳腐化を完全回避）
-    // React 18 concurrent mode でポータルのonClickが古いレンダーのクロージャを参照する場合でも、
-    // RefはトグルボタンON時に同期更新済みなので、常に正確な値が取得できる
-    const bundlePurchase = bundlePurchaseRef.current;   // ← クロージャ値を上書き
-    const bundleItems    = bundleItemsRef.current;       // ← クロージャ値を上書き
+    // ★★★ バンドルモードの判定：クロージャ値とRefの両方をOR結合（どちらかがtrueなら確実にバンドル）
+    // クロージャ値: ポータルボタンがレンダリングされた時点のstate（通常これが正しい）
+    // Ref値: トグルON時に同期更新済み + 毎レンダーで同期（クロージャが古い場合のバックアップ）
+    const _isBundleMode = bundlePurchase || bundlePurchaseRef.current;
+    // ★ バンドルアイテム: クロージャとRefの両方から取得し、有効な方を使用
+    const _bundleItems = (bundleItems && bundleItems.length >= 2)
+      ? bundleItems          // クロージャのstateが有効ならそちらを優先
+      : bundleItemsRef.current;  // フォールバックとしてRef
 
     // ★ Refで同期チェック（saving stateより確実）
     if (savingLockRef.current) {
@@ -2474,17 +2477,37 @@ const PurchaseTab = () => {
         setFormError('商品名を入力してください');
         return; // finally でロック解放
       }
-      if (!bundlePurchase && (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '')) {
+      if (!_isBundleMode && (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '')) {
         setFormError('仕入れ価格を入力してください（0円より大きい金額）');
         return; // finally でロック解放
       }
-      if (bundlePurchase) {
-        const filledItems = bundleItems.filter(bi => bi.purchasePrice !== '');
+
+      // ★★★ バンドルモード時のバリデーション + 自動補完
+      let finalBundleItems = _bundleItems;
+      if (_isBundleMode) {
+        const totalBudget = (Number(form.itemPriceTaxIn) || 0) - (Number(form.couponTaxIn) || 0);
+        const filledItems = _bundleItems.filter(bi => bi.purchasePrice !== '' && bi.purchasePrice !== '0');
+
         if (filledItems.length < 2) {
-          setFormError('まとめ仕入れは2件以上の金額を入力してください');
-          return; // finally でロック解放
+          // 価格が入力されていない → totalBudgetがあれば均等分割で自動補完
+          if (totalBudget > 0) {
+            const n = _bundleItems.length;
+            const base = Math.floor(totalBudget / n);
+            const rem  = totalBudget - base * n;
+            finalBundleItems = _bundleItems.map((bi, i) => ({
+              ...bi, purchasePrice: String(i === n - 1 ? base + rem : base)
+            }));
+            // StateとRefも同期更新
+            bundleItemsRef.current = finalBundleItems;
+            setBundleItems(finalBundleItems);
+            console.log('[Bundle] ★ 均等分割を自動適用（save時）:', finalBundleItems.map(bi => bi.purchasePrice));
+          } else {
+            setFormError('まとめ仕入れ：仕入れ価格（合計）を入力してください');
+            return; // finally でロック解放
+          }
         }
-        const badExisting = bundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
+
+        const badExisting = finalBundleItems.find(bi => bi.mode === 'existing' && !bi.existingItemId);
         if (badExisting) {
           setFormError(`${badExisting.label}：既存商品を選択してください（または「新規登録」に切替）`);
           return; // finally でロック解放
@@ -2509,16 +2532,17 @@ const PurchaseTab = () => {
         localStorage.setItem('nobushop_save_backup', JSON.stringify({
           form, purchaseType, registrationMode,
           editingItemId: editingItem?.id || null,
-          bundlePurchase, bundleItems: bundlePurchase ? bundleItems : undefined,
+          bundlePurchase: _isBundleMode, bundleItems: _isBundleMode ? finalBundleItems : undefined,
           savedAt: new Date().toISOString(),
         }));
       } catch(_) {}
 
       console.log('[Save] start', {
-        mode: editingItem ? 'edit' : (bundlePurchase ? 'bundle' : 'new'),
-        bundlePurchase,
-        bundleItemsCount: bundleItems.length,
-        bundleItemPrices: bundleItems.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode })),
+        mode: editingItem ? 'edit' : (_isBundleMode ? 'bundle' : 'new'),
+        bundlePurchase_closure: bundlePurchase, bundlePurchase_ref: bundlePurchaseRef.current,
+        isBundleMode: _isBundleMode,
+        bundleItemsCount: finalBundleItems?.length,
+        bundleItemPrices: finalBundleItems?.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode })),
         id: editingItem?.id, name: form.productName, price: form.itemPriceTaxIn,
         ts: new Date().toISOString(),
       });
@@ -2606,11 +2630,13 @@ const PurchaseTab = () => {
       }
 
       // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
-      if (bundlePurchase) {
-        // ★ バンドルパス確認ログ（デバッグ用）
-        const _dbgItems = bundleItems.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode }));
-        console.log('[Bundle] entered bundle path', { items: _dbgItems });
-        toast(`📦 バンドル登録処理中... ${bundleItems.length}件`);  // デバッグ用: バンドルパスに入ったことを確認
+      if (_isBundleMode) {
+        console.log('[Bundle] ★★★ バンドルパスに入りました', {
+          bundlePurchase_closure: bundlePurchase,
+          bundlePurchase_ref: bundlePurchaseRef.current,
+          itemCount: finalBundleItems.length,
+          prices: finalBundleItems.map(bi => bi.purchasePrice),
+        });
         const purchaseStoreType = (() => {
           const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
           return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';
@@ -2618,8 +2644,8 @@ const PurchaseTab = () => {
         const bundleGroupId = `bundle_${Date.now()}`;
         const ts = Date.now();
 
-        // ── 新規作成アイテム ──
-        const newBundleItems = bundleItems.filter(bi => bi.mode !== 'existing');
+        // ── 新規作成アイテム（mode === 'new'） ──
+        const newBundleItems = finalBundleItems.filter(bi => bi.mode !== 'existing');
         const createdItems = newBundleItems.map((bi, idx) => {
           const bPrice = Number(bi.purchasePrice) || 0;
           return {
@@ -2645,8 +2671,8 @@ const PurchaseTab = () => {
           };
         });
 
-        // ── 既存アイテム更新 ──
-        const existingBundleItems = bundleItems.filter(bi => bi.mode === 'existing' && bi.existingItemId);
+        // ── 既存アイテム更新（mode === 'existing'） ──
+        const existingBundleItems = finalBundleItems.filter(bi => bi.mode === 'existing' && bi.existingItemId);
         const updatedInventory = data.inventory.map(invItem => {
           const bi = existingBundleItems.find(b => b.existingItemId === invItem.id);
           if (!bi) return invItem;
@@ -2672,10 +2698,13 @@ const PurchaseTab = () => {
         if (createdItems.length)        msgParts.push(`新規${createdItems.length}件`);
         if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
         const priceDetail = createdItems.map(i => `${i.bundleLabel}:¥${(i.purchasePrice||0).toLocaleString()}`).join(' / ');
-        toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！\n${priceDetail}`);
-        console.log('[Save] bundle success:', totalCount, createdItems.map(i => ({ id: i.id, name: i.productName, price: i.purchasePrice })));
+        console.log('[Save] ✅ bundle success:', totalCount, createdItems.map(i => ({ id: i.id, name: i.productName, price: i.purchasePrice })));
         try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
         resetForm();
+        // ★★★ バンドル登録後は在庫一覧に自動遷移（ユーザーが登録結果をすぐ確認できる）
+        toast(`✅ まとめ仕入れ ${totalCount}件を登録！在庫一覧に移動します...`);
+        setPendingInventoryFilter('unlisted'); // 未出品タブで開く
+        setTab('inventory');
         return;
       }
 
