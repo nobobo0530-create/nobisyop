@@ -1633,7 +1633,7 @@ const normalizeColor = (colorStr) => {
 // 仕入れ登録タブ
 // ============================================================
 const PurchaseTab = () => {
-  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection } = React.useContext(AppContext);
+  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, setPendingInventoryFilter } = React.useContext(AppContext);
   const [lastSavedItem, setLastSavedItem] = React.useState(null); // 直前に保存した仕入れ品（売上記録クイックアクション用）
   const toast = useToast();
   const [step, setStep] = React.useState(1); // 1:写真, 2:AI解析, 3:入力
@@ -2527,9 +2527,9 @@ const PurchaseTab = () => {
   const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
 
   const handleSave = () => {
-    // バンドルモード判定（シンプルにクロージャ値を使用）
-    const _isBundleMode = bundlePurchase;
-    const _bundleItems  = bundleItems;
+    // バンドルモード判定（★ Ref経由で最新状態を確実に読み取る – ポータル内クロージャ陳腐化対策）
+    const _isBundleMode = bundlePurchaseRef.current;
+    const _bundleItems  = bundleItemsRef.current;
 
     // ★ Refで同期チェック（saving stateより確実）
     if (savingLockRef.current) {
