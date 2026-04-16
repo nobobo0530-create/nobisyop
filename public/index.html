@@ -335,7 +335,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260416a';
+    var VERSION = '20260416b';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
@@ -465,16 +465,24 @@
           });
       });
       // ★ 強制更新関数をグローバルに公開（アプリ内の「更新」ボタンから呼び出せる）
+      // ★★ SWキャッシュ・Babelコンパイルキャッシュを完全クリアしてハードリロード
       window._forceSwUpdate = function() {
-        if (!navigator.serviceWorker.controller) { window.location.reload(); return; }
-        navigator.serviceWorker.getRegistration().then(function(reg) {
-          if (!reg) { window.location.reload(); return; }
-          reg.update().then(function() {
-            // SWが更新された場合はcontrollerchangeで自動リロード
-            // 更新がなかった場合は手動リロード
-            setTimeout(function() { window.location.reload(); }, 2000);
-          }).catch(function() { window.location.reload(); });
-        });
+        // 1. Babelコンパイルキャッシュを削除（バージョン問わず全削除）
+        try {
+          Object.keys(localStorage).filter(function(k){ return k.startsWith('nobushop_compiled'); })
+            .forEach(function(k){ localStorage.removeItem(k); });
+        } catch(e) {}
+        // 2. SW登録解除 + キャッシュストレージ全削除 → リロード
+        var doReload = function() { window.location.reload(true); };
+        if (!('serviceWorker' in navigator)) { doReload(); return; }
+        Promise.all([
+          navigator.serviceWorker.getRegistrations().then(function(regs) {
+            return Promise.all(regs.map(function(r){ return r.unregister(); }));
+          }),
+          caches.keys().then(function(keys) {
+            return Promise.all(keys.map(function(k){ return caches.delete(k); }));
+          })
+        ]).then(doReload).catch(doReload);
       };
     }
   })();
