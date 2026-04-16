@@ -335,7 +335,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260413o';
+    var VERSION = '20260413p';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
@@ -455,11 +455,27 @@
         navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' })
           .then(function(reg) {
             console.log('[SW] 登録成功:', reg.scope);
+            // ★ 起動時に毎回SW更新チェックを強制実行（24時間制限バイパス）
+            reg.update().catch(function(){});
+            // ★ 3秒後にも再チェック（WiFi接続が遅い場合の対策）
+            setTimeout(function() { reg.update().catch(function(){}); }, 3000);
           })
           .catch(function(e) {
             console.warn('[SW] 登録失敗:', e.message);
           });
       });
+      // ★ 強制更新関数をグローバルに公開（アプリ内の「更新」ボタンから呼び出せる）
+      window._forceSwUpdate = function() {
+        if (!navigator.serviceWorker.controller) { window.location.reload(); return; }
+        navigator.serviceWorker.getRegistration().then(function(reg) {
+          if (!reg) { window.location.reload(); return; }
+          reg.update().then(function() {
+            // SWが更新された場合はcontrollerchangeで自動リロード
+            // 更新がなかった場合は手動リロード
+            setTimeout(function() { window.location.reload(); }, 2000);
+          }).catch(function() { window.location.reload(); });
+        });
+      };
     }
   })();
   </script>
