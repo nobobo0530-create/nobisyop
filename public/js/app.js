@@ -1295,7 +1295,7 @@ const HomeTab = () => {
       }}>
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
-          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT</div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413j</span></div>
         </div>
         <div style={{textAlign:'right'}}>
           <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
@@ -2590,6 +2590,10 @@ const PurchaseTab = () => {
 
       // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
       if (bundlePurchase) {
+        // ★ バンドルパス確認ログ（デバッグ用）
+        console.log('[Bundle] entered bundle path', {
+          items: bundleItems.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode }))
+        });
         const purchaseStoreType = (() => {
           const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
           return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';
@@ -4288,6 +4292,19 @@ const PurchaseTab = () => {
               </button>
             ))}
           </div>
+          {/* バンドルモード確認パネル */}
+          {bundlePurchase && !editingItem && (
+            <div style={{background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:8,
+              padding:'7px 12px',marginBottom:8,fontSize:12,color:'#1e40af',fontWeight:700}}>
+              📦 バンドルモード ON — {bundleItems.length}件分割
+              {bundleItems.map((bi,i) => (
+                <span key={i} style={{marginLeft:8,fontSize:11,fontWeight:600,
+                  color: bi.purchasePrice && bi.purchasePrice !== '0' ? '#1e40af' : '#ef4444'}}>
+                  {bi.label}:¥{bi.purchasePrice || '未入力'}
+                </span>
+              ))}
+            </div>
+          )}
           {/* インラインバリデーションエラー */}
           {formError && (
             <div style={{background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:10,
