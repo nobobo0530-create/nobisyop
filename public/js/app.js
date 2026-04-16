@@ -493,16 +493,24 @@ const saveData = (data) => {
 // ============================================================
 let _cloudEnabled = false;
 
+// ★ APIベースURL: ローカルサーバーではVercel本番URLを使用（Supabaseへの接続を保証）
+// Vercelデプロイ時は相対URLを使用（/api/data）、ローカルでは本番URLを使用
+const _API_BASE = (() => {
+  const host = window.location.hostname;
+  if (host === 'nobisyop.vercel.app') return ''; // Vercel本番: 相対URL
+  return 'https://nobisyop.vercel.app'; // ローカル開発: Vercel本番APIを使用
+})();
+
 // 初期化確認のみ（実際の通信はサーバー側 api/data.js が行う）
 const initSupabase = (url, key) => {
   if (!url || !key) throw new Error('Cloud config is empty on server');
   _cloudEnabled = true;
-  console.log('[Cloud] server-proxy mode enabled');
+  console.log('[Cloud] server-proxy mode enabled, API_BASE:', _API_BASE || '(relative)');
 };
 
 // 全データ取得（/api/data GET）
 const fetchSupabaseData = async () => {
-  const resp = await fetch('/api/data', { cache: 'no-store' });
+  const resp = await fetch(`${_API_BASE}/api/data`, { cache: 'no-store' });
   const json = await resp.json();
   if (!resp.ok || !json.ok) {
     const msg = json.error || `HTTP ${resp.status}`;
@@ -521,7 +529,7 @@ const fetchSupabaseData = async () => {
 const migrateLocalToSupabase = async (localData) => {
   if (!_cloudEnabled) return;
   try {
-    await fetch('/api/data', {
+    await fetch(`${_API_BASE}/api/data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -571,7 +579,7 @@ const syncToSupabase = async (oldData, newData) => {
     const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged;
     if (!hasChanges) return;
 
-    await fetch('/api/data', {
+    await fetch(`${_API_BASE}/api/data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1222,7 +1230,7 @@ const ProfitChart = ({ summarySales, now }) => {
 };
 
 const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile, setUserProfile } = React.useContext(AppContext);
+  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -1295,7 +1303,15 @@ const HomeTab = () => {
       }}>
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
-          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413p</span><button onClick={()=>{ if(window._forceSwUpdate){window._forceSwUpdate();}else{window.location.reload();} }} style={{fontSize:8,padding:'1px 5px',borderRadius:4,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',cursor:'pointer',fontWeight:600,WebkitTapHighlightColor:'transparent'}}>更新</button></div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>
+            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413q</span>
+            <button onClick={()=>{ if(window._forceSwUpdate){window._forceSwUpdate();}else{window.location.reload();} }} style={{fontSize:8,padding:'1px 5px',borderRadius:4,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',cursor:'pointer',fontWeight:600,WebkitTapHighlightColor:'transparent'}}>更新</button>
+            <span style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,
+              background: (dbStatus==='ok'||dbStatus==='migrated') ? '#d1fae5' : '#fee2e2',
+              color:      (dbStatus==='ok'||dbStatus==='migrated') ? '#065f46' : '#991b1b'}}>
+              {(dbStatus==='ok'||dbStatus==='migrated') ? '☁️ クラウド保存中' : '⚠️ ローカルのみ'}
+            </span>
+          </div>
         </div>
         <div style={{textAlign:'right'}}>
           <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
@@ -7774,6 +7790,125 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   };
 
   // ── メイン同期処理 ───────────────────────────────────────────
+  // ── スプレッドシートからインポート ──────────────────────────────
+  const doSheetsImport = async (token) => {
+    setGSyncing(true);
+    setSyncResult(null);
+    try {
+      const sid = (settings.googleSpreadsheetId || '').trim()
+               || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
+      if (!sid) { toast('⚠️ スプレッドシートURLを入力してください'); return; }
+
+      LOG('=== doSheetsImport start ===', sid);
+
+      // ── ヘルパー ──
+      const parseNum = v => { const n = Number(String(v||'').replace(/[¥,￥\s]/g,'')); return isNaN(n) ? 0 : n; };
+      const parseDateStr = v => v ? String(v).replace(/\//g,'-').slice(0,10) : '';
+      const parseStatus = v => v==='出品中'?'listed':v==='売却済'?'sold':'unlisted';
+
+      // ── 在庫データ取得 ──
+      let invRows = [];
+      try {
+        const r = await sheetsGet(token, sid, '在庫データ!A2:L10000');
+        invRows = (r.values || []).filter(row => row[0]);
+      } catch(e) { LOG('在庫データ read error:', e.message); }
+
+      // ── 売上データ取得 ──
+      let saleRows = [];
+      try {
+        const r = await sheetsGet(token, sid, '売上データ!A2:P10000');
+        saleRows = (r.values || []).filter(row => row[2]);
+      } catch(e) { LOG('売上データ read error:', e.message); }
+
+      LOG('invRows:', invRows.length, 'saleRows:', saleRows.length);
+
+      // ── 在庫アイテム変換 ──
+      // 列: 商品名(0) ステータス(1) ブランド(2) カテゴリー(3) 仕入れ日(4) 仕入れ金額(5)
+      //     出品価格(6) 仕入先(7) プラットフォーム(8) 管理番号(9) メモ(10) ID(11)
+      const existingInvMap = new Map(data.inventory.map(i => [i.id, i]));
+      const importedInv = [];
+      for (const row of invRows) {
+        const id = String(row[11]||'').trim() || `import_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+        const existing = existingInvMap.get(id);
+        const item = {
+          ...(existing || {}),
+          id,
+          productName:   String(row[0]||''),
+          status:        parseStatus(row[1]),
+          brand:         String(row[2]||''),
+          category:      String(row[3]||''),
+          purchaseDate:  parseDateStr(row[4]),
+          purchasePrice: parseNum(row[5]),
+          listPrice:     parseNum(row[6]),
+          purchaseStore: String(row[7]||''),
+          platform:      String(row[8]||''),
+          mgmtNo:        String(row[9]||''),
+          notes:         String(row[10]||''),
+          memo:          String(row[10]||''),
+          userId:        currentUser,
+          createdAt:     existing?.createdAt || new Date().toISOString(),
+          updatedAt:     new Date().toISOString(),
+          purchaseCost:  existing?.purchaseCost || { totalTaxIn: parseNum(row[5]), totalTaxEx: parseNum(row[5]) },
+        };
+        importedInv.push(item);
+      }
+
+      // ── 売上アイテム変換 ──
+      // 列: No(0) 仕入れ日(1) 商品名(2) ブランド(3) カテゴリー(4) 仕入れ金額(5) 出品価格(6)
+      //     仕入先(7) 売上日(8) 売上金額(9) 純利益(10) 利益率%(11) プラットフォーム(12)
+      //     手数料(13) 配送料(14) ID(15)
+      const existingSaleMap = new Map(data.sales.map(s => [s.id, s]));
+      const importedSales = [];
+      for (const row of saleRows) {
+        const id = String(row[15]||'').trim();
+        if (!id) continue;
+        const existing = existingSaleMap.get(id);
+        const salePrice = parseNum(row[9]);
+        const profit    = parseNum(row[10]);
+        const fee       = parseNum(row[13]);
+        const shipping  = parseNum(row[14]);
+        const feeRate   = salePrice > 0 ? Math.round(fee / salePrice * 100) / 100 : 0;
+        const sale = {
+          ...(existing || {}),
+          id,
+          saleDate:    parseDateStr(row[8]),
+          salePrice,
+          profit,
+          feeRate,
+          shipping,
+          platform:    String(row[12]||''),
+          userId:      currentUser,
+          createdAt:   existing?.createdAt || new Date().toISOString(),
+          updatedAt:   new Date().toISOString(),
+        };
+        // inventoryIdの紐付け（既存売上にあればそのまま使用）
+        if (!sale.inventoryId) {
+          // 商品名・売上日でインポート済み在庫と照合
+          const matched = importedInv.find(i => i.productName === String(row[2]||'') && i.purchaseDate === parseDateStr(row[1]));
+          if (matched) sale.inventoryId = matched.id;
+        }
+        importedSales.push(sale);
+      }
+
+      // ── 既存データとマージ ──
+      // インポートしたアイテムで既存を上書き、残りの既存は保持
+      const invImportIds = new Set(importedInv.map(i => i.id));
+      const saleImportIds = new Set(importedSales.map(s => s.id));
+      const mergedInv   = [...data.inventory.filter(i => !invImportIds.has(i.id)),   ...importedInv];
+      const mergedSales = [...data.sales.filter(s => !saleImportIds.has(s.id)), ...importedSales];
+
+      setData({ ...data, inventory: mergedInv, sales: mergedSales });
+      setSyncResult({ time: Date.now(), invCount: importedInv.length, saleCount: importedSales.length, isImport: true });
+      toast(`✅ インポート完了：在庫${importedInv.length}件・売上${importedSales.length}件`);
+      LOG('=== doSheetsImport done ===');
+    } catch(e) {
+      LOG('import error:', e.message);
+      toast(`❌ インポートエラー：${e.message}`);
+    } finally {
+      setGSyncing(false);
+    }
+  };
+
   const doSheetsSync = async (token, mode) => {
     setGSyncing(true);
     setSyncResult(null);
@@ -8036,11 +8171,20 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           )}
         </button>
 
+        {/* ── インポートボタン ── */}
+        <button
+          style={{width:'100%',padding:'11px',borderRadius:12,border:'1.5px dashed #16a34a',cursor: gSyncing ? 'not-allowed' : 'pointer',
+            fontSize:13,fontWeight:700,color:'#16a34a',marginBottom:8,background:'#f0fdf4',transition:'background 0.2s'}}
+          onClick={() => gToken ? doSheetsImport(gToken) : handleGoogleLogin('import')}
+          disabled={gSyncing}>
+          {gSyncing ? <><span className="spinner"/> 処理中...</> : '📥 スプレッドシートからインポート（復元）'}
+        </button>
+
         {/* 同期結果カード */}
         {syncResult && !gSyncing && (
           <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:6,border:'1px solid #bbf7d0'}}>
             <div style={{fontSize:11,fontWeight:700,color:'#16a34a',marginBottom:6}}>
-              ✅ 同期完了 — {new Date(syncResult.time).toLocaleString('ja-JP')}
+              {syncResult.isImport ? `📥 インポート完了 — ${new Date(syncResult.time).toLocaleString('ja-JP')}` : `✅ 同期完了 — ${new Date(syncResult.time).toLocaleString('ja-JP')}`}
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:4}}>
               {[['📦 在庫', syncResult.invAdded, syncResult.invUpdated],
