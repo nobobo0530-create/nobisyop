@@ -1,10 +1,9 @@
-// SalesLog Service Worker v20260413n
-var CACHE = 'nobushop-20260413n';
+// SalesLog Service Worker v20260413o
+var CACHE = 'nobushop-20260413o';
 
 var PRECACHE = [
-  '/',
   '/manifest.json',
-  '/js/app.js?v=20260413n',
+  '/js/app.js?v=20260413o',
   '/js/google-config.js?v=20260413d',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
@@ -45,6 +44,26 @@ self.addEventListener('fetch', function(e) {
   if (url.includes('cdn.tailwindcss.com')) return;
   if (url.includes('@babel/standalone')) return;
 
+  // ★ index.html（ドキュメント）はネットワーク優先 → 常に最新バージョンを取得
+  // オフライン時のみキャッシュにフォールバック
+  if (e.request.destination === 'document') {
+    e.respondWith(
+      fetch(e.request).then(function(resp) {
+        if (resp && resp.ok) {
+          var clone = resp.clone();
+          caches.open(CACHE).then(function(c) { c.put(e.request, clone); });
+        }
+        return resp;
+      }).catch(function() {
+        return caches.match(e.request).then(function(cached) {
+          return cached || caches.match('/');
+        });
+      })
+    );
+    return;
+  }
+
+  // ★ JS/画像等はキャッシュ優先（高速表示）
   e.respondWith(
     caches.match(e.request).then(function(cached) {
       if (cached) return cached;
@@ -55,7 +74,6 @@ self.addEventListener('fetch', function(e) {
         }
         return resp;
       }).catch(function() {
-        if (e.request.destination === 'document') return caches.match('/');
         return new Response('', { status: 503 });
       });
     })

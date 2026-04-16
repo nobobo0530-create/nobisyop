@@ -1295,7 +1295,7 @@ const HomeTab = () => {
       }}>
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
-          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413n</span></div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413o</span></div>
         </div>
         <div style={{textAlign:'right'}}>
           <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
