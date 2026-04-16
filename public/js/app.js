@@ -1295,7 +1295,7 @@ const HomeTab = () => {
       }}>
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
-          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413j</span></div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413k</span></div>
         </div>
         <div style={{textAlign:'right'}}>
           <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
@@ -2591,9 +2591,9 @@ const PurchaseTab = () => {
       // ── まとめ仕入れ（複数アイテムを一括登録）────────────────
       if (bundlePurchase) {
         // ★ バンドルパス確認ログ（デバッグ用）
-        console.log('[Bundle] entered bundle path', {
-          items: bundleItems.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode }))
-        });
+        const _dbgItems = bundleItems.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode }));
+        console.log('[Bundle] entered bundle path', { items: _dbgItems });
+        toast(`📦 バンドル登録処理中... ${bundleItems.length}件`);  // デバッグ用: バンドルパスに入ったことを確認
         const purchaseStoreType = (() => {
           const m = data.settings?.storeMaster || getInitialData().settings.storeMaster;
           return (m.yahooStores||[]).includes(form.purchaseStore) ? 'yahoo' : 'normal';

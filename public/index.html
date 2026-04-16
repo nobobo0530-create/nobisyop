@@ -335,7 +335,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260413j';
+    var VERSION = '20260413k';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
@@ -446,6 +446,11 @@
 
     // ── Service Worker 登録 ──
     if ('serviceWorker' in navigator) {
+      // ★ 新しいSWが制御を取得したら自動リロード（ユーザーが常に最新版を受け取るための必須処理）
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        console.log('[SW] controller changed → reloading for latest version');
+        window.location.reload();
+      });
       window.addEventListener('load', function() {
         navigator.serviceWorker.register('/sw.js', { scope: '/' })
           .then(function(reg) {
