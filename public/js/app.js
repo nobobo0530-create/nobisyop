@@ -1335,7 +1335,7 @@ const HomeTab = () => {
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
           <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>
-            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260416b</span>
+            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260416c</span>
             <button onClick={()=>{ if(window._forceSwUpdate){window._forceSwUpdate();}else{window.location.reload();} }} style={{fontSize:8,padding:'1px 5px',borderRadius:4,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',cursor:'pointer',fontWeight:600,WebkitTapHighlightColor:'transparent'}}>更新</button>
             {/* ★ クラウド同期ステータスバッジ（タップで今すぐ同期） */}
             {(()=>{
@@ -4535,6 +4535,9 @@ const InventoryTab = () => {
   const [search, setSearch] = React.useState('');
   const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
   const [selected, setSelected] = React.useState(null);
+  const [splitMode, setSplitMode] = React.useState(false);   // 分割登録UI表示フラグ
+  const [splitCount, setSplitCount] = React.useState(2);     // 分割数
+  const [splitItems, setSplitItems] = React.useState([]);    // [{productName, purchasePrice}]
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
@@ -5023,12 +5026,12 @@ const InventoryTab = () => {
 
       {/* 詳細モーダル */}
       {selected && (
-        <div className="modal-overlay" onClick={() => setSelected(null)}>
+        <div className="modal-overlay" onClick={() => { setSelected(null); setSplitMode(false); setSplitItems([]); }}>
           <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
             <div className="modal-handle"/>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
               <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>商品詳細</div>
-              <button onClick={() => setSelected(null)} style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
+              <button onClick={() => { setSelected(null); setSplitMode(false); setSplitItems([]); }} style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
             </div>
 
             {/* 写真スライド（IndexedDBから取得） */}
@@ -5221,6 +5224,102 @@ const InventoryTab = () => {
               </div>
             )}
 
+            {/* ── 分割登録UI ── */}
+            {splitMode && selected && selected.status !== 'sold' && (() => {
+              const totalPrice = selected.purchasePrice || 0;
+              const initItems = (n) => {
+                const base = Math.floor(totalPrice / n);
+                const rem  = totalPrice - base * n;
+                return Array.from({length: n}, (_, i) => ({
+                  productName: `${selected.productName || '商品'} [${String.fromCharCode(65+i)}]`,
+                  purchasePrice: String(i === n-1 ? base + rem : base),
+                }));
+              };
+              return (
+                <div style={{background:'#f8fafc',border:'1.5px solid #e2e8f0',borderRadius:14,padding:'14px',marginBottom:12}}>
+                  <div style={{fontWeight:800,fontSize:14,marginBottom:10,color:'#1e293b'}}>✂️ 分割登録</div>
+                  <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>
+                    仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます。
+                  </div>
+                  {/* 分割数選択 */}
+                  <div style={{display:'flex',gap:6,marginBottom:12}}>
+                    {[2,3,4].map(n => (
+                      <button key={n} onClick={() => { setSplitCount(n); setSplitItems(initItems(n)); }}
+                        style={{flex:1,padding:'7px 0',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
+                          background:splitCount===n?'#1e293b':'#f1f5f9',color:splitCount===n?'white':'#555',
+                          WebkitTapHighlightColor:'transparent'}}>
+                        {n}件
+                      </button>
+                    ))}
+                  </div>
+                  {/* 各アイテム入力 */}
+                  {splitItems.map((si, idx) => (
+                    <div key={idx} style={{background:'white',borderRadius:10,padding:'10px',marginBottom:8,border:'1px solid #e2e8f0'}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>商品{String.fromCharCode(65+idx)}</div>
+                      <input value={si.productName}
+                        onChange={e => setSplitItems(prev => prev.map((x,i) => i===idx ? {...x,productName:e.target.value} : x))}
+                        placeholder="商品名"
+                        style={{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid #d1d5db',fontSize:13,marginBottom:6,boxSizing:'border-box'}}/>
+                      <div style={{display:'flex',alignItems:'center',gap:6}}>
+                        <span style={{fontSize:12,color:'#555'}}>¥</span>
+                        <input type="number" value={si.purchasePrice}
+                          onChange={e => setSplitItems(prev => prev.map((x,i) => i===idx ? {...x,purchasePrice:e.target.value} : x))}
+                          placeholder="仕入れ値"
+                          style={{flex:1,padding:'7px 10px',borderRadius:8,border:'1px solid #d1d5db',fontSize:13}}/>
+                      </div>
+                    </div>
+                  ))}
+                  {/* 合計表示 */}
+                  {(() => {
+                    const total = splitItems.reduce((s,si) => s + (Number(si.purchasePrice)||0), 0);
+                    const diff = total - totalPrice;
+                    return (
+                      <div style={{fontSize:11,color: diff===0 ? '#16a34a' : '#dc2626',marginBottom:10,fontWeight:700}}>
+                        合計 ¥{total.toLocaleString()} {diff===0 ? '✅' : `（元値と¥${Math.abs(diff).toLocaleString()}差あり）`}
+                      </div>
+                    );
+                  })()}
+                  <div style={{display:'flex',gap:8}}>
+                    <button onClick={() => { setSplitMode(false); setSplitItems([]); }}
+                      style={{flex:1,padding:'10px',borderRadius:10,border:'1px solid #d1d5db',background:'white',fontSize:13,fontWeight:600,cursor:'pointer'}}>
+                      キャンセル
+                    </button>
+                    <button onClick={() => {
+                      if (splitItems.some(si => !si.productName.trim())) { alert('商品名を入力してください'); return; }
+                      if (splitItems.some(si => Number(si.purchasePrice) <= 0)) { alert('仕入れ値を入力してください'); return; }
+                      const ts = Date.now();
+                      const bundleGroupId = `bundle_${ts}`;
+                      const newItems = splitItems.map((si, idx) => ({
+                        ...selected,
+                        id: `${ts}_split_${idx}`,
+                        productName: si.productName.trim(),
+                        purchasePrice: Number(si.purchasePrice),
+                        purchaseCost: { totalTaxIn: Number(si.purchasePrice), totalTaxEx: Number(si.purchasePrice) },
+                        photos: idx === 0 ? (selected.photos || []) : [],
+                        bundleGroup: bundleGroupId,
+                        bundleLabel: `商品${String.fromCharCode(65+idx)}`,
+                        mgmtNo: idx === 0 ? selected.mgmtNo : null,
+                        status: 'unlisted',
+                        listDate: '',
+                        createdAt: new Date(ts + idx).toISOString(),
+                        updatedAt: new Date().toISOString(),
+                      }));
+                      // 元アイテムを削除して新アイテムを追加
+                      const newInventory = data.inventory.filter(i => i.id !== selected.id).concat(newItems);
+                      setData({ ...data, inventory: newInventory });
+                      setSplitMode(false);
+                      setSplitItems([]);
+                      setSelected(null);
+                      toast(`✅ ${splitItems.length}件に分割登録しました！`);
+                    }}
+                      style={{flex:2,padding:'10px',borderRadius:10,border:'none',background:'#1e293b',color:'white',fontSize:13,fontWeight:700,cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                      ✂️ 分割して登録する
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* アクションボタン */}
             <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:12}}>
               {/* 編集ボタン */}
@@ -5276,6 +5375,23 @@ const InventoryTab = () => {
                     toast('↩️ 出品中に戻しました');
                   }}>
                   ↩️ 売却済みを取り消す
+                </button>
+              )}
+              {/* 分割登録ボタン（未出品・出品中のみ） */}
+              {selected.status !== 'sold' && (
+                <button onClick={() => {
+                    const n = 2;
+                    const base = Math.floor((selected.purchasePrice||0) / n);
+                    const rem  = (selected.purchasePrice||0) - base * n;
+                    setSplitCount(n);
+                    setSplitItems(Array.from({length:n}, (_,i) => ({
+                      productName: `${selected.productName||'商品'} [${String.fromCharCode(65+i)}]`,
+                      purchasePrice: String(i===n-1 ? base+rem : base),
+                    })));
+                    setSplitMode(true);
+                  }}
+                  style={{width:'100%',padding:12,borderRadius:12,border:'1.5px solid #64748b',background:'#f8fafc',color:'#334155',fontWeight:700,cursor:'pointer',fontSize:14,minHeight:44,WebkitTapHighlightColor:'transparent'}}>
+                  ✂️ 分割登録
                 </button>
               )}
               <button onClick={() => deleteItem(selected)}
