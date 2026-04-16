@@ -1295,7 +1295,7 @@ const HomeTab = () => {
       }}>
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
-          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413k</span></div>
+          <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600}}>SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413l</span></div>
         </div>
         <div style={{textAlign:'right'}}>
           <div style={{fontSize:13,color:'#374151',fontWeight:700}}>
@@ -1628,11 +1628,17 @@ const PurchaseTab = () => {
   const [bundlePurchase, setBundlePurchase] = React.useState(false);
   const [bundleItems, setBundleItems] = React.useState(initBundleItems(2));
   const [bundleSplitMethod, setBundleSplitMethod] = React.useState('equal');
+  // ★ Refで最新状態を同期保持（React 18 concurrent modeでのポータルクロージャ陳腐化対策）
+  const bundlePurchaseRef = React.useRef(false);
+  const bundleItemsRef = React.useRef(initBundleItems(2));
   // まとめ仕入れ合計後修正用
   const [bundleRescaleTotal, setBundleRescaleTotal] = React.useState('');
   const [bundleRescaleMethod, setBundleRescaleMethod] = React.useState('ratio');
   const [bundleManualPrices, setBundleManualPrices] = React.useState({}); // 手動指定モード用 {id: string}
   const [bundleAllPrices, setBundleAllPrices] = React.useState({});     // 兄弟アイテム価格インライン編集用 {id: string}
+  // ★ 毎レンダーでRefを最新状態に同期（handleSave内でRef経由読み取りのため）
+  bundlePurchaseRef.current = bundlePurchase;
+  bundleItemsRef.current = bundleItems;
   const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
   const [formError, setFormError] = React.useState(null); // インラインバリデーションエラー
 
@@ -2416,10 +2422,14 @@ const PurchaseTab = () => {
     setRegistrationMode('unlisted');
     setSeoCategoryInput(''); setEditingItem(null);
     setStoreChain(''); setBranchInput('');
+    // ★ Refも同期リセット（次回のhandleSave呼び出し前に確実に反映）
+    bundlePurchaseRef.current = false;
+    bundleItemsRef.current = initBundleItems(2);
     setBundlePurchase(false); setBundleItems(initBundleItems(2)); setBundleSplitMethod('equal');
     setForm({
       productName: '', brand: '', category: '', color: '',
       brandReading: '', categoryKeywords: '', colorDisplay: '',
+      modelNumber: '', gender: 'メンズ',
       condition: 'A', conditionDetail: '',
       sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '', sizeConfidence: 'medium', material: '',
       purchaseDate: today(), purchaseStore: '', sellerLicense: '', sellerCompanyName: '',
@@ -2431,6 +2441,7 @@ const PurchaseTab = () => {
       shippingTaxIn: '', shippingTaxRate: 10,
       optionalFeeTaxIn: '', optionalTaxRate: 10,
       showOptionalFee: false,
+      couponTaxIn: '', couponNote: '',
     });
   };
 
@@ -2442,6 +2453,12 @@ const PurchaseTab = () => {
   const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
 
   const handleSave = () => {
+    // ★★★ Refから最新の bundlePurchase / bundleItems を読む（クロージャの陳腐化を完全回避）
+    // React 18 concurrent mode でポータルのonClickが古いレンダーのクロージャを参照する場合でも、
+    // RefはトグルボタンON時に同期更新済みなので、常に正確な値が取得できる
+    const bundlePurchase = bundlePurchaseRef.current;   // ← クロージャ値を上書き
+    const bundleItems    = bundleItemsRef.current;       // ← クロージャ値を上書き
+
     // ★ Refで同期チェック（saving stateより確実）
     if (savingLockRef.current) {
       console.warn('[Save] blocked: already in progress');
@@ -4006,7 +4023,12 @@ const PurchaseTab = () => {
                   <div style={{fontWeight:700,fontSize:14}}>📦 まとめ仕入れ</div>
                   <div style={{fontSize:11,color:'#999',marginTop:1}}>複数商品を1つの仕入れから分割登録</div>
                 </div>
-                <button onClick={() => setBundlePurchase(v => !v)}
+                <button onClick={() => {
+                  // ★ Refを同期更新してからstateを更新（ポータルの古いonClickが呼ばれても正確な値を渡すため）
+                  const next = !bundlePurchaseRef.current;
+                  bundlePurchaseRef.current = next;
+                  setBundlePurchase(next);
+                }}
                   style={{padding:'7px 16px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
                     background: bundlePurchase ? '#1e293b' : '#f3f4f6',
                     color: bundlePurchase ? 'white' : '#555',
@@ -10962,11 +10984,4 @@ const App = () => {
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
 
-// Service Worker 登録
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
-      .then(reg => console.log('SW registered:', reg.scope))
-      .catch(err => console.log('SW registration failed:', err));
-  });
-}
+// SW登録はindex.htmlで実施済み（二重登録を防ぐためここでは行わない）
