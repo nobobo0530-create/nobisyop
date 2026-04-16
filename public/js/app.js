@@ -1304,7 +1304,7 @@ const HomeTab = () => {
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
           <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>
-            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413q</span>
+            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413r</span>
             <button onClick={()=>{ if(window._forceSwUpdate){window._forceSwUpdate();}else{window.location.reload();} }} style={{fontSize:8,padding:'1px 5px',borderRadius:4,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',cursor:'pointer',fontWeight:600,WebkitTapHighlightColor:'transparent'}}>更新</button>
             <span style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,
               background: (dbStatus==='ok'||dbStatus==='migrated') ? '#d1fae5' : '#fee2e2',
@@ -2469,14 +2469,9 @@ const PurchaseTab = () => {
   const handleSaveAndSell = () => { postSaveNavToSale.current = true; handleSave(); };
 
   const handleSave = () => {
-    // ★★★ バンドルモードの判定：クロージャ値とRefの両方をOR結合（どちらかがtrueなら確実にバンドル）
-    // クロージャ値: ポータルボタンがレンダリングされた時点のstate（通常これが正しい）
-    // Ref値: トグルON時に同期更新済み + 毎レンダーで同期（クロージャが古い場合のバックアップ）
-    const _isBundleMode = bundlePurchase || bundlePurchaseRef.current;
-    // ★ バンドルアイテム: クロージャとRefの両方から取得し、有効な方を使用
-    const _bundleItems = (bundleItems && bundleItems.length >= 2)
-      ? bundleItems          // クロージャのstateが有効ならそちらを優先
-      : bundleItemsRef.current;  // フォールバックとしてRef
+    // バンドルモード判定（シンプルにクロージャ値を使用）
+    const _isBundleMode = bundlePurchase;
+    const _bundleItems  = bundleItems;
 
     // ★ Refで同期チェック（saving stateより確実）
     if (savingLockRef.current) {
@@ -4068,12 +4063,7 @@ const PurchaseTab = () => {
                   <div style={{fontWeight:700,fontSize:14}}>📦 まとめ仕入れ</div>
                   <div style={{fontSize:11,color:'#999',marginTop:1}}>複数商品を1つの仕入れから分割登録</div>
                 </div>
-                <button onClick={() => {
-                  // ★ Refを同期更新してからstateを更新（ポータルの古いonClickが呼ばれても正確な値を渡すため）
-                  const next = !bundlePurchaseRef.current;
-                  bundlePurchaseRef.current = next;
-                  setBundlePurchase(next);
-                }}
+                <button onClick={() => setBundlePurchase(v => !v)}
                   style={{padding:'7px 16px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
                     background: bundlePurchase ? '#1e293b' : '#f3f4f6',
                     color: bundlePurchase ? 'white' : '#555',
