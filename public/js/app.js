@@ -1799,6 +1799,20 @@ const PurchaseTab = () => {
     };
   }, []);
 
+  // まとめ仕入れ: 合計金額が変わったとき or バンドルON時 → 均等割りを自動適用
+  React.useEffect(() => {
+    if (!bundlePurchase || bundleSplitMethod !== 'equal') return;
+    const total = (Number(form.itemPriceTaxIn) || 0) - (Number(form.couponTaxIn) || 0);
+    if (total <= 0) return;
+    const n = bundleItems.length;
+    const base = Math.floor(total / n);
+    const rem  = total - base * n;
+    setBundleItems(prev => prev.map((bi, i) => ({
+      ...bi, purchasePrice: String(i === n - 1 ? base + rem : base)
+    })));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bundlePurchase, bundleSplitMethod, form.itemPriceTaxIn, form.couponTaxIn, bundleItems.length]);
+
   // iOS: バックグラウンド移行時に画像入れ替え選択状態をリセット
   React.useEffect(() => {
     const reset = () => { if (document.hidden) setSwapIdx(null); };
@@ -2485,6 +2499,9 @@ const PurchaseTab = () => {
 
       console.log('[Save] start', {
         mode: editingItem ? 'edit' : (bundlePurchase ? 'bundle' : 'new'),
+        bundlePurchase,
+        bundleItemsCount: bundleItems.length,
+        bundleItemPrices: bundleItems.map(bi => ({ label: bi.label, price: bi.purchasePrice, mode: bi.mode })),
         id: editingItem?.id, name: form.productName, price: form.itemPriceTaxIn,
         ts: new Date().toISOString(),
       });
@@ -2633,8 +2650,9 @@ const PurchaseTab = () => {
         const msgParts = [];
         if (createdItems.length)        msgParts.push(`新規${createdItems.length}件`);
         if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
-        toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！`);
-        console.log('[Save] bundle success:', totalCount);
+        const priceDetail = createdItems.map(i => `${i.bundleLabel}:¥${(i.purchasePrice||0).toLocaleString()}`).join(' / ');
+        toast(`✅ まとめ仕入れ ${totalCount}件（${msgParts.join(' + ')}）を登録しました！\n${priceDetail}`);
+        console.log('[Save] bundle success:', totalCount, createdItems.map(i => ({ id: i.id, name: i.productName, price: i.purchasePrice })));
         try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
         resetForm();
         return;
@@ -4282,7 +4300,7 @@ const PurchaseTab = () => {
             style={{width:'100%',padding:16,fontSize:17,opacity:saving?0.75:1,transition:'opacity 0.15s',touchAction:'manipulation'}}
             onClick={handleSave}
             disabled={saving}>
-            {saving ? '💾 保存中...' : editingItem ? '💾 更新保存する' : '💾 仕入れを登録する'}
+            {saving ? '💾 保存中...' : editingItem ? '💾 更新保存する' : bundlePurchase ? `📦 まとめ仕入れ ${bundleItems.length}件を登録する` : '💾 仕入れを登録する'}
           </button>
           <button
             onClick={handleSaveAndSell}
