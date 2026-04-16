@@ -464,9 +464,10 @@ const loadData = () => {
   } catch { return getInitialData(); }
 };
 
-// ★ localStorage保存前にthumbDataUrl（base64画像）を除外する
-// 理由: 50件×3枚×30KB = 4.5MB がlocalStorageに書き込まれ、iOS Safari (上限5MB) でフリーズの原因になっていた
+// ★ localStorage保存前にthumbDataUrl・medDataUrl（base64画像）を除外する
+// 理由: 50件×3枚×50KB = 7.5MB がlocalStorageに書き込まれ、iOS Safari (上限5MB) でフリーズの原因になっていた
 // thumbDataUrl は別キー(THUMBS_KEY)に保存して復元できるようにする
+// medDataUrl は Supabase に保存（localStorageには不要）
 const stripPhotosForStorage = (data) => ({
   ...data,
   inventory: (data.inventory || []).map(item => ({
@@ -550,11 +551,20 @@ const migrateLocalToSupabase = async (localData) => {
 // 書き込みにはfullアイテムを使う（thumbDataUrlをSupabaseに保存→IndexedDB消失時の3重バックアップ）
 const stripItemPhotos = (item) => ({
   ...item,
+  // ★ 比較用: base64画像フィールドを除外（JSON.stringify高速化）
+  // 書き込みにはfull版を使うのでこちらはID/thumbIdのみで十分
   photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
 });
 
+// ★ AppコンポーネントからsetStateで同期ステータスを受け取るコールバック
+// _onSyncStatus({ status: 'syncing'|'ok'|'error', time?: number, error?: string })
+let _onSyncStatus = null;
+
 const syncToSupabase = async (oldData, newData) => {
   if (!_cloudEnabled) return;
+
+  _onSyncStatus?.({ status: 'syncing' });
+
   try {
     // 比較用: thumbDataUrlを除外（JSON.stringify高速化）
     const invOld = new Map((oldData?.inventory || []).map(i => [i.id, stripItemPhotos(i)]));
@@ -577,19 +587,40 @@ const syncToSupabase = async (oldData, newData) => {
     const settingsChanged = JSON.stringify(oldData?.settings) !== JSON.stringify(newData?.settings);
 
     const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged;
-    if (!hasChanges) return;
+    if (!hasChanges) {
+      // 変更なし → 同期済み扱い
+      _onSyncStatus?.({ status: 'ok', time: Date.now() });
+      return;
+    }
 
-    await fetch(`${_API_BASE}/api/data`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        invUpsert, invDelete, salesUpsert, salesDelete,
-        settings: settingsChanged ? newData.settings : undefined,
-      }),
-      cache: 'no-store',
-    });
+    // ★ リトライ付きPOST（最大3回・指数バックオフ）
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await fetch(`${_API_BASE}/api/data`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            invUpsert, invDelete, salesUpsert, salesDelete,
+            settings: settingsChanged ? newData.settings : undefined,
+          }),
+          cache: 'no-store',
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        _onSyncStatus?.({ status: 'ok', time: Date.now() });
+        return;
+      } catch(e) {
+        lastError = e;
+        console.warn(`[Cloud] sync attempt ${attempt + 1} failed:`, e.message);
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+      }
+    }
+
+    console.error('[Cloud] sync failed after 3 attempts:', lastError?.message);
+    _onSyncStatus?.({ status: 'error', error: lastError?.message || '通信エラー' });
   } catch(e) {
     console.error('[Cloud] sync error:', e.message);
+    _onSyncStatus?.({ status: 'error', error: e.message });
   }
 };
 
@@ -1230,7 +1261,7 @@ const ProfitChart = ({ summarySales, now }) => {
 };
 
 const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus } = React.useContext(AppContext);
+  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -1304,13 +1335,37 @@ const HomeTab = () => {
         <div>
           <div style={{fontSize:18,fontWeight:900,letterSpacing:'-0.5px',color:'#111827'}}>SalesLog</div>
           <div style={{fontSize:9,color:'#9ca3af',marginTop:1,letterSpacing:'0.08em',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>
-            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260413r</span>
+            SALES MANAGEMENT <span style={{opacity:0.6}}>v20260416a</span>
             <button onClick={()=>{ if(window._forceSwUpdate){window._forceSwUpdate();}else{window.location.reload();} }} style={{fontSize:8,padding:'1px 5px',borderRadius:4,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',cursor:'pointer',fontWeight:600,WebkitTapHighlightColor:'transparent'}}>更新</button>
-            <span style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,
-              background: (dbStatus==='ok'||dbStatus==='migrated') ? '#d1fae5' : '#fee2e2',
-              color:      (dbStatus==='ok'||dbStatus==='migrated') ? '#065f46' : '#991b1b'}}>
-              {(dbStatus==='ok'||dbStatus==='migrated') ? '☁️ クラウド保存中' : '⚠️ ローカルのみ'}
-            </span>
+            {/* ★ クラウド同期ステータスバッジ（タップで今すぐ同期） */}
+            {(()=>{
+              const isCloud = dbStatus==='ok'||dbStatus==='migrated';
+              const timeStr = lastSyncTime ? (()=>{
+                const d = new Date(lastSyncTime);
+                return `${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;
+              })() : null;
+              if (!isCloud) return (
+                <span style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#fee2e2',color:'#991b1b'}}>
+                  ⚠️ ローカルのみ
+                </span>
+              );
+              if (syncStatus==='syncing') return (
+                <span style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#e0f2fe',color:'#0369a1'}}>
+                  🔄 同期中...
+                </span>
+              );
+              if (syncStatus==='error') return (
+                <span onClick={manualSync} style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#fef3c7',color:'#92400e',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}
+                  title={syncError}>
+                  ⚠️ 同期失敗 再試行↺
+                </span>
+              );
+              return (
+                <span onClick={manualSync} style={{fontSize:8,padding:'1px 6px',borderRadius:4,fontWeight:700,background:'#d1fae5',color:'#065f46',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
+                  ☁️ {timeStr ? `保存済 ${timeStr}` : '接続済み'}
+                </span>
+              );
+            })()}
           </div>
         </div>
         <div style={{textAlign:'right'}}>
@@ -2004,17 +2059,20 @@ const PurchaseTab = () => {
       const thumbId = `thumb_${ts}_${idx}`;
       try {
         // iOS対策: 並列処理せず順番に処理
-        const fullBlob = await compressImage(file, 1200, 0.75);
+        const fullBlob  = await compressImage(file, 1200, 0.75);
+        const medBlob   = await compressImage(file, 700, 0.78);  // ★ 中サイズ（Supabaseクラウドバックアップ用）
         const thumbBlob = await compressImage(file, 300, 0.6);
         await savePhoto(photoId, fullBlob);
         await savePhoto(thumbId, thumbBlob);
         const previewUrl = blobToURL(fullBlob);
-        const thumbUrl = blobToURL(thumbBlob);
-        // サムネイルをbase64でも保存 → Supabase同期後も表示できる
+        const thumbUrl   = blobToURL(thumbBlob);
+        // ★ サムネイル(300px)＋中サイズ(700px)をbase64でも保存 → Supabase同期後も端末消去後も表示可能
         const thumbB64 = await blobToBase64(thumbBlob);
         const thumbDataUrl = `data:image/jpeg;base64,${thumbB64}`;
+        const medB64 = await blobToBase64(medBlob);
+        const medDataUrl = `data:image/jpeg;base64,${medB64}`;
         setPhotos(prev => prev.length < 5
-          ? [...prev, { id: photoId, thumbId, previewUrl, thumbUrl, thumbDataUrl }]
+          ? [...prev, { id: photoId, thumbId, previewUrl, thumbUrl, thumbDataUrl, medDataUrl }]
           : prev
         );
       } catch (e) {
@@ -2557,14 +2615,17 @@ const PurchaseTab = () => {
         id: editingItem?.id, name: form.productName, price: form.itemPriceTaxIn,
         ts: new Date().toISOString(),
       });
-      // photos配列: IDとbase64サムネイルを保存（3重バックアップ: IndexedDB + thumbMap + Supabase）
+      // photos配列: IDとbase64サムネイル・中サイズを保存（3重バックアップ: IndexedDB + thumbMap + Supabase）
       // ★ 編集時: IndexedDB消失でthumbDataUrlがnullになっていても、既存アイテムの値で補完する
       const existingPhotoThumbMap = new Map((editingItem?.photos || []).map(p => [p.id, p.thumbDataUrl || null]));
+      const existingPhotoMedMap   = new Map((editingItem?.photos || []).map(p => [p.id, p.medDataUrl   || null]));
       const photoRefs = photos.map(p => ({
         id: p.id,
         thumbId: p.thumbId,
         // 現在のthumbDataUrlがnullでも既存アイテムのthumbDataUrlで補完（消失を防ぐ）
         thumbDataUrl: p.thumbDataUrl || existingPhotoThumbMap.get(p.id) || null,
+        // ★ medDataUrl（700px中サイズ）も保存 → Supabase経由でクラウドバックアップ
+        medDataUrl: p.medDataUrl || existingPhotoMedMap.get(p.id) || null,
       }));
       // 税込・税抜内訳を保存
       const purchaseCost = {
@@ -4425,7 +4486,8 @@ const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) 
 
 // 詳細モーダル用の写真スライド（フル画像をIndexedDBから取得）
 const PhotoSlide = ({ photoRef }) => {
-  const [url, setUrl] = React.useState(photoRef?.thumbDataUrl || null);
+  // ★ 初期表示: medDataUrl(700px)→thumbDataUrl(300px)→null の優先順で表示
+  const [url, setUrl] = React.useState(photoRef?.medDataUrl || photoRef?.thumbDataUrl || null);
   React.useEffect(() => {
     if (!photoRef?.id) return;
     let objectUrl = null;
@@ -4435,12 +4497,16 @@ const PhotoSlide = ({ photoRef }) => {
         if (blob) {
           objectUrl = blobToURL(blob);
           setUrl(objectUrl);
+        } else if (photoRef.medDataUrl) {
+          // ★ IndexedDBになければ中サイズbase64(700px)で代替（Supabaseから復元）
+          setUrl(photoRef.medDataUrl);
         } else if (photoRef.thumbDataUrl) {
-          // IndexedDBになければbase64サムネイルで代替
+          // さらになければサムネイルで代替
           setUrl(photoRef.thumbDataUrl);
         }
       } catch(e) {
-        if (photoRef.thumbDataUrl) setUrl(photoRef.thumbDataUrl);
+        if (photoRef.medDataUrl) setUrl(photoRef.medDataUrl);
+        else if (photoRef.thumbDataUrl) setUrl(photoRef.thumbDataUrl);
       }
     })();
     return () => {
@@ -10688,6 +10754,10 @@ const App = () => {
   const [pendingInventoryScrollY, setPendingInventoryScrollY] = React.useState(null);
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
+  // ★ クラウド同期ステータス（syncToSupabaseから_onSyncStatusコールバック経由で更新）
+  const [syncStatus,   setSyncStatus]   = React.useState('idle'); // 'idle'|'syncing'|'ok'|'error'
+  const [lastSyncTime, setLastSyncTime] = React.useState(null);   // 最終同期成功時刻(ms)
+  const [syncError,    setSyncError]    = React.useState('');
   const dataRef = React.useRef(fullData);
 
   const currentUser = fullData.currentUser || 'self';
@@ -10760,6 +10830,24 @@ const App = () => {
       syncToSupabase(oldFull, newFull);
       return newFull;
     });
+  }, []);
+
+  // ★ syncToSupabaseのステータスをReact stateで受け取るコールバックを設定
+  React.useEffect(() => {
+    _onSyncStatus = ({ status, time, error }) => {
+      setSyncStatus(status);
+      if (time) setLastSyncTime(time);
+      if (error !== undefined) setSyncError(error || '');
+    };
+    return () => { _onSyncStatus = null; };
+  }, []);
+
+  // ★ 手動で全データを今すぐクラウド同期する（「今すぐ同期」ボタン用）
+  const manualSync = React.useCallback(() => {
+    if (!_cloudEnabled) return;
+    const full = dataRef.current;
+    // oldData を空にして全件upsertを強制
+    syncToSupabase({}, full);
   }, []);
 
   // ★★★ iOS Safari タッチ不能バグ 全域対策 ★★★
@@ -10842,6 +10930,8 @@ const App = () => {
           dataRef.current = cleanedLocal;
           setFullDataRaw(cleanedLocal);
           saveData(cleanedLocal);
+          setSyncStatus('ok');
+          setLastSyncTime(Date.now());
           setDbStatus('migrated');
         } else {
           // ★ last-write-wins マージ（以前は「クラウド常に勝つ」でローカル保存が消えるバグがあった）
@@ -10864,12 +10954,13 @@ const App = () => {
               const ct = new Date(c.updatedAt || c.createdAt || 0).getTime();
               const winner = lt >= ct ? l : c;
               const loser  = lt >= ct ? c : l;
-              // ★ 勝者のthumbDataUrlがnullでも、敗者のthumbDataUrlで補完する
-              // （ローカル/クラウドどちらかにthumbDataUrlがあれば必ず保持）
+              // ★ 勝者のthumbDataUrl/medDataUrlがnullでも、敗者の値で補完する
+              // （ローカル/クラウドどちらかに画像データがあれば必ず保持）
               const loserPhotoMap = new Map((loser.photos || []).map(p => [p.id, p]));
               const mergedPhotos = (winner.photos || []).map(p => ({
                 ...p,
                 thumbDataUrl: p.thumbDataUrl || loserPhotoMap.get(p.id)?.thumbDataUrl || null,
+                medDataUrl:   p.medDataUrl   || loserPhotoMap.get(p.id)?.medDataUrl   || null,
               }));
               result.push({ ...winner, photos: mergedPhotos });
             }
@@ -10908,6 +10999,10 @@ const App = () => {
           const salesChanged = JSON.stringify(cleanedMerged.sales)    !== JSON.stringify(cloudData.sales);
           if (invChanged || salesChanged || cleanedMerged !== mergedData) {
             syncToSupabase(cloudData, cleanedMerged);
+          } else {
+            // 変更なし = 起動時点でクラウドと同期済み
+            setSyncStatus('ok');
+            setLastSyncTime(Date.now());
           }
           setDbStatus('ok');
         }
@@ -11032,7 +11127,7 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY }}>
+    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY }}>
       <ToastProvider>
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
