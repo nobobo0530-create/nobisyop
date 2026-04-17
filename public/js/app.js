@@ -444,6 +444,17 @@ const loadThumbMap = () => {
   } catch(e) { return {}; }
 };
 
+// ★ スプレッドシートから取得した既知の古物番号（ヤフオクストア系）
+const KNOWN_YAHOO_STORE_LICENSES = {
+  'エンパワー ヤフーショップ':        '東京都公安委員会　第301081408332号',
+  'ECO BASEヤフー店':                '福岡県公安委員会　第901021410011号',
+  'pleasure':                        '東京都公安委員会　第306611306899号',
+  'オークション代行クイックドゥ':     '大阪府公安委員会　第622062304381号',
+  'すまりく ヤフオク！ショップ':      '東京都公安委員会　第304412117565号',
+  'エルミ ヤフーSHOP':               '埼玉県公安委員会　第431260025178号',
+  'アジアリサイクルマート':           '長野県公安委員会　第481231000027号',
+};
+
 const loadData = () => {
   try {
     const thumbMap = loadThumbMap();
@@ -460,13 +471,25 @@ const loadData = () => {
         })),
       }));
     }
-    const result = normalizeStores({ ...getInitialData(), ...parsed });
-    // ★ storeLicenses.セカンドストリートが空の場合はデフォルト値を復元
-    if (!result.settings?.storeLicenses?.['セカンドストリート']) {
-      if (!result.settings) result.settings = {};
-      if (!result.settings.storeLicenses) result.settings.storeLicenses = {};
-      result.settings.storeLicenses['セカンドストリート'] = '古物商許愛知県公安委員会  第541162001000号';
+    const initialSettings = getInitialData().settings;
+    // ★ settingsをデフォルト値と深くマージ（parsedが持たないキーはデフォルトで補完）
+    const parsedSettings = parsed.settings || {};
+    const mergedSettings = { ...initialSettings, ...parsedSettings };
+    // ★ yahooStores: デフォルトの既知ライセンス + 保存済みエントリをマージ
+    const savedYahooMap = new Map((parsedSettings.yahooStores || []).map(s => [s.storeName, s]));
+    const mergedYahoo = initialSettings.yahooStores.map(def => {
+      const saved = savedYahooMap.get(def.storeName);
+      if (saved) { savedYahooMap.delete(def.storeName); }
+      return saved ? { ...def, ...saved, license: saved.license || def.license } : def;
+    });
+    // 保存済みに独自ストアがあれば追加
+    for (const s of savedYahooMap.values()) mergedYahoo.push(s);
+    mergedSettings.yahooStores = mergedYahoo;
+    // ★ storeLicenses: セカンドストリートが空なら復元
+    if (!mergedSettings.storeLicenses?.['セカンドストリート']) {
+      mergedSettings.storeLicenses = { ...mergedSettings.storeLicenses, 'セカンドストリート': '古物商許愛知県公安委員会  第541162001000号' };
     }
+    const result = normalizeStores({ ...getInitialData(), ...parsed, settings: mergedSettings });
     return result;
   } catch { return getInitialData(); }
 };
@@ -692,7 +715,15 @@ const getInitialData = () => ({
     },
     // ヤフオクストア一覧（ストアごとに許可証番号が異なるため別管理）
     // { id, storeName, license, companyName }
-    yahooStores: [],
+    yahooStores: [
+      { id: 'empowerYahoo',    storeName: 'エンパワー ヤフーショップ',     license: '東京都公安委員会　第301081408332号', companyName: '' },
+      { id: 'ecobaseYahoo',   storeName: 'ECO BASEヤフー店',             license: '福岡県公安委員会　第901021410011号', companyName: '' },
+      { id: 'pleasureYahoo',  storeName: 'pleasure',                     license: '東京都公安委員会　第306611306899号', companyName: '' },
+      { id: 'quickdoYahoo',   storeName: 'オークション代行クイックドゥ',  license: '大阪府公安委員会　第622062304381号', companyName: '' },
+      { id: 'sumariku',       storeName: 'すまりく ヤフオク！ショップ',   license: '東京都公安委員会　第304412117565号', companyName: '' },
+      { id: 'elmiYahoo',      storeName: 'エルミ ヤフーSHOP',            license: '埼玉県公安委員会　第431260025178号', companyName: '' },
+      { id: 'asiaRecycle',    storeName: 'アジアリサイクルマート',        license: '長野県公安委員会　第481231000027号', companyName: '' },
+    ],
     storeMaster: {
       // 店舗仕入れ時に表示（実店舗）
       normalStores: [
@@ -7689,7 +7720,6 @@ const SalesTab = () => {
 const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, setPendingReturnSection }) => {
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
-  const [licenseImporting, setLicenseImporting] = React.useState(false); // 古物番号スプレッドシート取込中
   const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
   const [showAllSales, setShowAllSales]           = React.useState(false); // 売上管理表全件表示
   const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
@@ -10311,65 +10341,6 @@ const OtherTab = () => {
         {activeSection === 'settings' && (
           <div>
 
-            {/* ── スプレッドシートから古物番号を一括取得 ── */}
-            <div className="card" style={{padding:16,marginBottom:12,border:'1.5px solid #e0e7ff',borderRadius:14}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📋 古物番号をスプレッドシートから取得</div>
-              <div style={{fontSize:12,color:'#6b7280',marginBottom:12,lineHeight:1.6}}>
-                古物台帳シートの「取得先名称」「許可証番号」を読み取って自動反映します
-              </div>
-              <button
-                disabled={licenseImporting}
-                onClick={async () => {
-                  const sid = settings.googleSpreadsheetId;
-                  if (!sid) { toast('❌ スプレッドシートIDが設定されていません'); return; }
-                  const token = gToken;
-                  if (!token) { toast('❌ Googleにログインしてください（上の「Googleスプレッドシート連携」から）'); return; }
-                  setLicenseImporting(true);
-                  try {
-                    // 古物台帳シートを全件取得
-                    const rows = await sheetsGet(token, sid, '古物台帳');
-                    if (!rows || rows.length < 2) { toast('⚠️ 古物台帳シートにデータがありません'); return; }
-                    // ヘッダー行をスキップ、列インデックス: 6=取得先名称, 7=会社名, 8=許可証番号
-                    const COL_STORE = 6, COL_COMPANY = 7, COL_LICENSE = 8;
-                    const normalStores = new Set((data.settings?.storeMaster?.normalStores || []));
-                    const newLicenses = { ...(settings.storeLicenses || {}) };
-                    const newYahooStores = [...(settings.yahooStores || [])];
-                    let count = 0;
-                    rows.slice(1).forEach(row => {
-                      const store   = (row[COL_STORE]   || '').trim();
-                      const company = (row[COL_COMPANY] || '').trim();
-                      const license = (row[COL_LICENSE] || '').trim();
-                      if (!store || !license) return;
-                      if (normalStores.has(store) || newLicenses.hasOwnProperty(store)) {
-                        // 通常店舗: storeLicensesに保存
-                        if (!newLicenses[store]) { newLicenses[store] = license; count++; }
-                      } else {
-                        // ヤフオクストア等: yahooStoresに保存
-                        const idx = newYahooStores.findIndex(s => s.storeName === store);
-                        if (idx >= 0) {
-                          if (!newYahooStores[idx].license) { newYahooStores[idx] = { ...newYahooStores[idx], license, companyName: company || newYahooStores[idx].companyName }; count++; }
-                        } else {
-                          newYahooStores.push({ id: Date.now().toString() + Math.random(), storeName: store, license, companyName: company });
-                          count++;
-                        }
-                      }
-                    });
-                    setSetting('storeLicenses', newLicenses);
-                    setSetting('yahooStores', newYahooStores);
-                    toast(`✅ ${count}件の古物番号を取得しました`);
-                  } catch(e) {
-                    toast('❌ 取得エラー: ' + e.message);
-                  } finally {
-                    setLicenseImporting(false);
-                  }
-                }}
-                style={{width:'100%',padding:'10px',borderRadius:10,border:'none',
-                  background: licenseImporting ? '#9ca3af' : '#4f46e5',
-                  color:'white',fontSize:13,fontWeight:700,cursor: licenseImporting ? 'not-allowed' : 'pointer'}}>
-                {licenseImporting ? '⏳ 取得中...' : '📋 スプレッドシートから古物番号を取得'}
-              </button>
-            </div>
-
             {/* ── 仕入先 古物商許可証番号管理（通常店舗） ── */}
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🏪 仕入先 古物商番号管理</div>
@@ -11288,6 +11259,18 @@ const App = () => {
             if (!base.storeLicenses) base.storeLicenses = {};
             if (!base.storeLicenses['セカンドストリート']) {
               base.storeLicenses = { ...base.storeLicenses, 'セカンドストリート': '古物商許愛知県公安委員会  第541162001000号' };
+            }
+            // ★ yahooStores 古物番号を既知の値で補完
+            if (!Array.isArray(base.yahooStores)) base.yahooStores = [];
+            for (const [storeName, license] of Object.entries(KNOWN_YAHOO_STORE_LICENSES)) {
+              const idx = base.yahooStores.findIndex(s => s.storeName === storeName);
+              if (idx >= 0) {
+                if (!base.yahooStores[idx].license) {
+                  base.yahooStores[idx] = { ...base.yahooStores[idx], license };
+                }
+              } else {
+                base.yahooStores.push({ id: storeName, storeName, license, companyName: '' });
+              }
             }
             return base;
           };
