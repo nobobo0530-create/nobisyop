@@ -331,11 +331,20 @@
   </script>
 
   <script>
+  // ★ 強制更新後のキャッシュバスターURLパラメータをクリーンアップ
+  (function() {
+    if (window.location.search.includes('_t=')) {
+      window.history.replaceState({}, '', '/');
+    }
+  })();
+  </script>
+
+  <script>
   // ── Babel コンパイルキャッシュ + 高速起動ローダー ──
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260416e';
+    var VERSION = '20260416f';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
@@ -472,8 +481,12 @@
           Object.keys(localStorage).filter(function(k){ return k.startsWith('nobushop_compiled'); })
             .forEach(function(k){ localStorage.removeItem(k); });
         } catch(e) {}
-        // 2. SW登録解除 + キャッシュストレージ全削除 → リロード
-        var doReload = function() { window.location.reload(true); };
+        // 2. SW登録解除 + キャッシュストレージ全削除 → キャッシュバスターURLでナビゲート
+        // ★ location.reload(true) はiOS Safariで無視されるため、
+        //    タイムスタンプ付きURLで強制的に新鮮なリクエストを発行する
+        var doReload = function() {
+          window.location.replace(window.location.origin + '/?_t=' + Date.now());
+        };
         if (!('serviceWorker' in navigator)) { doReload(); return; }
         Promise.all([
           navigator.serviceWorker.getRegistrations().then(function(regs) {
