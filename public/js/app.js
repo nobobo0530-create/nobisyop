@@ -280,25 +280,47 @@ const DB_NAME = 'nobushop_photos';
 const DB_VERSION = 1;
 const STORE_NAME = 'photos';
 
-const openDB = () => new Promise((resolve, reject) => {
-  const req = indexedDB.open(DB_NAME, DB_VERSION);
-  req.onupgradeneeded = e => {
-    e.target.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
+// iOS Safariは長時間バックグラウンドでIndexedDB接続が切れる → リトライで復旧
+const openDB = (retries = 3) => new Promise((resolve, reject) => {
+  const attempt = (remaining) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = e => {
+      e.target.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
+    };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = e => {
+      const err = e.target.error;
+      if (remaining > 0) {
+        console.warn('[IndexedDB] 接続エラー、リトライ残り', remaining, err?.message);
+        setTimeout(() => attempt(remaining - 1), 300);
+      } else {
+        reject(err);
+      }
+    };
   };
-  req.onsuccess = e => resolve(e.target.result);
-  req.onerror = e => reject(e.target.error);
+  attempt(retries);
 });
 
-const savePhoto = async (id, blob) => {
-  const db = await openDB();
+const savePhoto = async (id, blob, retries = 2) => {
   // iOS SafariはBlobのIndexedDB保存が不安定→ArrayBufferに変換
   const arrayBuffer = await blob.arrayBuffer();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put({ id, data: arrayBuffer, type: blob.type || 'image/jpeg' });
-    tx.oncomplete = resolve;
-    tx.onerror = e => reject(e.target.error);
-  });
+  const attempt = async (remaining) => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put({ id, data: arrayBuffer, type: blob.type || 'image/jpeg' });
+      tx.oncomplete = resolve;
+      tx.onerror = e => {
+        if (remaining > 0) {
+          console.warn('[savePhoto] リトライ残り', remaining);
+          setTimeout(() => attempt(remaining - 1).then(resolve).catch(reject), 400);
+        } else {
+          reject(e.target.error);
+        }
+      };
+    });
+  };
+  return attempt(retries);
 };
 
 const getPhoto = async (id) => {
