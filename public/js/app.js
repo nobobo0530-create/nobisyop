@@ -460,7 +460,14 @@ const loadData = () => {
         })),
       }));
     }
-    return normalizeStores({ ...getInitialData(), ...parsed });
+    const result = normalizeStores({ ...getInitialData(), ...parsed });
+    // ★ storeLicenses.セカンドストリートが空の場合はデフォルト値を復元
+    if (!result.settings?.storeLicenses?.['セカンドストリート']) {
+      if (!result.settings) result.settings = {};
+      if (!result.settings.storeLicenses) result.settings.storeLicenses = {};
+      result.settings.storeLicenses['セカンドストリート'] = '古物商許愛知県公安委員会  第541162001000号';
+    }
+    return result;
   } catch { return getInitialData(); }
 };
 
@@ -9296,6 +9303,8 @@ const OtherTab = () => {
   const [photoCount, setPhotoCount] = React.useState(0);
   const qrCanvasRef = React.useRef();
   const [appUrl, setAppUrl] = React.useState('');
+  // ★ 写真クラウドバックアップ用ステート
+  const [photoBackupProgress, setPhotoBackupProgress] = React.useState(null); // null or { done, total, updated }
 
   React.useEffect(() => {
     if (activeSection === 'settings') {
@@ -9343,6 +9352,83 @@ const OtherTab = () => {
     const newData = { ...data, settings };
     setData(newData);
     toast('✅ 設定を保存しました');
+  };
+
+  // ★ 写真クラウドバックアップ: IndexedDBから各アイテムの写真を読み込み、
+  // thumbDataUrl(300px)/medDataUrl(700px)が欠けていれば生成してSupabaseに同期する
+  const runPhotoBackup = async () => {
+    const inventory = data.inventory || [];
+    const total = inventory.length;
+    setPhotoBackupProgress({ done: 0, total, updated: 0 });
+    let updatedCount = 0;
+    const newInventory = [];
+    for (let i = 0; i < inventory.length; i++) {
+      const item = inventory[i];
+      const photos = item.photos || [];
+      if (photos.length === 0) {
+        newInventory.push(item);
+        setPhotoBackupProgress({ done: i + 1, total, updated: updatedCount });
+        continue;
+      }
+      let itemChanged = false;
+      const newPhotos = [];
+      for (const photo of photos) {
+        const needsThumb = !photo.thumbDataUrl;
+        const needsMed   = !photo.medDataUrl;
+        if (!needsThumb && !needsMed) {
+          newPhotos.push(photo);
+          continue;
+        }
+        try {
+          // IndexedDBからフル写真を取得（id）
+          const blob = await getPhoto(photo.id);
+          if (!blob) {
+            // フル写真なし → サムネ（thumbId）で試みる
+            const thumbBlob = photo.thumbId ? await getPhoto(photo.thumbId) : null;
+            if (!thumbBlob) { newPhotos.push(photo); continue; }
+            // サムネだけあるケース: thumbDataUrlのみ生成
+            let updatedPhoto = { ...photo };
+            if (needsThumb) {
+              const tb = await compressImage(new File([thumbBlob], 'thumb.jpg', { type: thumbBlob.type || 'image/jpeg' }), 300, 0.72);
+              const b64 = await blobToBase64(tb);
+              updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
+              itemChanged = true;
+            }
+            newPhotos.push(updatedPhoto);
+            continue;
+          }
+          const file = new File([blob], 'photo.jpg', { type: blob.type || 'image/jpeg' });
+          let updatedPhoto = { ...photo };
+          if (needsThumb) {
+            const tb = await compressImage(file, 300, 0.72);
+            const b64 = await blobToBase64(tb);
+            updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
+            itemChanged = true;
+          }
+          if (needsMed) {
+            const mb = await compressImage(file, 700, 0.78);
+            const b64 = await blobToBase64(mb);
+            updatedPhoto.medDataUrl = `data:image/jpeg;base64,${b64}`;
+            itemChanged = true;
+          }
+          newPhotos.push(updatedPhoto);
+        } catch(err) {
+          console.warn('[PhotoBackup] photo error:', photo.id, err);
+          newPhotos.push(photo);
+        }
+      }
+      if (itemChanged) updatedCount++;
+      newInventory.push({ ...item, photos: newPhotos });
+      setPhotoBackupProgress({ done: i + 1, total, updated: updatedCount });
+    }
+    // 更新があればsetDataでSupabase同期を発火
+    if (updatedCount > 0) {
+      setData({ ...data, inventory: newInventory });
+      toast(`✅ ${updatedCount}件の写真バックアップをクラウドに保存しました`);
+    } else {
+      toast('✅ すべての写真は既にバックアップ済みです');
+    }
+    setPhotoBackupProgress(null);
   };
 
   const setSetting = (key, val) => {
@@ -10691,6 +10777,39 @@ const OtherTab = () => {
               </div>
             </div>
 
+            {/* 写真クラウドバックアップ */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>📷 写真クラウドバックアップ</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                IndexedDBの写真からthumbDataUrl(300px)・medDataUrl(700px)を生成してSupabaseに保存します。
+                アプリを削除しても写真を復元できるようになります。
+              </div>
+              {photoBackupProgress ? (
+                <div style={{padding:'10px 12px',borderRadius:10,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
+                  <div style={{fontWeight:600,fontSize:13,color:'#1d4ed8',marginBottom:6}}>
+                    ⏳ バックアップ中… {photoBackupProgress.done}/{photoBackupProgress.total}件
+                  </div>
+                  <div style={{background:'#dbeafe',borderRadius:6,height:8,overflow:'hidden'}}>
+                    <div style={{
+                      height:'100%',borderRadius:6,background:'#2563eb',
+                      width: `${photoBackupProgress.total > 0 ? Math.round(photoBackupProgress.done / photoBackupProgress.total * 100) : 0}%`,
+                      transition:'width 0.3s',
+                    }}/>
+                  </div>
+                  <div style={{fontSize:11,color:'#3b82f6',marginTop:4}}>更新: {photoBackupProgress.updated}件</div>
+                </div>
+              ) : (
+                <button
+                  className="btn-primary"
+                  style={{width:'100%'}}
+                  onClick={runPhotoBackup}
+                  disabled={!!photoBackupProgress}
+                >
+                  📷 写真をクラウドバックアップ
+                </button>
+              )}
+            </div>
+
             {/* ストレージ使用状況 */}
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>📊 ストレージ使用状況</div>
@@ -11105,6 +11224,11 @@ const App = () => {
             }
             // ★ _deletedIds はユニオンマージ（ローカル・クラウド両方の削除記録を保持）
             base._deletedIds = { ...(cloud?._deletedIds || {}), ...(local?._deletedIds || {}) };
+            // ★ storeLicenses.セカンドストリートが空の場合はデフォルト値を復元
+            if (!base.storeLicenses) base.storeLicenses = {};
+            if (!base.storeLicenses['セカンドストリート']) {
+              base.storeLicenses = { ...base.storeLicenses, 'セカンドストリート': '古物商許愛知県公安委員会  第541162001000号' };
+            }
             return base;
           };
           // ★ 削除トゥームストーンをローカル・クラウド双方からマージしてmergeByLastWriteに渡す
@@ -11142,6 +11266,57 @@ const App = () => {
       }
     })();
   }, []);
+
+  // ── 起動時の写真自動復元（Supabaseのmedダ/thumbDataUrlからIndexedDBを復元） ──
+  // dbStatusが'ok'または'migrated'になった後に実行する
+  React.useEffect(() => {
+    if (dbStatus !== 'ok' && dbStatus !== 'migrated') return;
+    (async () => {
+      try {
+        const existingIds = new Set(await getAllPhotoIds());
+        const inventory = dataRef.current.inventory || [];
+        let restoredCount = 0;
+        for (const item of inventory) {
+          for (const photo of (item.photos || [])) {
+            // フル写真がIndexedDBになく、medDataUrlまたはthumbDataUrlがある場合に復元
+            const hasFullInDB = existingIds.has(photo.id);
+            const hasThumbInDB = photo.thumbId ? existingIds.has(photo.thumbId) : false;
+            if (!hasFullInDB && !hasThumbInDB) {
+              const dataUrl = photo.medDataUrl || photo.thumbDataUrl;
+              if (!dataUrl) continue;
+              try {
+                const res = await fetch(dataUrl);
+                const blob = await res.blob();
+                // medDataUrlから復元する場合はphoto.idとthumbIdの両方に保存
+                if (photo.medDataUrl) {
+                  await savePhoto(photo.id, blob);
+                  // サムネも生成して保存
+                  if (photo.thumbId) {
+                    const thumbBlob = await compressImage(
+                      new File([blob], 'img.jpg', { type: blob.type || 'image/jpeg' }), 300, 0.6
+                    );
+                    await savePhoto(photo.thumbId, thumbBlob);
+                  }
+                } else if (photo.thumbDataUrl && photo.thumbId) {
+                  // thumbDataUrlしかない場合はthumbIdに保存
+                  await savePhoto(photo.thumbId, blob);
+                }
+                restoredCount++;
+                console.log('[PhotoRestore] 復元:', photo.id);
+              } catch(err) {
+                console.warn('[PhotoRestore] 復元失敗:', photo.id, err);
+              }
+            }
+          }
+        }
+        if (restoredCount > 0) {
+          console.log(`[PhotoRestore] ${restoredCount}枚の写真をIndexedDBに復元しました`);
+        }
+      } catch(e) {
+        console.warn('[PhotoRestore] error:', e);
+      }
+    })();
+  }, [dbStatus]);
 
   // ── 写真データ移行（旧 base64 → IndexedDB） ────────────────
   React.useEffect(() => {
