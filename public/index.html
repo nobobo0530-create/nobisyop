@@ -333,10 +333,14 @@
   <script>
   // ★ 強制更新後のキャッシュバスターURLパラメータをクリーンアップ
   (function() {
-    if (window.location.search.includes('_t=')) {
+    if (window.location.search.includes('_t=') || window.location.search.includes('init=')) {
       window.history.replaceState({}, '', '/');
     }
   })();
+  </script>
+  <script>
+  // ★ アプリバージョンをグローバルに公開（app.jsのヘッダー表示で参照）
+  window._APP_VERSION = 'v20260416h';
   </script>
 
   <script>
@@ -344,7 +348,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260416g';
+    var VERSION = '20260416h';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
