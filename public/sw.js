@@ -1,9 +1,9 @@
 // SalesLog Service Worker v20260416i
-var CACHE = 'nobushop-20260416i';
+var CACHE = 'nobushop-20260416j';
 
 var PRECACHE = [
   '/manifest.json',
-  '/js/app.js?v=20260416i',
+  '/js/app.js?v=20260416j',
   '/js/google-config.js?v=20260413d',
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',

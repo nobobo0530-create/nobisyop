@@ -7689,6 +7689,7 @@ const SalesTab = () => {
 const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, setPendingReturnSection }) => {
   const [gToken, setGToken]                   = React.useState(null);
   const [gSyncing, setGSyncing]               = React.useState(false);
+  const [licenseImporting, setLicenseImporting] = React.useState(false); // 古物番号スプレッドシート取込中
   const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
   const [showAllSales, setShowAllSales]           = React.useState(false); // 売上管理表全件表示
   const [expandedBundleGroup, setExpandedBundleGroup] = React.useState(null); // まとめ仕入れ詳細展開
@@ -10309,6 +10310,65 @@ const OtherTab = () => {
         {/* 設定 */}
         {activeSection === 'settings' && (
           <div>
+
+            {/* ── スプレッドシートから古物番号を一括取得 ── */}
+            <div className="card" style={{padding:16,marginBottom:12,border:'1.5px solid #e0e7ff',borderRadius:14}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📋 古物番号をスプレッドシートから取得</div>
+              <div style={{fontSize:12,color:'#6b7280',marginBottom:12,lineHeight:1.6}}>
+                古物台帳シートの「取得先名称」「許可証番号」を読み取って自動反映します
+              </div>
+              <button
+                disabled={licenseImporting}
+                onClick={async () => {
+                  const sid = settings.googleSpreadsheetId;
+                  if (!sid) { toast('❌ スプレッドシートIDが設定されていません'); return; }
+                  const token = gToken;
+                  if (!token) { toast('❌ Googleにログインしてください（上の「Googleスプレッドシート連携」から）'); return; }
+                  setLicenseImporting(true);
+                  try {
+                    // 古物台帳シートを全件取得
+                    const rows = await sheetsGet(token, sid, '古物台帳');
+                    if (!rows || rows.length < 2) { toast('⚠️ 古物台帳シートにデータがありません'); return; }
+                    // ヘッダー行をスキップ、列インデックス: 6=取得先名称, 7=会社名, 8=許可証番号
+                    const COL_STORE = 6, COL_COMPANY = 7, COL_LICENSE = 8;
+                    const normalStores = new Set((data.settings?.storeMaster?.normalStores || []));
+                    const newLicenses = { ...(settings.storeLicenses || {}) };
+                    const newYahooStores = [...(settings.yahooStores || [])];
+                    let count = 0;
+                    rows.slice(1).forEach(row => {
+                      const store   = (row[COL_STORE]   || '').trim();
+                      const company = (row[COL_COMPANY] || '').trim();
+                      const license = (row[COL_LICENSE] || '').trim();
+                      if (!store || !license) return;
+                      if (normalStores.has(store) || newLicenses.hasOwnProperty(store)) {
+                        // 通常店舗: storeLicensesに保存
+                        if (!newLicenses[store]) { newLicenses[store] = license; count++; }
+                      } else {
+                        // ヤフオクストア等: yahooStoresに保存
+                        const idx = newYahooStores.findIndex(s => s.storeName === store);
+                        if (idx >= 0) {
+                          if (!newYahooStores[idx].license) { newYahooStores[idx] = { ...newYahooStores[idx], license, companyName: company || newYahooStores[idx].companyName }; count++; }
+                        } else {
+                          newYahooStores.push({ id: Date.now().toString() + Math.random(), storeName: store, license, companyName: company });
+                          count++;
+                        }
+                      }
+                    });
+                    setSetting('storeLicenses', newLicenses);
+                    setSetting('yahooStores', newYahooStores);
+                    toast(`✅ ${count}件の古物番号を取得しました`);
+                  } catch(e) {
+                    toast('❌ 取得エラー: ' + e.message);
+                  } finally {
+                    setLicenseImporting(false);
+                  }
+                }}
+                style={{width:'100%',padding:'10px',borderRadius:10,border:'none',
+                  background: licenseImporting ? '#9ca3af' : '#4f46e5',
+                  color:'white',fontSize:13,fontWeight:700,cursor: licenseImporting ? 'not-allowed' : 'pointer'}}>
+                {licenseImporting ? '⏳ 取得中...' : '📋 スプレッドシートから古物番号を取得'}
+              </button>
+            </div>
 
             {/* ── 仕入先 古物商許可証番号管理（通常店舗） ── */}
             <div className="card" style={{padding:16,marginBottom:12}}>
