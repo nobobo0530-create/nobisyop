@@ -830,7 +830,7 @@ const analyzeImagesWithClaude = async (imageDataList, apiKey, prompt, maxTokens 
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || `API Error: ${res.status}`);
+      throw new Error(`[${res.status}] ` + (err.error?.message || `API Error: ${res.status}`));
     }
     const data = await res.json();
     return data.content[0].text;
@@ -9359,7 +9359,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   const [doneCount, setDoneCount] = React.useState(0);
   const fileInputRef = React.useRef();
 
-  const apiKey = data?.settings?.apiKey || '';
+  const apiKey = (data?.settings?.apiKey || '').trim();
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
 
