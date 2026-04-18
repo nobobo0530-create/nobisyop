@@ -9459,7 +9459,31 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     if (photos.length < 2) { toast('❌ 写真を2枚以上アップロードしてください'); return; }
     if (!apiKey) { toast('❌ Claude APIキーが設定されていません（設定タブで入力）'); return; }
 
+    // ── APIキー事前確認 ──
     setAnalyzing(true);
+    try {
+      const testRes = await fetch(CONFIG.ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({ model: CONFIG.MODEL, max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      if (!testRes.ok) {
+        const e = await testRes.json().catch(() => ({}));
+        setAnalyzing(false);
+        toast(`❌ APIキーエラー [${testRes.status}]: ${e.error?.message || 'unknown'}\n設定タブでAPIキーを確認してください`);
+        return;
+      }
+    } catch(e) {
+      setAnalyzing(false);
+      toast('❌ Anthropic接続エラー: ' + e.message);
+      return;
+    }
+    setKeyStatus('ok');
     const newPairs = [];
 
     for (let i = 0; i + 1 < photos.length; i += 2) {
