@@ -9360,6 +9360,42 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   const fileInputRef = React.useRef();
 
   const apiKey = (data?.settings?.apiKey || '').trim();
+  const [keyStatus, setKeyStatus] = React.useState(null); // null | 'ok' | 'error'
+  const [keyTesting, setKeyTesting] = React.useState(false);
+
+  const testApiKey = async () => {
+    if (!apiKey) { toast('❌ APIキーが未設定です'); return; }
+    setKeyTesting(true);
+    setKeyStatus(null);
+    try {
+      const res = await fetch(CONFIG.ANTHROPIC_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: CONFIG.MODEL,
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+      if (res.ok) {
+        setKeyStatus('ok');
+        toast('✅ APIキー有効です！');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setKeyStatus('error');
+        toast(`❌ [${res.status}] ${err.error?.message || 'エラー'}`);
+      }
+    } catch(e) {
+      setKeyStatus('error');
+      toast('❌ 接続エラー: ' + e.message);
+    }
+    setKeyTesting(false);
+  };
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -9729,10 +9765,17 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         </button>
         <input ref={fileInputRef} type="file" accept="image/*" multiple style={{display:'none'}}
           onChange={handleFilesSelected} />
-        {!apiKey && (
+        {!apiKey ? (
           <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px'}}>
             ⚠️ Claude APIキーが未設定です（設定タブで入力してください）
           </div>
+        ) : (
+          <button onClick={testApiKey} disabled={keyTesting}
+            style={{width:'100%',padding:'8px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,cursor:'pointer',
+              background: keyStatus==='ok' ? '#d1fae5' : keyStatus==='error' ? '#fee2e2' : '#f3f4f6',
+              color: keyStatus==='ok' ? '#065f46' : keyStatus==='error' ? '#991b1b' : '#555',fontWeight:600}}>
+            {keyTesting ? '確認中...' : keyStatus==='ok' ? '✅ APIキー有効' : keyStatus==='error' ? '❌ APIキー無効' : '🔑 APIキーを確認する'}
+          </button>
         )}
       </div>
 
