@@ -9495,9 +9495,9 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       let warnMsgs = [];
 
       try {
-        const infoBase64 = await blobToBase64(infoPhoto.file);
-        const mimeType = infoPhoto.file.type || 'image/jpeg';
-        const imageDataList = [{ data: infoBase64, mimeType }];
+        const infoCompressed = await compressImage(infoPhoto.file, 1500, 0.8);
+        const infoBase64 = await blobToBase64(infoCompressed);
+        const imageDataList = [{ data: infoBase64, mimeType: 'image/jpeg' }];
         const raw = await analyzeImagesWithClaude(imageDataList, apiKey, BATCH_PURCHASE_PROMPT, 600);
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
