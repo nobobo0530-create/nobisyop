@@ -1,5 +1,5 @@
-// SalesLog Service Worker v20260418k  ── オフライン完全対応版
-var CACHE = 'nobushop-20260418k';
+// SalesLog Service Worker v20260418l  ── オフライン完全対応版
+var CACHE = 'nobushop-20260418l';
 
 // アプリの動作に必須なリソース（インストール時に必ずキャッシュ）
 var PRECACHE_CORE = [
