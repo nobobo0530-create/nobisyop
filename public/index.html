@@ -371,7 +371,7 @@
   </script>
   <script>
   // ★ アプリバージョンをグローバルに公開（app.jsのヘッダー表示で参照）
-  window._APP_VERSION = 'v20260418b';
+  window._APP_VERSION = 'v20260418c';
   </script>
 
   <script>
@@ -379,7 +379,7 @@
   // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
   //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
   (function() {
-    var VERSION = '20260418b';
+    var VERSION = '20260418c';
     var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
 
     var loadingEl = document.getElementById('app-loading');
