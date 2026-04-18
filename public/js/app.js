@@ -37,6 +37,7 @@ const CONFIG = {
     { pattern: /エルミ[\s　]*Yahoo/i,                                correct: 'エルミ ヤフーSHOP' },
     { pattern: /すまりく[\s　]*ヤフオク/i,                           correct: 'すまりく ヤフオク！ショップ' },
     { pattern: /リア[\s　]*クロ/,                                    correct: 'リアクロ' },
+    { pattern: /permodabein/i,                                       correct: 'pernodabsin' },
   ],
   TAG_PRICE_PROMPT: `この写真の値札・価格タグ・価格シールに書かれた金額を読み取ってください。
 【重要】数字が多少不鮮明でも、見えている桁数や文脈から最もありえる価格を推定して回答してください。「読めない」ではなく必ずベストの数値を出してください。
