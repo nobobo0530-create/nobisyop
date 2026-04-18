@@ -9359,7 +9359,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   const [doneCount, setDoneCount] = React.useState(0);
   const fileInputRef = React.useRef();
 
-  const apiKey = data?.settings?.anthropicApiKey || '';
+  const apiKey = data?.settings?.apiKey || '';
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
 
