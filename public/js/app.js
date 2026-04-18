@@ -1025,6 +1025,19 @@ const RECEIPT_ANALYSIS_PROMPT = `レシートの写真を分析して以下のJS
 - 旅費交通費：電車・バス・ガソリン・駐車場
 - 雑費：上記に当てはまらないもの`;
 
+const BATCH_PURCHASE_PROMPT = `フリマ・オークションアプリの購入済み取引画面のスクリーンショットから情報を読み取ってください。
+メルカリ・ヤフオク・ラクマに対応。JSONのみで回答（説明不要）：
+{
+  "product_name": "商品名（画面に表示されているまま全文）",
+  "purchase_price": 商品の購入価格（数値のみ、送料・手数料除く、¥や,不要）,
+  "shipping_cost": 送料（数値のみ、0なら0）,
+  "store_name": "出品者名またはショップ名（画面に表示されているまま）",
+  "purchase_date": "購入日（YYYY-MM-DD形式、画面に表示されている日付）",
+  "condition": "商品の状態（新品・未使用/未使用に近い/目立った傷や汚れなし/やや傷や汚れあり/傷や汚れあり/全体的に状態が悪い から最も近いもの）",
+  "platform": "プラットフォーム（メルカリ/ヤフオク/ラクマ/その他）"
+}
+注意：purchase_dateは画面に表示されている実際の日付を読み取ること。取引日・購入日・落札日などのラベルの横にある日付。`;
+
 const SS_ANALYSIS_PROMPT = `フリマ・オークションアプリの取引画面スクリーンショットから情報を読み取ってください。
 メルカリ・ヤフオク・ラクマに対応。JSONのみで回答（説明不要）：
 {
@@ -9334,6 +9347,443 @@ const runRemoveBg = async (file, apiKey) => {
 };
 
 // ============================================================
+// 一括仕入れパネル
+// ============================================================
+const BatchPurchasePanel = ({ data, setData, toast }) => {
+  const { currentUser } = React.useContext(AppContext);
+  const [photos, setPhotos] = React.useState([]); // [{id, file, url}]
+  const [pairs, setPairs] = React.useState([]);   // [{productPhoto, infoPhoto, extracted, edited, status, warn}]
+  const [analyzing, setAnalyzing] = React.useState(false);
+  const [registering, setRegistering] = React.useState(false);
+  const [step, setStep] = React.useState('upload'); // 'upload' | 'review' | 'done'
+  const [doneCount, setDoneCount] = React.useState(0);
+  const fileInputRef = React.useRef();
+
+  const apiKey = data?.settings?.anthropicApiKey || '';
+
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+
+  const handleFilesSelected = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const newPhotos = files.map((f, i) => ({
+      id: `batch_${Date.now()}_${i}`,
+      file: f,
+      url: URL.createObjectURL(f),
+    }));
+    setPhotos(prev => [...prev, ...newPhotos]);
+    e.target.value = '';
+  };
+
+  const removePhoto = (id) => {
+    setPhotos(prev => {
+      const p = prev.find(x => x.id === id);
+      if (p) URL.revokeObjectURL(p.url);
+      return prev.filter(x => x.id !== id);
+    });
+  };
+
+  const movePhoto = (idx, dir) => {
+    setPhotos(prev => {
+      const arr = [...prev];
+      const target = idx + dir;
+      if (target < 0 || target >= arr.length) return arr;
+      [arr[idx], arr[target]] = [arr[target], arr[idx]];
+      return arr;
+    });
+  };
+
+  const validateDate = (dateStr) => {
+    if (!dateStr) return { warn: true, msg: '日付が読み取れませんでした' };
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diffDays = (now - d) / 86400000;
+    if (d > now) return { warn: true, msg: '未来の日付です' };
+    if (diffDays > 365) return { warn: true, msg: '1年以上前の日付です' };
+    return { warn: false, msg: '' };
+  };
+
+  const conditionMap = {
+    '新品・未使用': 'S',
+    '未使用に近い': 'S',
+    '目立った傷や汚れなし': 'A',
+    'やや傷や汚れあり': 'B',
+    '傷や汚れあり': 'C',
+    '全体的に状態が悪い': 'D',
+  };
+  const mapCondition = (raw) => {
+    if (!raw) return 'A';
+    for (const [k, v] of Object.entries(conditionMap)) {
+      if (raw.includes(k)) return v;
+    }
+    return 'A';
+  };
+
+  const handleAnalyze = async () => {
+    if (photos.length < 2) { toast('❌ 写真を2枚以上アップロードしてください'); return; }
+    if (!apiKey) { toast('❌ Claude APIキーが設定されていません（設定タブで入力）'); return; }
+
+    setAnalyzing(true);
+    const newPairs = [];
+
+    for (let i = 0; i + 1 < photos.length; i += 2) {
+      const productPhoto = photos[i];
+      const infoPhoto = photos[i + 1];
+
+      let extracted = null;
+      let status = 'ok';
+      let warnMsgs = [];
+
+      try {
+        const infoBase64 = await blobToBase64(infoPhoto.file);
+        const mimeType = infoPhoto.file.type || 'image/jpeg';
+        const imageDataList = [{ data: infoBase64.split(',')[1], mimeType }];
+        const raw = await analyzeImagesWithClaude(imageDataList, apiKey, BATCH_PURCHASE_PROMPT, 600);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          extracted = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('JSON未検出');
+        }
+
+        // 日付パース
+        const parsedDate = parsePurchaseDate(extracted.purchase_date) || todayStr();
+        const dateCheck = validateDate(parsedDate);
+        if (dateCheck.warn) warnMsgs.push(dateCheck.msg);
+
+        // 仕入れ先マッチ
+        const knownStores = [
+          ...((data.settings?.storeMaster?.chains || []).map(c => c.chainName)),
+          ...((data.settings?.yahooStores || []).map(s => s.storeName)),
+        ].filter(Boolean);
+        const matchedStore = findClosestStore(extracted.store_name || '', knownStores) || (extracted.store_name || '');
+
+        const purchasePrice = Number(extracted.purchase_price) || 0;
+        const shippingCost = Number(extracted.shipping_cost) || 0;
+        if (purchasePrice <= 0) warnMsgs.push('仕入れ価格が0円です');
+
+        extracted = {
+          ...extracted,
+          purchase_date: parsedDate,
+          purchase_price: purchasePrice,
+          shipping_cost: shippingCost,
+          store_name: matchedStore,
+          condition_code: mapCondition(extracted.condition || ''),
+        };
+        if (warnMsgs.length > 0) status = 'warn';
+      } catch (err) {
+        extracted = { product_name: '', purchase_price: 0, shipping_cost: 0, store_name: '', purchase_date: todayStr(), condition_code: 'A' };
+        status = 'error';
+        warnMsgs.push('AI読み取り失敗: ' + err.message);
+      }
+
+      newPairs.push({
+        id: `pair_${i}`,
+        productPhoto,
+        infoPhoto,
+        extracted,
+        edited: { ...extracted },
+        status,
+        warnMsgs,
+        skip: false,
+      });
+    }
+
+    setPairs(newPairs);
+    setStep('review');
+    setAnalyzing(false);
+  };
+
+  const updateEdited = (pairId, field, value) => {
+    setPairs(prev => prev.map(p => p.id !== pairId ? p : {
+      ...p,
+      edited: { ...p.edited, [field]: value },
+    }));
+  };
+
+  const toggleSkip = (pairId) => {
+    setPairs(prev => prev.map(p => p.id !== pairId ? p : { ...p, skip: !p.skip }));
+  };
+
+  const handleRegisterAll = async () => {
+    const targets = pairs.filter(p => !p.skip);
+    if (targets.length === 0) { toast('❌ 登録する商品がありません'); return; }
+    setRegistering(true);
+    let count = 0;
+    const newInventory = [...(data.inventory || [])];
+
+    for (const pair of targets) {
+      const e = pair.edited;
+      const totalPrice = (Number(e.purchase_price) || 0) + (Number(e.shipping_cost) || 0);
+      const purchaseDate = e.purchase_date || todayStr();
+      const id = Date.now().toString() + '_' + count;
+
+      // 商品写真を保存
+      let photoRefs = [];
+      try {
+        const thumbBlob = await compressImage(pair.productPhoto.file, 300, 0.6);
+        const medBlob = await compressImage(pair.productPhoto.file, 700, 0.75);
+        const thumbBase64 = await blobToBase64(thumbBlob);
+        const medBase64 = await blobToBase64(medBlob);
+        const fullBlob = await compressImage(pair.productPhoto.file, 1200, 0.8);
+        await savePhoto(id + '_p0', fullBlob);
+        photoRefs = [{
+          id: id + '_p0',
+          thumbId: id + '_p0',
+          thumbDataUrl: thumbBase64,
+          medDataUrl: medBase64,
+        }];
+      } catch (_) {
+        photoRefs = [];
+      }
+
+      const newItem = {
+        id,
+        userId: currentUser,
+        productName: e.product_name || '（未入力）',
+        brand: '',
+        modelNumber: '',
+        gender: 'メンズ',
+        seoCategories: [],
+        condition: e.condition_code || 'A',
+        conditionDetail: e.condition || '',
+        sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '',
+        sizeConfidence: 'medium', material: '',
+        purchaseDate,
+        purchaseStore: e.store_name || '',
+        sellerLicense: '',
+        sellerCompanyName: '',
+        paymentMethod: '現金',
+        listDate: purchaseDate,
+        listPrice: '',
+        estimatedPriceRange: '',
+        notes: `[一括仕入れ] ${e.platform || ''}`,
+        englishTitle: '',
+        descriptionText: '',
+        itemPriceTaxIn: Number(e.purchase_price) || 0,
+        itemTaxRate: 10,
+        shippingTaxIn: Number(e.shipping_cost) || 0,
+        shippingTaxRate: 10,
+        optionalFeeTaxIn: 0,
+        optionalTaxRate: 10,
+        showOptionalFee: false,
+        couponTaxIn: 0,
+        couponNote: '',
+        purchasePrice: totalPrice,
+        purchaseCost: { totalTaxIn: totalPrice, totalTaxEx: totalPrice, itemPriceTaxIn: Number(e.purchase_price) || 0, itemTaxRate: 10, shippingTaxIn: Number(e.shipping_cost) || 0, shippingTaxRate: 10 },
+        purchaseType: 'online',
+        purchaseTypeSource: 'manual',
+        purchaseStoreType: 'normal',
+        aiTypeDetection: null,
+        size: '',
+        listPrice: 0,
+        photos: photoRefs,
+        mgmtNo: '',
+        status: 'unlisted',
+        profit: 0,
+        createdAt: new Date().toISOString(),
+      };
+      newInventory.push(newItem);
+      count++;
+    }
+
+    setData({ ...data, inventory: newInventory });
+    setDoneCount(count);
+    setStep('done');
+    setRegistering(false);
+    toast(`✅ ${count}件を登録しました！`);
+  };
+
+  const handleReset = () => {
+    photos.forEach(p => URL.revokeObjectURL(p.url));
+    setPhotos([]);
+    setPairs([]);
+    setStep('upload');
+    setDoneCount(0);
+  };
+
+  if (step === 'done') {
+    return (
+      <div className="fade-in">
+        <div className="card" style={{padding:32,textAlign:'center',marginBottom:16}}>
+          <div style={{fontSize:48,marginBottom:12}}>✅</div>
+          <div style={{fontWeight:700,fontSize:20,marginBottom:8}}>{doneCount}件を登録しました</div>
+          <div style={{fontSize:14,color:'#666',marginBottom:24}}>在庫タブで確認できます</div>
+          <button className="btn-primary" style={{width:'100%'}} onClick={handleReset}>
+            続けて登録する
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 'review') {
+    return (
+      <div className="fade-in">
+        <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+          <div style={{fontWeight:700,fontSize:15,flex:1}}>{pairs.length}組を確認してください</div>
+          <button className="btn-secondary" style={{padding:'6px 12px',fontSize:12}} onClick={() => setStep('upload')}>
+            ← 戻る
+          </button>
+        </div>
+
+        {pairs.map((pair, idx) => (
+          <div key={pair.id} className="card" style={{marginBottom:12,padding:14,opacity: pair.skip ? 0.45 : 1}}>
+            <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'center'}}>
+              <div style={{fontWeight:700,fontSize:13,flex:1}}>📦 商品 {idx + 1}</div>
+              {pair.status === 'warn' && (
+                <span style={{fontSize:11,background:'#fef3c7',color:'#92400e',padding:'2px 8px',borderRadius:99,fontWeight:600}}>
+                  ⚠️ 要確認
+                </span>
+              )}
+              {pair.status === 'error' && (
+                <span style={{fontSize:11,background:'#fee2e2',color:'#991b1b',padding:'2px 8px',borderRadius:99,fontWeight:600}}>
+                  ❌ 読取失敗
+                </span>
+              )}
+              <button onClick={() => toggleSkip(pair.id)}
+                style={{fontSize:11,padding:'4px 10px',border:'1px solid #e5e7eb',borderRadius:99,background: pair.skip ? '#fee2e2' : '#f3f4f6',color: pair.skip ? '#991b1b' : '#666',fontWeight:600,cursor:'pointer'}}>
+                {pair.skip ? 'スキップ中' : 'スキップ'}
+              </button>
+            </div>
+
+            {pair.warnMsgs.length > 0 && (
+              <div style={{fontSize:12,color:'#92400e',background:'#fef3c7',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
+                {pair.warnMsgs.map((m, i) => <div key={i}>⚠️ {m}</div>)}
+              </div>
+            )}
+
+            <div style={{display:'flex',gap:8,marginBottom:10}}>
+              <img src={pair.productPhoto.url} style={{width:80,height:80,objectFit:'cover',borderRadius:8,border:'1px solid #e5e7eb'}} alt="商品" />
+              <img src={pair.infoPhoto.url} style={{width:80,height:80,objectFit:'cover',borderRadius:8,border:'1px solid #e5e7eb'}} alt="情報" />
+            </div>
+
+            <div style={{display:'grid',gap:6}}>
+              <div>
+                <div style={{fontSize:11,color:'#666',marginBottom:2}}>商品名</div>
+                <input style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                  value={pair.edited.product_name || ''}
+                  onChange={e => updateEdited(pair.id, 'product_name', e.target.value)} />
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>仕入れ価格（円）</div>
+                  <input type="number" style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={pair.edited.purchase_price || ''}
+                    onChange={e => updateEdited(pair.id, 'purchase_price', e.target.value)} />
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>送料（円）</div>
+                  <input type="number" style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={pair.edited.shipping_cost || ''}
+                    onChange={e => updateEdited(pair.id, 'shipping_cost', e.target.value)} />
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>仕入れ日</div>
+                  <input type="date" style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={pair.edited.purchase_date || ''}
+                    onChange={e => updateEdited(pair.id, 'purchase_date', e.target.value)} />
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>コンディション</div>
+                  <select style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={pair.edited.condition_code || 'A'}
+                    onChange={e => updateEdited(pair.id, 'condition_code', e.target.value)}>
+                    {['S','A','B','C','D'].map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <div style={{fontSize:11,color:'#666',marginBottom:2}}>仕入れ先</div>
+                <input style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                  value={pair.edited.store_name || ''}
+                  onChange={e => updateEdited(pair.id, 'store_name', e.target.value)} />
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <button className="btn-primary" style={{width:'100%',marginTop:4,padding:14,fontSize:15,fontWeight:700}}
+          disabled={registering}
+          onClick={handleRegisterAll}>
+          {registering ? '登録中...' : `✅ ${pairs.filter(p=>!p.skip).length}件をまとめて登録`}
+        </button>
+      </div>
+    );
+  }
+
+  // step === 'upload'
+  return (
+    <div className="fade-in">
+      <div className="card" style={{padding:16,marginBottom:12}}>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📦 一括仕入れ登録</div>
+        <div style={{fontSize:13,color:'#666',marginBottom:12}}>
+          写真を2枚1組でアップロード。<br/>
+          <strong>奇数枚目</strong>＝商品写真、<strong>偶数枚目</strong>＝購入画面スクリーンショット
+        </div>
+        <button className="btn-primary" style={{width:'100%',marginBottom:8}}
+          onClick={() => fileInputRef.current?.click()}>
+          📷 写真を追加
+        </button>
+        <input ref={fileInputRef} type="file" accept="image/*" multiple style={{display:'none'}}
+          onChange={handleFilesSelected} />
+        {!apiKey && (
+          <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px'}}>
+            ⚠️ Claude APIキーが未設定です（設定タブで入力してください）
+          </div>
+        )}
+      </div>
+
+      {photos.length > 0 && (
+        <div className="card" style={{padding:14,marginBottom:12}}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>
+            {photos.length}枚 → {Math.floor(photos.length / 2)}組（{photos.length % 2 !== 0 ? '最後の1枚は無視されます' : ''}）
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:12}}>
+            {photos.map((p, idx) => (
+              <div key={p.id} style={{position:'relative'}}>
+                <img src={p.url} style={{width:'100%',aspectRatio:'1',objectFit:'cover',borderRadius:8,
+                  border: idx % 2 === 0 ? '2px solid #3b82f6' : '2px solid #10b981'}} alt="" />
+                <div style={{position:'absolute',top:2,left:2,background: idx % 2 === 0 ? '#3b82f6' : '#10b981',
+                  color:'white',fontSize:10,fontWeight:700,borderRadius:4,padding:'1px 5px'}}>
+                  {idx % 2 === 0 ? '商品' : '情報'}
+                </div>
+                <div style={{position:'absolute',top:2,right:2,display:'flex',gap:2}}>
+                  {idx > 0 && (
+                    <button onClick={() => movePhoto(idx, -1)}
+                      style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                      ←
+                    </button>
+                  )}
+                  {idx < photos.length - 1 && (
+                    <button onClick={() => movePhoto(idx, 1)}
+                      style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                      →
+                    </button>
+                  )}
+                  <button onClick={() => removePhoto(p.id)}
+                    style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button className="btn-primary" style={{width:'100%',padding:14,fontSize:15,fontWeight:700}}
+            disabled={analyzing || photos.length < 2}
+            onClick={handleAnalyze}>
+            {analyzing ? 'AI解析中...' : `🤖 AI解析して確認画面へ（${Math.floor(photos.length/2)}組）`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
 const OtherTab = () => {
@@ -9715,6 +10165,7 @@ const OtherTab = () => {
   };
 
   const sections = [
+    { id: 'batch', label: '一括仕入', icon: '📦' },
     { id: 'qr', label: 'QR', icon: '📱' },
     { id: 'receipts', label: 'レシート', icon: '🧾' },
     { id: 'removebg', label: '白抜き', icon: '✂️' },
@@ -9750,6 +10201,11 @@ const OtherTab = () => {
       </div>
 
       <div style={{padding:'12px 16px'}}>
+
+        {/* 一括仕入れ */}
+        {activeSection === 'batch' && (
+          <BatchPurchasePanel data={data} setData={setData} toast={toast} />
+        )}
 
         {/* QRコード */}
         {activeSection === 'qr' && (
