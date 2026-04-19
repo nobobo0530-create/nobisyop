@@ -11737,8 +11737,8 @@ const App = () => {
         const stripped = stripPhotosForStorage(dataRef.current);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
       } catch(e) {}
-      // ★ thumbMapも確実に保存（saveDataのsetTimeout(0)が未発火でも画像を守る）
-      try { saveThumbMap(dataRef.current); } catch(e) {}
+      // ★ thumbMapはsaveDataのsetTimeout(0)で保存済みのため、ここでは呼ばない
+      // （visibilitychangeでJSON.stringify+localStorageの重い処理をするとiOSカメラピッカーが起動しなくなる）
     };
     // visibilitychange: タブ切り替え・ホームボタンなどでバックグラウンドに入るとき
     document.addEventListener('visibilitychange', forceSave);
