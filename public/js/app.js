@@ -7,9 +7,9 @@ const CONFIG = {
   MODEL_HEAVY: 'claude-opus-4-6',       // 高精度が必要な場合用（現在未使用）
   PRICE_SPLIT_DIVISOR: 100,
   PLATFORM_FEES: {
-    'メルカリ': 0.10,
-    'ヤフオク': 0.088,
-    'ラクマ': 0.06,
+    'メルカリ': 0.10,    // 固定
+    'ヤフオク': 0.10,    // 基本10%・売上ごとに変更可
+    'ラクマ': 0.045,     // 基本4.5%・売上ごとに変更可
   },
   SIZE_LOGIC: 'auto',
   ESTIMATED_SHIPPING: 800,
@@ -4712,9 +4712,12 @@ const InventoryTab = () => {
   const statusClass = { unlisted: 'tag-unlisted', listed: 'tag-active', sold: 'tag-sold' };
 
   const markAsSold = (item) => {
-    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'sold' } : i);
+    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'sold', soldAt: new Date().toISOString() } : i);
     setData({ ...data, inventory: updated });
     setSelected(null);
+    // ★ 現フィルター・スクロール位置を保存（売上記録後に同じ場所に戻れるよう）
+    setPendingInventoryFilter(filter);
+    setPendingInventoryScrollY(window.scrollY);
     // 売上記録タブへ自動遷移（商品を事前選択）
     setPendingSaleItemId(item.id);
     setTab('sales');
@@ -4722,14 +4725,14 @@ const InventoryTab = () => {
   };
 
   const markAsListed = (item) => {
-    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'listed' } : i);
+    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'listed', soldAt: undefined } : i);
     setData({ ...data, inventory: updated });
     setSelected(null);
     toast('✅ 出品中に変更しました');
   };
 
   const markAsUnlisted = (item) => {
-    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'unlisted' } : i);
+    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'unlisted', soldAt: undefined } : i);
     setData({ ...data, inventory: updated });
     setSelected(null);
     toast('✅ 未出品に戻しました');
@@ -5504,7 +5507,7 @@ const InventoryTab = () => {
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
-  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, setPendingReturnTab } = React.useContext(AppContext);
+  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, setPendingReturnTab, pendingInventoryFilter } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
@@ -6038,11 +6041,15 @@ const SalesTab = () => {
     setShowForm(true);
   };
 
-  const closeForm = () => {
+  const closeForm = (returnToInventory = false) => {
     setShowForm(false); setEditingSale(null); setForm(emptyForm);
     setBundleSale(false); setBundleSaleItems(initSaleBundleItems(2)); setBundleSaleSplitMethod('equal'); setBundleSaleInlineForm(null);
     setSaleStoreCustom(null);
     setSaving(false); setFormError(null); setDupConfirm(null);
+    // ★ 在庫タブから来た（pendingInventoryFilter がセット済み）場合のみ自動復帰
+    if (returnToInventory && pendingInventoryFilter) {
+      setTab('inventory');
+    }
   };
 
   const selectedItem = data.inventory.find(i => i.id === form.inventoryId);
@@ -6135,16 +6142,47 @@ const SalesTab = () => {
         setFormError('まとめ販売は2件以上の商品と価格を入力してください');
         return;
       }
+
+      // ★ 既存売上との衝突検出（編集中の同 bundleGroup は許容）
+      const conflicts = filled
+        .map(bi => ({
+          bi,
+          existing: (data.sales || []).find(s =>
+            s.inventoryId === bi.inventoryId &&
+            (!editingSale || s.id !== editingSale.id) &&
+            (!editingSale?.bundleGroup || s.bundleGroup !== editingSale.bundleGroup)
+          ),
+        }))
+        .filter(x => x.existing);
+      if (conflicts.length > 0) {
+        const names = conflicts.map(c => {
+          const inv = data.inventory.find(i => i.id === c.bi.inventoryId);
+          return inv ? `${inv.brand || ''} ${inv.productName || ''}`.trim() : c.bi.inventoryId;
+        }).join(' / ');
+        setFormError(`既に売上登録済みの商品が含まれています: ${names}`);
+        return;
+      }
+
+      // ★ 同一バンドル内での重複 inventoryId 検出
+      const dupIdInBundle = filled
+        .map(bi => bi.inventoryId)
+        .filter((v, i, a) => a.indexOf(v) !== i);
+      if (dupIdInBundle.length > 0) {
+        setFormError('まとめ販売内に同じ商品が複数選択されています');
+        return;
+      }
+
       setSaving(true);
       try {
         const ts = Date.now();
+        const nowIso = new Date().toISOString();
         const newSales = filled.map((bi, idx) => {
           const inv = data.inventory.find(i => i.id === bi.inventoryId);
           const sp  = Number(bi.salePrice);
           const ship = Number(bi.shipping) || 0;
           const pp  = inv?.purchasePrice || 0;
           return {
-            id: `sale_${ts}_${idx}`,
+            id: `sale_${ts}_${idx}_${Math.random().toString(36).slice(2,5)}`,  // ★衝突対策強化
             inventoryId: bi.inventoryId,
             userId: currentUser,
             platform: form.platform,
@@ -6162,15 +6200,21 @@ const SalesTab = () => {
           };
         });
         const updatedInv = data.inventory.map(i =>
-          filled.some(bi => bi.inventoryId === i.id) ? { ...i, status: 'sold' } : i
+          filled.some(bi => bi.inventoryId === i.id)
+            ? { ...i, status: 'sold', soldAt: nowIso }  // ★ soldAt も付与
+            : i
         );
+        // ★ bundleGroup 全メンバーを除去してから新セットを追加（重複防止）
         const baseSales = editingSale
-          ? data.sales.filter(s => s.id !== editingSale.id)
+          ? data.sales.filter(s =>
+              s.id !== editingSale.id &&
+              (!editingSale.bundleGroup || s.bundleGroup !== editingSale.bundleGroup)
+            )
           : data.sales;
         setData({ ...data, inventory: updatedInv, sales: [...baseSales, ...newSales] });
         clearSaleDraft();
         toast(`✅ まとめ販売 ${newSales.length}件の売上を${editingSale ? '再登録' : '登録'}しました`);
-        closeForm();
+        closeForm(true);  // ★ 在庫タブ復帰
       } catch(e) {
         console.error('bundleSave error:', e);
         setFormError('保存中にエラーが発生しました。もう一度お試しください。');
@@ -6196,16 +6240,34 @@ const SalesTab = () => {
         const listDate  = form.listDate || selectedItem?.listDate || '';
         const turnoverDays = calcTurnoverDays(listDate, form.saleDate);
         const purchasePriceVal = form.purchasePrice !== '' ? Number(form.purchasePrice) : (selectedItem?.purchasePrice || 0);
+        const nowIso = new Date().toISOString();
 
-        // 在庫の仕入れ情報を更新（仕入れ値・仕入れ日・仕入れ先）
+        // 在庫の仕入れ情報を更新（仕入れ値・仕入れ日・仕入れ先）+ status='sold' 同期
         const invPatch = selectedItem ? {
           ...(form.purchasePrice !== '' ? { purchasePrice: Number(form.purchasePrice) } : {}),
           ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
           ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+          status: 'sold',          // ★追加: 売上記録 = 在庫も売却済へ同期
+          soldAt: nowIso,          // ★追加: 同期判定用
         } : null;
-        const updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
+        let updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
           ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, ...invPatch } : i)
           : data.inventory;
+
+        // ★編集時に inventoryId が付け替えられた場合、旧在庫の status を戻す
+        if (editingSale && editingSale.inventoryId && editingSale.inventoryId !== form.inventoryId) {
+          const oldInvId = editingSale.inventoryId;
+          const stillHasOtherSale = data.sales.some(
+            s => s.id !== editingSale.id && s.inventoryId === oldInvId
+          );
+          if (!stillHasOtherSale) {
+            updatedInventory = updatedInventory.map(i =>
+              i.id === oldInvId
+                ? { ...i, status: i.listDate ? 'listed' : 'unlisted', soldAt: undefined }
+                : i
+            );
+          }
+        }
 
         if (editingSale) {
           // ── 編集 ──
@@ -6213,7 +6275,7 @@ const SalesTab = () => {
             ...editingSale, ...form,
             salePrice: Number(form.salePrice), shipping: Number(form.shipping),
             purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
-            platformId: form.platformId || '', updatedAt: new Date().toISOString(),
+            platformId: form.platformId || '', updatedAt: nowIso,
           };
           setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === editingSale.id ? updated : s) });
           clearSaleDraft();
@@ -6221,10 +6283,11 @@ const SalesTab = () => {
         } else {
           // ── 新規 ──
           const newSale = {
-            id: Date.now().toString(), ...form, userId: currentUser,
+            id: `sale_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,  // ★ID衝突対策
+            ...form, userId: currentUser,
             salePrice: Number(form.salePrice), shipping: Number(form.shipping),
             purchasePrice: purchasePriceVal, profit, listDate, turnoverDays,
-            platformId: form.platformId || '', createdAt: new Date().toISOString(),
+            platformId: form.platformId || '', createdAt: nowIso,
             productName: selectedItem?.productName || '',
             brand: selectedItem?.brand || '',
           };
@@ -6232,7 +6295,7 @@ const SalesTab = () => {
           clearSaleDraft();
           toast('✅ 売上を記録しました');
         }
-        closeForm();
+        closeForm(true);  // ★ 在庫タブ復帰判定を closeForm に任せる
       } catch(e) {
         console.error('doSave error:', e);
         setFormError('保存中にエラーが発生しました。もう一度お試しください。');
@@ -6243,6 +6306,23 @@ const SalesTab = () => {
 
     // 新規登録時のみ重複チェック
     if (!editingSale) {
+      // ★ 完全同一売上（同 inventoryId・同 saleDate・同 salePrice）の事前検出
+      if (form.inventoryId) {
+        const exactDup = (data.sales || []).find(s =>
+          s.inventoryId === form.inventoryId &&
+          s.saleDate    === form.saleDate &&
+          Number(s.salePrice) === Number(form.salePrice)
+        );
+        if (exactDup) {
+          setDupConfirm({
+            existingSale: exactDup,
+            reason: '同じ商品・同じ日・同じ価格の売上が既に登録されています',
+            onConfirm: null,  // 確認のみ・保存は走らせない
+          });
+          return;
+        }
+      }
+
       // ── 同一在庫商品（inventoryId）の既存売上があれば自動的に更新モードへ切替 ──
       // 重複ではなく「仕入れ情報の後付けマージ」として扱う
       const sameItemSale = form.inventoryId
@@ -6255,10 +6335,13 @@ const SalesTab = () => {
         const purchasePriceVal = form.purchasePrice !== ''
           ? Number(form.purchasePrice)
           : (sameItemSale.purchasePrice ?? selectedItem?.purchasePrice ?? 0);
+        const nowIso = new Date().toISOString();
         const invPatch = selectedItem ? {
           ...(form.purchasePrice !== '' ? { purchasePrice: Number(form.purchasePrice) } : {}),
           ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
           ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
+          status: 'sold',          // ★追加: 在庫 status 同期
+          soldAt: nowIso,          // ★追加
         } : null;
         const updatedInventory = (invPatch && Object.keys(invPatch).length > 0 && selectedItem)
           ? data.inventory.map(i => i.id === selectedItem.id ? { ...i, ...invPatch } : i)
@@ -6270,14 +6353,14 @@ const SalesTab = () => {
           listDate,
           turnoverDays,
           ...(form.platformId  ? { platformId:  form.platformId  } : {}),
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
         };
         setSaving(true);
         try {
           setData({ ...data, inventory: updatedInventory, sales: data.sales.map(s => s.id === sameItemSale.id ? merged : s) });
           clearSaleDraft();
           toast('✅ 既存の売上記録に仕入れ情報を反映しました');
-          closeForm();
+          closeForm(true);  // ★ 在庫タブ復帰
         } catch(e) {
           console.error('merge error:', e);
           setFormError('保存中にエラーが発生しました。もう一度お試しください。');
@@ -6310,7 +6393,21 @@ const SalesTab = () => {
     // ★ トゥームストーン: 削除した売上IDを記録し、クラウドとのマージで復活しないようにする
     const now = new Date().toISOString();
     const newDeletedIds = { ...(data.settings?._deletedIds || {}), [saleId]: now };
-    setData({ ...data, sales: data.sales.filter(s => s.id !== saleId), settings: { ...data.settings, _deletedIds: newDeletedIds } });
+    // ★ 在庫 status を戻す（他に同 inventoryId の売上が無い場合のみ）
+    const deletedSale = data.sales.find(s => s.id === saleId);
+    const remainSales = data.sales.filter(s => s.id !== saleId);
+    let updatedInv = data.inventory;
+    if (deletedSale?.inventoryId) {
+      const stillHas = remainSales.some(s => s.inventoryId === deletedSale.inventoryId);
+      if (!stillHas) {
+        updatedInv = data.inventory.map(i =>
+          i.id === deletedSale.inventoryId
+            ? { ...i, status: i.listDate ? 'listed' : 'unlisted', soldAt: undefined }
+            : i
+        );
+      }
+    }
+    setData({ ...data, inventory: updatedInv, sales: remainSales, settings: { ...data.settings, _deletedIds: newDeletedIds } });
     closeForm();
     toast('🗑️ 売上記録を削除しました');
   };
@@ -6508,6 +6605,12 @@ const SalesTab = () => {
                           ⚠ 仕入れ値未入力
                         </span>
                       )}
+                      {s._duplicate && (
+                        <span style={{fontSize:10,background:'#fee2e2',color:'#b91c1c',borderRadius:99,
+                          padding:'1px 7px',fontWeight:700,border:'1px solid #fecaca'}}>
+                          ⚠ 重複の可能性
+                        </span>
+                      )}
                     </div>
                     {(item?.purchaseDate || item?.purchaseStore || item?.storeName || item?.category) && (
                       <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginTop:3}}>
@@ -6615,6 +6718,12 @@ const SalesTab = () => {
                             <span style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
                               padding:'1px 6px',fontWeight:700,border:'1px solid #fed7aa',flexShrink:0}}>
                               ⚠ 仕入れ値未入力
+                            </span>
+                          )}
+                          {s._duplicate && (
+                            <span style={{fontSize:10,background:'#fee2e2',color:'#b91c1c',borderRadius:99,
+                              padding:'1px 6px',fontWeight:700,border:'1px solid #fecaca',flexShrink:0}}>
+                              ⚠ 重複の可能性
                             </span>
                           )}
                         </div>
@@ -7587,15 +7696,19 @@ const SalesTab = () => {
               <div>
                 <label className="field-label">
                   手数料率 (%)
-                  {form.platform === 'ラクマ' && <span style={{fontSize:10,color:'#f59e0b',marginLeft:4}}>※変動型・手動確認</span>}
+                  {form.platform === 'メルカリ' && <span style={{fontSize:10,color:'#6b7280',marginLeft:4}}>※固定 10%</span>}
+                  {form.platform === 'ラクマ'   && <span style={{fontSize:10,color:'#16a34a',marginLeft:4}}>※基本 4.5%（変更可）</span>}
+                  {form.platform === 'ヤフオク' && <span style={{fontSize:10,color:'#16a34a',marginLeft:4}}>※基本 10%（変更可）</span>}
                 </label>
                 <input type="number" className="input-field" value={(form.feeRate * 100).toFixed(1)}
-                  onChange={e => setF('feeRate', Number(e.target.value) / 100)} step="0.1"/>
+                  readOnly={form.platform === 'メルカリ'}
+                  onChange={e => setF('feeRate', Number(e.target.value) / 100)} step="0.1"
+                  style={form.platform === 'メルカリ' ? {background:'#f3f4f6',color:'#6b7280',cursor:'not-allowed'} : undefined}/>
               </div>
             </div>
-            {form.platform === 'ラクマ' && (
-              <div style={{fontSize:11,color:'#92400e',background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
-                ⚠️ ラクマの手数料は商品カテゴリー・販売価格により変動します。実際の手数料を確認して手動で入力してください。
+            {(form.platform === 'ラクマ' || form.platform === 'ヤフオク') && (
+              <div style={{fontSize:11,color:'#075985',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
+                💡 {form.platform === 'ラクマ' ? 'ラクマは基本 4.5%' : 'ヤフオクは基本 10%'}。商品ごとに手数料率を上の入力欄で変更できます。変更すると即時に純利益・利益率が再計算されます。
               </div>
             )}
 
@@ -9172,7 +9285,7 @@ const SellerBookImporter = ({ data, setData, toast, currentUser }) => {
         });
 
         if (status === 'sold' && saleDate) {
-          const feeRate = platform==='ヤフオク'?0.088 : platform==='ラクマ'?0.06 : 0.10;
+          const feeRate = platform==='ラクマ' ? 0.045 : 0.10;  // メルカリ/ヤフオク=10% / ラクマ=4.5%
           const ship    = cleanNum(get('shipping')) || CONFIG.ESTIMATED_SHIPPING;
           const profit  = cleanNum(get('profit')) || calcProfit(salePrice, purchasePrice, feeRate, ship);
           newSales.push({
@@ -12004,6 +12117,101 @@ const App = () => {
       window.removeEventListener('focus', fix);
     };
   }, []);
+
+  // ── 整合性自己修復（24時間に1回まで・破損防止優先で削除はしない）──
+  React.useEffect(() => {
+    const last = fullData.settings?._integrityCheckedAt
+      ? new Date(fullData.settings._integrityCheckedAt).getTime()
+      : 0;
+    if (Date.now() - last < 86400000) return;
+
+    // バックアップ退避（直近3つまで保持）
+    try {
+      const stripped = stripPhotosForStorage(fullData);
+      localStorage.setItem(
+        `nobushop_integrity_backup_${Date.now()}`,
+        JSON.stringify(stripped)
+      );
+      const keys = Object.keys(localStorage)
+        .filter(k => k.startsWith('nobushop_integrity_backup_'))
+        .sort();
+      while (keys.length > 3) localStorage.removeItem(keys.shift());
+    } catch(_) {}
+
+    const salesByInv = new Map();
+    (fullData.sales || []).forEach(s => {
+      if (!s.inventoryId) return;
+      if (!salesByInv.has(s.inventoryId)) salesByInv.set(s.inventoryId, []);
+      salesByInv.get(s.inventoryId).push(s);
+    });
+
+    // 在庫の status 補正：sale があるのに sold でない → sold へ
+    const fixedInv = (fullData.inventory || []).map(inv => {
+      const sales = salesByInv.get(inv.id);
+      if (sales && sales.length > 0 && inv.status !== 'sold') {
+        return { ...inv, status: 'sold', _autoFixedAt: new Date().toISOString() };
+      }
+      return inv;
+    });
+
+    // 重複売上にフラグだけ付ける（削除しない・最古のものを正とする）
+    const flaggedSales = (fullData.sales || []).map(s => {
+      const arr = salesByInv.get(s.inventoryId);
+      if (arr && arr.length > 1) {
+        const sorted = [...arr].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+        if (s.id !== sorted[0].id) return { ...s, _duplicate: true };
+      }
+      return s;
+    });
+
+    const invChanged   = fixedInv.some((i, idx) => i !== (fullData.inventory || [])[idx]);
+    const salesChanged = flaggedSales.some((s, idx) => s !== (fullData.sales || [])[idx]);
+
+    setFullDataRaw(prev => {
+      const nf = {
+        ...prev,
+        inventory: invChanged   ? fixedInv     : prev.inventory,
+        sales:     salesChanged ? flaggedSales : prev.sales,
+        settings:  { ...prev.settings, _integrityCheckedAt: new Date().toISOString() },
+      };
+      dataRef.current = nf;
+      saveData(nf);
+      return nf;
+    });
+
+    if (invChanged || salesChanged) {
+      console.log('[integrity] auto-fixed:',
+        fixedInv.filter(i => i._autoFixedAt).length, 'inv items,',
+        flaggedSales.filter(s => s._duplicate).length, 'dup flags');
+    }
+  }, []);  // 初回マウント時のみ
+
+  // ── 手数料率デフォルトのマイグレーション（旧値のみ新値に置換・1回限り） ──
+  React.useEffect(() => {
+    if (fullData.settings?._feeMigratedV2) return;  // 既に実施済み
+    const pf = fullData.settings?.platformFees || {};
+    const next = { ...pf };
+    let changed = false;
+    // 旧デフォルト値の場合のみ新デフォルトに置換（ユーザーが手動で変えた値は尊重）
+    if (next['ヤフオク'] === 0.088) { next['ヤフオク'] = 0.10;  changed = true; }
+    if (next['ラクマ']   === 0.06)  { next['ラクマ']   = 0.045; changed = true; }
+    // メルカリは固定 10% に強制（誤って 0.088 等になっていれば戻す）
+    if (next['メルカリ'] !== 0.10)   { next['メルカリ'] = 0.10;  changed = true; }
+    setFullDataRaw(prev => {
+      const nf = {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          platformFees: { ...(prev.settings?.platformFees || {}), ...next },
+          _feeMigratedV2: new Date().toISOString(),
+        },
+      };
+      dataRef.current = nf;
+      saveData(nf);
+      return nf;
+    });
+    if (changed) console.log('[fee-migration] updated:', next);
+  }, []);  // 初回マウント時のみ
 
   const NAV_ICONS = {
     home: (
