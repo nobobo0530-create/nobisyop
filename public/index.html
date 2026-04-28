@@ -509,18 +509,47 @@
           });
       });
       // ★ 強制更新関数をグローバルに公開（アプリ内の「更新」ボタンから呼び出せる）
-      // ★★ Babelキャッシュだけ削除してキャッシュバスターURLでリロード
-      //    SWキャッシュは削除しない（React等CDNが消えてフリーズするのを防ぐ）
-      //    SWのskipWaiting()が新バージョンを自動適用するので全削除は不要
+      // ★★ 全3層のキャッシュを完全削除して新版を確実に取得：
+      //    1. localStorage（Babelコンパイル済みJS）
+      //    2. caches API（Service Workerが保持する app.js / index.html / 画像 等）
+      //    3. SW自体を unregister して完全リセット → 次回登録で最新版になる
       window._forceSwUpdate = function() {
-        // 1. Babelコンパイルキャッシュを削除（バージョン問わず全削除）
+        // 1. Babelコンパイルキャッシュを削除
         try {
           Object.keys(localStorage).filter(function(k){ return k.startsWith('nobushop_compiled'); })
             .forEach(function(k){ localStorage.removeItem(k); });
         } catch(e) {}
-        // 2. キャッシュバスターURLでナビゲート（HTTPキャッシュを完全バイパス）
-        //    location.reload(true) はiOS Safariで無視されるためURLを変える方式を使用
-        window.location.replace(window.location.origin + '/?_t=' + Date.now());
+
+        var afterClear = function() {
+          // 4. キャッシュバスターURLでナビゲート（HTTPキャッシュを完全バイパス）
+          //    location.reload(true) はiOS Safariで無視されるためURLを変える方式を使用
+          window.location.replace(window.location.origin + '/?_t=' + Date.now());
+        };
+
+        // 2 & 3 を並行実行 → 両方完了したらリロード
+        var pending = 2;
+        var done = function() { if (--pending <= 0) afterClear(); };
+
+        // 2. caches API のすべてのキャッシュを削除（SW が持ってる app.js キャッシュも消える）
+        try {
+          if (typeof caches !== 'undefined' && caches.keys) {
+            caches.keys().then(function(keys) {
+              return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+            }).then(done).catch(done);
+          } else { done(); }
+        } catch(e) { done(); }
+
+        // 3. Service Worker を unregister（次の起動で最新版が登録される）
+        try {
+          if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              return Promise.all(regs.map(function(r) { return r.unregister(); }));
+            }).then(done).catch(done);
+          } else { done(); }
+        } catch(e) { done(); }
+
+        // セーフティネット: 5秒経っても両方の Promise が返らなかった場合は強制リロード
+        setTimeout(afterClear, 5000);
       };
     }
   })();
