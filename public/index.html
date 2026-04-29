@@ -375,12 +375,13 @@
   </script>
 
   <script>
-  // ── Babel コンパイルキャッシュ + 高速起動ローダー ──
-  // 仕組み: 初回のみBabelでコンパイル → localStorage にキャッシュ
-  //         2回目以降はキャッシュからそのまま実行 → 起動 < 1秒
+  // ── Babel コンパイルキャッシュ + 自動更新ローダー ──
+  // 仕組み: 起動時にサーバー側 app.js のバージョン (Last-Modified/ETag) を毎回確認
+  //   → 同一なら localStorage キャッシュから即実行（起動 < 1秒）
+  //   → 異なれば自動でフェッチ・再コンパイル → 常に最新版で起動（ノータッチ更新）
+  //   → オフラインなら最後にキャッシュした版で起動（オフライン対応）
   (function() {
-    var VERSION = '20260418m';
-    var COMPILE_KEY = 'nobushop_compiled_' + VERSION;
+    var FALLBACK_VERSION = '20260418m';
 
     var loadingEl = document.getElementById('app-loading');
     var statusEl  = document.getElementById('load-status');
@@ -407,29 +408,30 @@
       });
     }
 
-    // 古バージョンのキャッシュを削除
-    try {
-      var allKeys = Object.keys(localStorage);
-      for (var i = 0; i < allKeys.length; i++) {
-        var k = allKeys[i];
-        if (k.indexOf('nobushop_compiled_') === 0 && k !== COMPILE_KEY) {
-          localStorage.removeItem(k);
-        }
-      }
-    } catch(e) {}
+    // サーバーレスポンスヘッダから安定した「バージョン文字列」を作る
+    function deriveVersionTag(headers) {
+      var etag = headers.get && headers.get('ETag');
+      var lm   = headers.get && headers.get('Last-Modified');
+      var len  = headers.get && headers.get('Content-Length');
+      var raw  = etag || lm || len || FALLBACK_VERSION;
+      // localStorage キーに使うので英数字のみに正規化
+      return String(raw).replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60) || FALLBACK_VERSION;
+    }
 
-    // ── 高速パス: キャッシュ済みコンパイル結果を直接実行 ──
-    try {
-      var cached = localStorage.getItem(COMPILE_KEY);
-      if (cached) {
-        setStatus('');
-        execCode(cached);
-        return; // Babel不要 → ここで完了（起動 < 500ms）
-      }
-    } catch(e) {}
+    function makeCacheKey(versionTag) {
+      return 'nobushop_compiled_' + versionTag;
+    }
 
-    // ── 低速パス（初回のみ）: Babel を動的ロード → コンパイル → キャッシュ ──
-    setStatus('初回セットアップ中...');
+    // 古いバージョンのキャッシュを削除
+    function purgeOldCaches(currentKey) {
+      try {
+        Object.keys(localStorage).forEach(function(k) {
+          if (k.indexOf('nobushop_compiled_') === 0 && k !== currentKey) {
+            localStorage.removeItem(k);
+          }
+        });
+      } catch(e) {}
+    }
 
     function loadScript(src, onLoad, onError) {
       var s = document.createElement('script');
@@ -440,8 +442,8 @@
       document.head.appendChild(s);
     }
 
-    function compileAndRun(src) {
-      setStatus('コンパイル中...');
+    function compileAndRun(src, cacheKey) {
+      setStatus('新しいバージョンを準備中...');
       var compiled;
       try {
         compiled = Babel.transform(src, {
@@ -454,39 +456,83 @@
         setStatus('コンパイルエラー。再読込してください。');
         return;
       }
-
-      // キャッシュ保存（失敗しても動作継続）
-      try {
-        localStorage.setItem(COMPILE_KEY, compiled);
-      } catch(e) {
-        console.warn('[SalesLog] キャッシュ保存失敗（容量不足の可能性）:', e.message);
-      }
-
+      try { localStorage.setItem(cacheKey, compiled); }
+      catch(e) { console.warn('[SalesLog] キャッシュ保存失敗:', e.message); }
       setStatus('');
       execCode(compiled);
     }
 
-    // Babel standalone を動的ロード（初回のみ必要）
-    loadScript(
-      'https://unpkg.com/@babel/standalone/babel.min.js',
-      function() {
-        // Babel ロード完了 → ソースを fetch
-        setStatus('ソース取得中...');
-        fetch('/js/app.js?v=' + VERSION)
+    function fetchAndCompile(cacheKey) {
+      // Babel が未ロードならロード → fetch → コンパイル
+      var doFetch = function() {
+        setStatus('最新版を取得中...');
+        fetch('/js/app.js?v=' + cacheKey, { cache: 'no-store' })
           .then(function(r) {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             return r.text();
           })
-          .then(compileAndRun)
+          .then(function(src) { compileAndRun(src, cacheKey); })
           .catch(function(err) {
             console.error('[SalesLog] fetch エラー:', err);
-            setStatus('読込エラー。再読込してください。');
+            // フェッチ失敗 → 何かキャッシュがあれば最後の手段として使う
+            try {
+              var anyKey = Object.keys(localStorage).filter(function(k) { return k.indexOf('nobushop_compiled_') === 0; })[0];
+              if (anyKey) {
+                console.warn('[SalesLog] フォールバック: 既存キャッシュを使用');
+                execCode(localStorage.getItem(anyKey));
+                return;
+              }
+            } catch(e) {}
+            setStatus('読込エラー。ネット接続を確認して再読込してください。');
           });
-      },
-      function() {
-        setStatus('Babel読込失敗。再読込してください。');
-      }
-    );
+      };
+      if (typeof Babel !== 'undefined') doFetch();
+      else loadScript('https://unpkg.com/@babel/standalone/babel.min.js', doFetch,
+        function() { setStatus('Babel読込失敗。再読込してください。'); });
+    }
+
+    // ── 起動メインフロー: サーバーに更新があるか必ず確認 ──
+    function startup() {
+      // HEAD リクエストでサーバーの app.js バージョンを取得
+      // SW が network-first なので、これで最新の Last-Modified/ETag が取れる
+      fetch('/js/app.js?_check=' + Date.now(), { method: 'HEAD', cache: 'no-store' })
+        .then(function(r) {
+          if (!r.ok) throw new Error('HEAD ' + r.status);
+          var versionTag = deriveVersionTag(r.headers);
+          var cacheKey   = makeCacheKey(versionTag);
+          purgeOldCaches(cacheKey);
+
+          // このバージョンのコンパイル済みキャッシュがあるか
+          var cached = null;
+          try { cached = localStorage.getItem(cacheKey); } catch(e) {}
+
+          if (cached) {
+            // 同一バージョン → 高速パス（即実行）
+            setStatus('');
+            execCode(cached);
+          } else {
+            // 新バージョンまたは初回 → フェッチ・コンパイル
+            console.log('[SalesLog] 新バージョン検出 → 自動更新します:', versionTag);
+            fetchAndCompile(cacheKey);
+          }
+        })
+        .catch(function(err) {
+          // オフライン or HEAD失敗 → 既存キャッシュを使ってオフライン起動
+          console.warn('[SalesLog] 更新チェック失敗 (オフライン?):', err.message);
+          try {
+            var anyKey = Object.keys(localStorage).filter(function(k) { return k.indexOf('nobushop_compiled_') === 0; })[0];
+            if (anyKey) {
+              setStatus('');
+              execCode(localStorage.getItem(anyKey));
+              return;
+            }
+          } catch(e) {}
+          // キャッシュもなければ初回起動を試みる（オンラインに戻ったとき）
+          setStatus('初回セットアップ中...');
+          fetchAndCompile(makeCacheKey(FALLBACK_VERSION));
+        });
+    }
+    startup();
 
     // ── Service Worker 登録 ──
     if ('serviceWorker' in navigator) {
