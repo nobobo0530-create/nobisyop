@@ -575,7 +575,7 @@ const fetchSupabaseData = async () => {
     inventory: json.inventory || [],
     sales:     json.sales     || [],
     settings:  json.settings  || getInitialData().settings,
-    receipts:  [],
+    receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
   };
 };
 
@@ -590,6 +590,7 @@ const migrateLocalToSupabase = async (localData) => {
         invUpsert:   (localData.inventory || []).map(item => ({ id: item.id, data: item })),
         salesUpsert: (localData.sales     || []).map(s    => ({ id: s.id,    data: s    })),
         settings:    localData.settings || null,
+        receipts:    localData.receipts || [],   // ★ レシートも一括移行
       }),
       cache: 'no-store',
     });
@@ -638,8 +639,10 @@ const syncToSupabase = async (oldData, newData) => {
     }
     for (const id of salesOld.keys()) { if (!salesNew.has(id)) salesDelete.push(id); }
     const settingsChanged = JSON.stringify(oldData?.settings) !== JSON.stringify(newData?.settings);
+    // ★ レシートの変更検知（list 全体を上書き保存）
+    const receiptsChanged = JSON.stringify(oldData?.receipts || []) !== JSON.stringify(newData?.receipts || []);
 
-    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged;
+    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged;
     if (!hasChanges) {
       // 変更なし → 同期済み扱い
       _onSyncStatus?.({ status: 'ok', time: Date.now() });
@@ -656,6 +659,7 @@ const syncToSupabase = async (oldData, newData) => {
           body: JSON.stringify({
             invUpsert, invDelete, salesUpsert, salesDelete,
             settings: settingsChanged ? newData.settings : undefined,
+            receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
           }),
           cache: 'no-store',
         });
@@ -12013,11 +12017,26 @@ const App = () => {
             ...(localData.settings?._deletedIds || {}),
             ...(cloudData.settings?._deletedIds || {}),
           };
+          // ★ レシートのマージ（id で名寄せ・updatedAt/createdAt で新しい方を採用）
+          const mergeReceipts = (local, cloud) => {
+            const m = new Map();
+            (cloud || []).forEach(r => { if (r?.id) m.set(r.id, r); });
+            (local || []).forEach(r => {
+              if (!r?.id) return;
+              const ex = m.get(r.id);
+              if (!ex) { m.set(r.id, r); return; }
+              const lt = new Date(r.updatedAt || r.createdAt || 0).getTime();
+              const ct = new Date(ex.updatedAt || ex.createdAt || 0).getTime();
+              if (lt > ct) m.set(r.id, r);
+            });
+            return Array.from(m.values());
+          };
           const mergedData = {
             ...cloudData,
             inventory: mergeByLastWrite(localData.inventory, cloudData.inventory, mergedDeletedIds),
             sales:     mergeByLastWrite(localData.sales,     cloudData.sales,     mergedDeletedIds),
             settings:  mergeSettings(localData.settings, cloudData.settings),
+            receipts:  mergeReceipts(localData.receipts,  cloudData.receipts),
           };
           const cleanedMerged = normalizeStores(cleanOrphans(mergedData));
           dataRef.current = cleanedMerged;

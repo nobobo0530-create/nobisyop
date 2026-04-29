@@ -45,17 +45,22 @@ export default async function handler(req, res) {
       const cfg = await sbFetch('app_settings?select=data&id=eq.default', {
         headers: { 'Accept': 'application/vnd.pgrst.object+json' },
       }).catch(() => null);
+      // ★ レシートも同じ app_settings テーブル内の別行 (id=receipts) で管理
+      const rcp = await sbFetch('app_settings?select=data&id=eq.receipts', {
+        headers: { 'Accept': 'application/vnd.pgrst.object+json' },
+      }).catch(() => null);
 
       res.json({
         ok: true,
         inventory: (Array.isArray(inv)   ? inv   : []).map(r => ({ ...r.data, id: r.id })),
         sales:     (Array.isArray(sales) ? sales : []).map(r => ({ ...r.data, id: r.id })),
         settings:  cfg?.data || null,
+        receipts:  (rcp?.data && Array.isArray(rcp.data.list)) ? rcp.data.list : [],
       });
 
     // ── POST: 差分保存（upsert / delete）──────────────────────
     } else if (req.method === 'POST') {
-      const { invUpsert, invDelete, salesUpsert, salesDelete, settings } = req.body || {};
+      const { invUpsert, invDelete, salesUpsert, salesDelete, settings, receipts } = req.body || {};
       const ops = [];
 
       if (invUpsert?.length)
@@ -83,6 +88,13 @@ export default async function handler(req, res) {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
           body: JSON.stringify([{ id: 'default', data: settings }]),
+        }));
+      // ★ レシートを保存（list 全体を上書き保存）
+      if (receipts !== undefined)
+        ops.push(sbFetch('app_settings', {
+          method: 'POST',
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify([{ id: 'receipts', data: { list: receipts } }]),
         }));
 
       await Promise.all(ops);
