@@ -11489,7 +11489,7 @@ const OtherTab = () => {
             {/* バックアップ */}
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>💾 データバックアップ</div>
-              <div style={{fontSize:12,color:'#666',marginBottom:10}}>テキストデータ（商品情報・売上記録）のバックアップ。写真は含まれません。</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>商品情報・売上記録・設定の完全バックアップ（JSON）。アプリ削除前は必ずこちらと「写真クラウドバックアップ」両方を実行してください。</div>
               <button className="btn-primary" style={{width:'100%',marginBottom:8}} onClick={downloadBackup}>
                 📥 バックアップをダウンロード
               </button>
@@ -11497,8 +11497,11 @@ const OtherTab = () => {
                 📤 バックアップから復元
               </button>
               <input ref={restoreFileRef} type="file" accept=".json" onChange={handleRestore} style={{display:'none'}}/>
-              <div style={{fontSize:11,color:'#f59e0b',marginTop:8,background:'#fffbeb',borderRadius:6,padding:'6px 8px'}}>
-                ⚠️ 写真は端末のIndexedDBに保存されています。定期的なバックアップを推奨します。
+              <div style={{fontSize:11,color:'#dc2626',marginTop:8,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,padding:'8px 10px',fontWeight:600}}>
+                ⚠️ 重要: PWAアプリ削除前は<br/>
+                ① 下の「📷 写真をクラウドバックアップ」<br/>
+                ② 上の「📥 バックアップをダウンロード」<br/>
+                両方を必ず実行してください。
               </div>
             </div>
 
@@ -11509,6 +11512,41 @@ const OtherTab = () => {
                 IndexedDBの写真からthumbDataUrl(300px)・medDataUrl(700px)を生成してSupabaseに保存します。
                 アプリを削除しても写真を復元できるようになります。
               </div>
+              {/* ★ バックアップ状況サマリー */}
+              {(() => {
+                const allPhotos = (data.inventory||[]).flatMap(i => i.photos||[]);
+                const totalPhotos = allPhotos.length;
+                const backedUp   = allPhotos.filter(p => p.thumbDataUrl).length;
+                const missing    = totalPhotos - backedUp;
+                const lastAuto   = data.settings?._autoPhotoBackupAt;
+                return (
+                  <div style={{background: missing > 0 ? '#fef3c7' : '#f0fdf4',
+                    border: '1px solid ' + (missing > 0 ? '#fcd34d' : '#bbf7d0'),
+                    borderRadius:10, padding:'10px 12px', marginBottom:10, fontSize:12}}>
+                    <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                      <span style={{color:'#666'}}>クラウドバックアップ済み</span>
+                      <span style={{fontWeight:700, color: missing > 0 ? '#92400e' : '#166534'}}>
+                        {backedUp} / {totalPhotos} 枚
+                      </span>
+                    </div>
+                    {missing > 0 && (
+                      <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                        <span style={{color:'#666'}}>未バックアップ</span>
+                        <span style={{fontWeight:700,color:'#dc2626'}}>{missing} 枚</span>
+                      </div>
+                    )}
+                    {lastAuto && (
+                      <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'#888'}}>
+                        <span>最終自動バックアップ</span>
+                        <span>{new Date(lastAuto).toLocaleString('ja-JP', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+                      </div>
+                    )}
+                    <div style={{fontSize:11,color:'#666',marginTop:6}}>
+                      ※ 起動時に24時間に1回、自動でバックアップが走ります
+                    </div>
+                  </div>
+                );
+              })()}
               {photoBackupProgress ? (
                 <div style={{padding:'10px 12px',borderRadius:10,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
                   <div style={{fontWeight:600,fontSize:13,color:'#1d4ed8',marginBottom:6}}>
@@ -12185,6 +12223,109 @@ const App = () => {
         flaggedSales.filter(s => s._duplicate).length, 'dup flags');
     }
   }, []);  // 初回マウント時のみ
+
+  // ── 写真自動クラウドバックアップ（24時間に1回・バックグラウンド）──
+  // IndexedDB に写真があるが Supabase に thumbDataUrl/medDataUrl が無い写真を自動アップロード
+  // → これでPWA削除しても全写真がSupabaseから復元できるようになる
+  React.useEffect(() => {
+    const last = fullData.settings?._autoPhotoBackupAt
+      ? new Date(fullData.settings._autoPhotoBackupAt).getTime() : 0;
+    // 24時間以内に実施済みならスキップ
+    if (Date.now() - last < 86400000) return;
+    // クラウド未設定環境ではフラグだけ立ててスキップ
+    if (typeof _cloudEnabled !== 'undefined' && !_cloudEnabled) {
+      setFullDataRaw(prev => {
+        const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
+        dataRef.current = nf; saveData(nf); return nf;
+      });
+      return;
+    }
+
+    // 起動から5秒遅らせて UI 描画を優先 → バックグラウンドでバックアップ実行
+    const timer = setTimeout(async function autoBackupPhotos() {
+      const inv = (dataRef.current.inventory || []);
+      const targets = inv.filter(item =>
+        (item.photos || []).some(p => !p.thumbDataUrl || !p.medDataUrl)
+      );
+      if (targets.length === 0) {
+        console.log('[AutoPhotoBackup] バックアップ対象なし');
+        setFullDataRaw(prev => {
+          const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
+          dataRef.current = nf; saveData(nf); return nf;
+        });
+        return;
+      }
+      console.log('[AutoPhotoBackup] ' + targets.length + ' 件の写真をクラウドにバックアップ中…');
+      const updatedItems = [];
+      for (const item of targets) {
+        const photos = item.photos || [];
+        let changed = false;
+        const newPhotos = [];
+        for (const photo of photos) {
+          const needsThumb = !photo.thumbDataUrl;
+          const needsMed   = !photo.medDataUrl;
+          if (!needsThumb && !needsMed) { newPhotos.push(photo); continue; }
+          try {
+            const blob = await getPhoto(photo.id);
+            let updatedPhoto = { ...photo };
+            if (blob) {
+              const file = new File([blob], 'photo.jpg', { type: blob.type || 'image/jpeg' });
+              if (needsThumb) {
+                const tb = await compressImage(file, 300, 0.72);
+                const b64 = await blobToBase64(tb);
+                updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
+                changed = true;
+              }
+              if (needsMed) {
+                const mb = await compressImage(file, 700, 0.78);
+                const b64 = await blobToBase64(mb);
+                updatedPhoto.medDataUrl = `data:image/jpeg;base64,${b64}`;
+                changed = true;
+              }
+            } else if (photo.thumbId) {
+              const tBlob = await getPhoto(photo.thumbId);
+              if (tBlob && needsThumb) {
+                const tb = await compressImage(new File([tBlob], 'thumb.jpg', { type: tBlob.type || 'image/jpeg' }), 300, 0.72);
+                const b64 = await blobToBase64(tb);
+                updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
+                changed = true;
+              }
+            }
+            newPhotos.push(updatedPhoto);
+          } catch(e) {
+            console.warn('[AutoPhotoBackup] photo error:', photo.id, e.message);
+            newPhotos.push(photo);
+          }
+        }
+        if (changed) updatedItems.push({ ...item, photos: newPhotos });
+      }
+
+      if (updatedItems.length > 0) {
+        const updatedMap = new Map(updatedItems.map(i => [i.id, i]));
+        setFullDataRaw(prev => {
+          const newInv = (prev.inventory || []).map(i => updatedMap.get(i.id) || i);
+          const nf = {
+            ...prev,
+            inventory: newInv,
+            settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() },
+          };
+          dataRef.current = nf;
+          saveData(nf);
+          // 旧データを空inventoryで投げて全件強制upsertを促す（base64 JSON.stringifyは重いので遅延）
+          setTimeout(function() { syncToSupabase({ inventory: [] }, nf); }, 500);
+          return nf;
+        });
+        console.log('[AutoPhotoBackup] ' + updatedItems.length + ' 件の写真をクラウドにバックアップしました');
+      } else {
+        console.log('[AutoPhotoBackup] 復元可能な写真がIndexedDBにありませんでした');
+        setFullDataRaw(prev => {
+          const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
+          dataRef.current = nf; saveData(nf); return nf;
+        });
+      }
+    }, 5000);
+    return function() { clearTimeout(timer); };
+  }, []);  // 初回マウントのみ
 
   // ── 手数料率デフォルトのマイグレーション（旧値のみ新値に置換・1回限り） ──
   React.useEffect(() => {
