@@ -12224,107 +12224,125 @@ const App = () => {
     }
   }, []);  // 初回マウント時のみ
 
-  // ── 写真自動クラウドバックアップ（24時間に1回・バックグラウンド）──
+  // ── 写真自動クラウドバックアップ（毎回起動 + アプリ復帰時・バックグラウンド）──
   // IndexedDB に写真があるが Supabase に thumbDataUrl/medDataUrl が無い写真を自動アップロード
   // → これでPWA削除しても全写真がSupabaseから復元できるようになる
+  // ★ 24時間制限を撤廃: 処理対象が無ければ即終了するので毎回チェックしてOK
+  // ★ visibilitychange/focus でも再実行 → アプリ復帰時にもバックアップを試みる
   React.useEffect(() => {
-    const last = fullData.settings?._autoPhotoBackupAt
-      ? new Date(fullData.settings._autoPhotoBackupAt).getTime() : 0;
-    // 24時間以内に実施済みならスキップ
-    if (Date.now() - last < 86400000) return;
-    // クラウド未設定環境ではフラグだけ立ててスキップ
-    if (typeof _cloudEnabled !== 'undefined' && !_cloudEnabled) {
-      setFullDataRaw(prev => {
-        const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
-        dataRef.current = nf; saveData(nf); return nf;
-      });
-      return;
+    // クラウド未設定環境ではスキップ
+    if (typeof _cloudEnabled !== 'undefined' && !_cloudEnabled) return;
+
+    // 連続実行抑制（最小5分間隔）
+    const MIN_INTERVAL_MS = 5 * 60 * 1000;
+    let running = false;
+    let lastRun = 0;
+
+    async function autoBackupPhotos() {
+      if (running) return;
+      if (Date.now() - lastRun < MIN_INTERVAL_MS) return;
+      running = true;
+      try {
+        const inv = (dataRef.current.inventory || []);
+        const targets = inv.filter(item =>
+          (item.photos || []).some(p => !p.thumbDataUrl || !p.medDataUrl)
+        );
+        if (targets.length === 0) {
+          // 処理対象なし → フラグだけ更新して終了（軽い）
+          setFullDataRaw(prev => {
+            const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
+            dataRef.current = nf; saveData(nf); return nf;
+          });
+          return;
+        }
+        console.log('[AutoPhotoBackup] ' + targets.length + ' 件の写真をクラウドにバックアップ中…');
+        const updatedItems = [];
+        for (const item of targets) {
+          const photos = item.photos || [];
+          let changed = false;
+          const newPhotos = [];
+          for (const photo of photos) {
+            const needsThumb = !photo.thumbDataUrl;
+            const needsMed   = !photo.medDataUrl;
+            if (!needsThumb && !needsMed) { newPhotos.push(photo); continue; }
+            try {
+              const blob = await getPhoto(photo.id);
+              let updatedPhoto = { ...photo };
+              if (blob) {
+                const file = new File([blob], 'photo.jpg', { type: blob.type || 'image/jpeg' });
+                if (needsThumb) {
+                  const tb = await compressImage(file, 300, 0.72);
+                  const b64 = await blobToBase64(tb);
+                  updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
+                  changed = true;
+                }
+                if (needsMed) {
+                  const mb = await compressImage(file, 700, 0.78);
+                  const b64 = await blobToBase64(mb);
+                  updatedPhoto.medDataUrl = `data:image/jpeg;base64,${b64}`;
+                  changed = true;
+                }
+              } else if (photo.thumbId) {
+                const tBlob = await getPhoto(photo.thumbId);
+                if (tBlob && needsThumb) {
+                  const tb = await compressImage(new File([tBlob], 'thumb.jpg', { type: tBlob.type || 'image/jpeg' }), 300, 0.72);
+                  const b64 = await blobToBase64(tb);
+                  updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
+                  changed = true;
+                }
+              }
+              newPhotos.push(updatedPhoto);
+            } catch(e) {
+              console.warn('[AutoPhotoBackup] photo error:', photo.id, e.message);
+              newPhotos.push(photo);
+            }
+          }
+          if (changed) updatedItems.push({ ...item, photos: newPhotos });
+        }
+
+        if (updatedItems.length > 0) {
+          const updatedMap = new Map(updatedItems.map(i => [i.id, i]));
+          setFullDataRaw(prev => {
+            const newInv = (prev.inventory || []).map(i => updatedMap.get(i.id) || i);
+            const nf = {
+              ...prev,
+              inventory: newInv,
+              settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() },
+            };
+            dataRef.current = nf;
+            saveData(nf);
+            // base64 込みで強制 upsert（重いので遅延実行）
+            setTimeout(function() { syncToSupabase({ inventory: [] }, nf); }, 500);
+            return nf;
+          });
+          console.log('[AutoPhotoBackup] ' + updatedItems.length + ' 件の写真をクラウドにバックアップしました');
+        } else {
+          setFullDataRaw(prev => {
+            const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
+            dataRef.current = nf; saveData(nf); return nf;
+          });
+        }
+      } finally {
+        lastRun = Date.now();
+        running = false;
+      }
     }
 
-    // 起動から5秒遅らせて UI 描画を優先 → バックグラウンドでバックアップ実行
-    const timer = setTimeout(async function autoBackupPhotos() {
-      const inv = (dataRef.current.inventory || []);
-      const targets = inv.filter(item =>
-        (item.photos || []).some(p => !p.thumbDataUrl || !p.medDataUrl)
-      );
-      if (targets.length === 0) {
-        console.log('[AutoPhotoBackup] バックアップ対象なし');
-        setFullDataRaw(prev => {
-          const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
-          dataRef.current = nf; saveData(nf); return nf;
-        });
-        return;
-      }
-      console.log('[AutoPhotoBackup] ' + targets.length + ' 件の写真をクラウドにバックアップ中…');
-      const updatedItems = [];
-      for (const item of targets) {
-        const photos = item.photos || [];
-        let changed = false;
-        const newPhotos = [];
-        for (const photo of photos) {
-          const needsThumb = !photo.thumbDataUrl;
-          const needsMed   = !photo.medDataUrl;
-          if (!needsThumb && !needsMed) { newPhotos.push(photo); continue; }
-          try {
-            const blob = await getPhoto(photo.id);
-            let updatedPhoto = { ...photo };
-            if (blob) {
-              const file = new File([blob], 'photo.jpg', { type: blob.type || 'image/jpeg' });
-              if (needsThumb) {
-                const tb = await compressImage(file, 300, 0.72);
-                const b64 = await blobToBase64(tb);
-                updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
-                changed = true;
-              }
-              if (needsMed) {
-                const mb = await compressImage(file, 700, 0.78);
-                const b64 = await blobToBase64(mb);
-                updatedPhoto.medDataUrl = `data:image/jpeg;base64,${b64}`;
-                changed = true;
-              }
-            } else if (photo.thumbId) {
-              const tBlob = await getPhoto(photo.thumbId);
-              if (tBlob && needsThumb) {
-                const tb = await compressImage(new File([tBlob], 'thumb.jpg', { type: tBlob.type || 'image/jpeg' }), 300, 0.72);
-                const b64 = await blobToBase64(tb);
-                updatedPhoto.thumbDataUrl = `data:image/jpeg;base64,${b64}`;
-                changed = true;
-              }
-            }
-            newPhotos.push(updatedPhoto);
-          } catch(e) {
-            console.warn('[AutoPhotoBackup] photo error:', photo.id, e.message);
-            newPhotos.push(photo);
-          }
-        }
-        if (changed) updatedItems.push({ ...item, photos: newPhotos });
-      }
+    // 起動時: 5秒遅らせて UI 描画を優先 → バックグラウンド実行
+    const initTimer = setTimeout(autoBackupPhotos, 5000);
 
-      if (updatedItems.length > 0) {
-        const updatedMap = new Map(updatedItems.map(i => [i.id, i]));
-        setFullDataRaw(prev => {
-          const newInv = (prev.inventory || []).map(i => updatedMap.get(i.id) || i);
-          const nf = {
-            ...prev,
-            inventory: newInv,
-            settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() },
-          };
-          dataRef.current = nf;
-          saveData(nf);
-          // 旧データを空inventoryで投げて全件強制upsertを促す（base64 JSON.stringifyは重いので遅延）
-          setTimeout(function() { syncToSupabase({ inventory: [] }, nf); }, 500);
-          return nf;
-        });
-        console.log('[AutoPhotoBackup] ' + updatedItems.length + ' 件の写真をクラウドにバックアップしました');
-      } else {
-        console.log('[AutoPhotoBackup] 復元可能な写真がIndexedDBにありませんでした');
-        setFullDataRaw(prev => {
-          const nf = { ...prev, settings: { ...prev.settings, _autoPhotoBackupAt: new Date().toISOString() } };
-          dataRef.current = nf; saveData(nf); return nf;
-        });
-      }
-    }, 5000);
-    return function() { clearTimeout(timer); };
+    // ★ アプリ復帰時にも再実行（visibility/focus/online）
+    function onResume() { if (!document.hidden && navigator.onLine !== false) autoBackupPhotos(); }
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('focus', onResume);
+    window.addEventListener('online', onResume);
+
+    return function() {
+      clearTimeout(initTimer);
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('focus', onResume);
+      window.removeEventListener('online', onResume);
+    };
   }, []);  // 初回マウントのみ
 
   // ── 手数料率デフォルトのマイグレーション（旧値のみ新値に置換・1回限り） ──
