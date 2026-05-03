@@ -8,3 +8,7 @@ public/config.json
 node_modules/
 .env
 .env.local
+
+# バックアップ・ローカル開発用
+*.backup_*
+.claude/launch.json
