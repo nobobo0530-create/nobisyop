@@ -12,3 +12,5 @@ node_modules/
 # バックアップ・ローカル開発用
 *.backup_*
 .claude/launch.json
+server.py
+start-server.sh
