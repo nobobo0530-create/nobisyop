@@ -4605,6 +4605,179 @@ const PhotoSlide = ({ photoRef }) => {
 };
 
 // ============================================================
+// メルカリ出品準備パネル
+// ============================================================
+const MercariPrepPanel = ({ item, onClose, toast }) => {
+  const [photoIdx, setPhotoIdx] = React.useState(0);
+  const [photoUrl, setPhotoUrl]   = React.useState(null);
+  const [photoBlob, setPhotoBlob] = React.useState(null);
+  const photos = item.photos || [];
+  const photo  = photos[photoIdx];
+
+  React.useEffect(() => {
+    setPhotoUrl(null); setPhotoBlob(null);
+    if (!photo) return;
+    let objectUrl = null;
+    (async () => {
+      try {
+        const blob = await getPhoto(photo.id);
+        if (blob) { objectUrl = blobToURL(blob); setPhotoBlob(blob); setPhotoUrl(objectUrl); }
+        else if (photo.medDataUrl)  { const r = await fetch(photo.medDataUrl);  const b = await r.blob(); setPhotoBlob(b); setPhotoUrl(photo.medDataUrl); }
+        else if (photo.thumbDataUrl){ setPhotoUrl(photo.thumbDataUrl); }
+      } catch(e) { setPhotoUrl(photo.medDataUrl || photo.thumbDataUrl || null); }
+    })();
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [photo?.id]);
+
+  const cp = (text, label) => {
+    if (!text) { toast(`⚠️ ${label}がありません`); return; }
+    copyToClipboard(text).then(ok => toast(ok ? `📋 ${label}をコピーしました` : 'コピー失敗'));
+  };
+
+  const sharePhoto = async () => {
+    try {
+      const blob = photoBlob || (photoUrl ? await (await fetch(photoUrl)).blob() : null);
+      if (!blob) { toast('⚠️ 写真を読み込み中…'); return; }
+      const file = new File([blob], `photo_${photoIdx+1}.jpg`, { type: blob.type || 'image/jpeg' });
+      if (navigator.share && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+      } else {
+        const a = document.createElement('a'); a.href = photoUrl; a.download = file.name; a.click();
+      }
+    } catch(e) { if (e.name !== 'AbortError') toast('⚠️ 共有に失敗しました'); }
+  };
+
+  const base = photos.length > 0 ? 1 : 0; // ①の分オフセット
+  const numBadge = (n) => (
+    React.createElement('div', { style:{
+      width:24,height:24,borderRadius:99,background:'#e40017',color:'white',
+      fontWeight:800,fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0
+    }}, n)
+  );
+  const sectionHd = (num, label) => (
+    React.createElement('div', { style:{display:'flex',alignItems:'center',gap:8,marginBottom:8} },
+      numBadge(num), React.createElement('div', {style:{fontWeight:700,fontSize:15}}, label)
+    )
+  );
+  const copyBtn = (text, label, full) => (
+    React.createElement('button', {
+      onClick: () => cp(text, label), disabled: !text,
+      style:{
+        width:'100%', padding:'11px', borderRadius:12,
+        border:`1.5px solid ${text ? '#d1d5db' : '#e5e7eb'}`,
+        background: text ? 'white' : '#f9fafb',
+        fontSize:13, fontWeight:700, cursor: text ? 'pointer' : 'default',
+        color:'#333', opacity: text ? 1 : 0.45,
+        WebkitTapHighlightColor:'transparent', marginBottom: full ? 0 : 8,
+      }
+    }, `📋 ${label}をコピー`)
+  );
+
+  return React.createElement('div', {
+    style:{
+      position:'fixed', inset:0, zIndex:3000, background:'white',
+      display:'flex', flexDirection:'column', overflowY:'hidden',
+      paddingTop:'env(safe-area-inset-top)',
+    }
+  },
+    /* ─ ヘッダー ─ */
+    React.createElement('div', {
+      style:{display:'flex',alignItems:'center',justifyContent:'space-between',
+        padding:'14px 16px 12px',borderBottom:'1px solid #e5e7eb',flexShrink:0,
+        background:'white'}
+    },
+      React.createElement('div', null,
+        React.createElement('div',{style:{fontSize:18,fontWeight:800,color:'#111'}}, '🛒 メルカリ出品準備'),
+        React.createElement('div',{style:{fontSize:12,color:'#9ca3af',marginTop:2}}, item.productName || '商品名未設定'),
+      ),
+      React.createElement('button',{onClick:onClose, style:{
+        background:'#f3f4f6',border:'none',borderRadius:99,width:34,height:34,
+        fontSize:18,fontWeight:700,color:'#666',cursor:'pointer',
+        display:'flex',alignItems:'center',justifyContent:'center'
+      }}, '×')
+    ),
+
+    /* ─ スクロール本体 ─ */
+    React.createElement('div', {style:{flex:1,overflowY:'auto',padding:'16px 16px calc(env(safe-area-inset-bottom) + 24px)'}},
+
+      /* ① 写真を保存 */
+      photos.length > 0 && React.createElement('div', {style:{marginBottom:22}},
+        sectionHd('①', '写真を保存'),
+        React.createElement('div',{style:{background:'#f9fafb',borderRadius:14,overflow:'hidden',
+          display:'flex',alignItems:'center',justifyContent:'center',minHeight:200,marginBottom:10}},
+          photoUrl
+            ? React.createElement('img',{src:photoUrl,alt:'',style:{maxWidth:'100%',maxHeight:300,objectFit:'contain'}})
+            : React.createElement('div',{style:{color:'#ccc',fontSize:13,padding:24}},'読み込み中…')
+        ),
+        photos.length > 1 && React.createElement('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:20,marginBottom:10}},
+          React.createElement('button',{onClick:()=>setPhotoIdx(i=>Math.max(0,i-1)),disabled:photoIdx===0,
+            style:{padding:'6px 18px',borderRadius:99,border:'1.5px solid #d1d5db',background:'white',fontWeight:700,fontSize:16,cursor:'pointer',opacity:photoIdx===0?0.3:1}}, '‹'),
+          React.createElement('span',{style:{fontSize:13,fontWeight:600,color:'#374151'}},`${photoIdx+1} / ${photos.length}`),
+          React.createElement('button',{onClick:()=>setPhotoIdx(i=>Math.min(photos.length-1,i+1)),disabled:photoIdx===photos.length-1,
+            style:{padding:'6px 18px',borderRadius:99,border:'1.5px solid #d1d5db',background:'white',fontWeight:700,fontSize:16,cursor:'pointer',opacity:photoIdx===photos.length-1?0.3:1}}, '›'),
+        ),
+        React.createElement('button',{onClick:sharePhoto,style:{
+          width:'100%',padding:'12px',borderRadius:12,border:'none',
+          background:'#1c1c1e',color:'white',fontSize:14,fontWeight:700,cursor:'pointer',
+          WebkitTapHighlightColor:'transparent',marginBottom:6}}, '📤 この写真を共有・保存'),
+        React.createElement('div',{style:{textAlign:'center',fontSize:11,color:'#9ca3af'}},
+          '共有メニュー →「写真に保存」を選択してください')
+      ),
+
+      /* ② タイトル */
+      React.createElement('div',{style:{borderTop:'1px solid #f3f4f6',paddingTop:16,marginBottom:16}},
+        sectionHd(photos.length>0?'②':'①', 'タイトルをコピー'),
+        item.productName && React.createElement('div',{style:{background:'#f9fafb',borderRadius:10,padding:'8px 12px',fontSize:13,color:'#374151',marginBottom:8,lineHeight:1.45}}, item.productName),
+        copyBtn(item.productName, '商品名'),
+        item.englishTitle && React.createElement(React.Fragment,null,
+          React.createElement('div',{style:{background:'#f9fafb',borderRadius:10,padding:'8px 12px',fontSize:12,color:'#374151',marginBottom:8,fontFamily:'monospace',wordBreak:'break-all'}}, item.englishTitle),
+          copyBtn(item.englishTitle, '英語タイトル（SEO用）'),
+        ),
+      ),
+
+      /* ③ 価格 */
+      React.createElement('div',{style:{borderTop:'1px solid #f3f4f6',paddingTop:16,marginBottom:16}},
+        sectionHd(photos.length>0?'③':'②', '価格を確認・コピー'),
+        React.createElement('div',{style:{display:'flex',alignItems:'baseline',gap:6,marginBottom:10}},
+          React.createElement('div',{style:{fontSize:30,fontWeight:800,color:'#111'}}, `¥${(item.listPrice||0).toLocaleString()}`),
+          React.createElement('div',{style:{fontSize:12,color:'#9ca3af'}}, '見込み売上'),
+        ),
+        copyBtn(item.listPrice ? String(item.listPrice) : '', '価格'),
+      ),
+
+      /* ④ 説明文 */
+      React.createElement('div',{style:{borderTop:'1px solid #f3f4f6',paddingTop:16,marginBottom:24}},
+        sectionHd(photos.length>0?'④':'③', '説明文をコピー'),
+        React.createElement('button',{
+          onClick:()=>cp(item.descriptionText,'説明文'), disabled:!item.descriptionText,
+          style:{width:'100%',padding:'13px',borderRadius:12,border:`1.5px solid ${item.descriptionText?'#d1d5db':'#e5e7eb'}`,
+            background:item.descriptionText?'white':'#f9fafb',fontSize:14,fontWeight:700,
+            cursor:item.descriptionText?'pointer':'default',color:'#333',
+            opacity:item.descriptionText?1:0.45,WebkitTapHighlightColor:'transparent'}
+        },'📝 説明文をコピー'),
+        !item.descriptionText && React.createElement('div',{style:{fontSize:11,color:'#9ca3af',textAlign:'center',marginTop:6}},'✏️ 編集から説明文を生成してください'),
+      ),
+
+      /* ⑤ メルカリを開く */
+      React.createElement('div',{style:{borderTop:'1px solid #f3f4f6',paddingTop:20}},
+        React.createElement('div',{style:{fontSize:11,color:'#9ca3af',textAlign:'center',marginBottom:10}},
+          '準備ができたらメルカリを起動→出品してください'),
+        React.createElement('button',{
+          onClick:()=>{ const a=document.createElement('a'); a.href='mercari://'; document.body.appendChild(a); a.click(); document.body.removeChild(a); },
+          style:{width:'100%',padding:'15px',borderRadius:14,border:'none',
+            background:'linear-gradient(135deg,#e40017,#ff1744)',color:'white',
+            fontSize:16,fontWeight:800,cursor:'pointer',
+            WebkitTapHighlightColor:'transparent',
+            boxShadow:'0 4px 16px rgba(228,0,23,0.3)'}
+        },'🚀 メルカリを開く'),
+        React.createElement('div',{style:{fontSize:11,color:'#9ca3af',textAlign:'center',marginTop:8}},
+          '最終入力・下書き保存・出品はご自身で行ってください'),
+      )
+    )
+  );
+};
+
+// ============================================================
 // 在庫一覧タブ
 // ============================================================
 const InventoryTab = () => {
@@ -4627,6 +4800,7 @@ const InventoryTab = () => {
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
+  const [mercariMode, setMercariMode] = React.useState(false);
 
   // ★ マウント時: pending値をクリア & スクロール位置を復元
   // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
@@ -5423,6 +5597,18 @@ const InventoryTab = () => {
 
             {/* アクションボタン */}
             <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:12}}>
+              {/* メルカリ出品準備ボタン */}
+              {selected.status !== 'sold' && (
+                <button
+                  onClick={() => setMercariMode(true)}
+                  style={{width:'100%',padding:'13px',borderRadius:13,border:'none',
+                    background:'linear-gradient(135deg,#e40017,#ff1744)',color:'white',
+                    fontSize:15,fontWeight:800,cursor:'pointer',
+                    WebkitTapHighlightColor:'transparent',
+                    boxShadow:'0 3px 12px rgba(228,0,23,0.28)'}}>
+                  🛒 メルカリ出品準備モード
+                </button>
+              )}
               {/* 編集ボタン */}
               <button className="btn-secondary" style={{width:'100%'}}
                 onClick={() => {
@@ -5503,6 +5689,13 @@ const InventoryTab = () => {
           </div>
         </div>
       )}
+
+      {/* メルカリ出品準備パネル */}
+      {mercariMode && selected && React.createElement(MercariPrepPanel, {
+        item: selected,
+        onClose: () => setMercariMode(false),
+        toast,
+      })}
     </div>
   );
 };
