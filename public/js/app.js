@@ -1753,6 +1753,7 @@ const PurchaseTab = () => {
     couponNote: '',         // クーポンメモ（例：1000円OFFクーポン）
   });
   const [generatedDesc, setGeneratedDesc] = React.useState('');
+  const [descFormat, setDescFormat] = React.useState('self'); // 'self' | 'riko'
   const [showDesc, setShowDesc] = React.useState(false);
   const [purchaseType, setPurchaseType] = React.useState('store'); // 'store' | 'online'
   const [storeCustomText, setStoreCustomText] = React.useState(null); // null=選択モード, string=手入力モード
@@ -2466,7 +2467,7 @@ const PurchaseTab = () => {
   };
 
   const generateDescription = () => {
-    // ---- 各パーツを組み立て ----
+    // ---- 各パーツを組み立て（自分用・りこぴ用共通） ----
 
     // ブランド：日本語名を先頭、英語名を2行目（説明文での視認性優先）
     const brandLines = [];
@@ -2499,7 +2500,61 @@ const PurchaseTab = () => {
     // 状態詳細
     const conditionText = form.conditionDetail || '（状態詳細未入力）';
 
-    // ---- 完全固定フォーマットで出力 ----
+    // ---- りこぴ用フォーマット ----
+    if (descFormat === 'riko') {
+      // カテゴリー行：seoCategories を1つずつ改行、なければ categoryKeywords を単語ごと改行
+      const rikoCategories = (form.seoCategories?.length > 0)
+        ? form.seoCategories
+        : (form.categoryKeywords || form.category || '（カテゴリー未入力）').split(/[\s　]+/).filter(Boolean);
+
+      // サイズブロック（りこぴ用：sizeM2 = 脇下身幅）
+      const rikoSizeLabels = {
+        '衣類':   [['sizeM1','着丈'],['sizeM2','脇下身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
+        'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
+        '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
+        'シューズ': [],
+      };
+      const rikoMLabels = rikoSizeLabels[form.category] || [];
+      const rikoMeasureLines = rikoMLabels
+        .filter(([key]) => form[key] && form[key] !== '')
+        .map(([key, label]) => `${label}${form[key]}cm`);
+      const rikoSizeTag = form.sizeTag ? `表記サイズ：${form.sizeTag}` : '表記サイズ：（未入力）';
+
+      const rikoLines = [
+        '【ブランド】',
+        ...brandLines,
+        '',
+        '【カテゴリー】',
+        ...rikoCategories,
+        '',
+        '【カラー】',
+        colorText,
+        '',
+        '商品の状態',
+        '',
+        conditionText,
+        '',
+        'サイズ',
+        '',
+        rikoSizeTag,
+        '',
+        ...rikoMeasureLines,
+        ...(rikoMeasureLines.length > 0 ? [''] : []),
+        'サイズに関して多少の誤差はご了承下さいませ。',
+        '',
+        '【発送について】',
+        '・なるべくコンパクトにして発送致します。',
+        '・らくらくメルカリ便⇄ゆうゆうメルカリ便はサイズ次第で変更する場合があります。',
+        '',
+        `管理番号：${mgmtNo || ''}`,
+      ];
+      const rikoDesc = rikoLines.join('\n').replace(/\n{3,}/g, '\n\n');
+      setGeneratedDesc(rikoDesc);
+      setShowDesc(true);
+      return;
+    }
+
+    // ---- 自分用フォーマット（変更なし） ----
     const lines = [
       'We offer immediate purchase approval. Our store deals exclusively in authentic products, so please feel confident in making your purchase.',
       '',
@@ -4192,8 +4247,20 @@ const PurchaseTab = () => {
             )}
 
             {/* 商品説明生成 */}
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+              {/* フォーマット切替 */}
+              {[['self','自分用'],['riko','りこぴ用']].map(([v,l]) => (
+                <button key={v} onClick={() => setDescFormat(v)}
+                  style={{flex:1,padding:'7px 0',borderRadius:10,border:'none',cursor:'pointer',
+                    fontSize:13,fontWeight:700,WebkitTapHighlightColor:'transparent',
+                    background: descFormat===v ? '#1e293b' : '#f1f5f9',
+                    color: descFormat===v ? 'white' : '#64748b'}}>
+                  {l}
+                </button>
+              ))}
+            </div>
             <button className="btn-secondary" style={{width:'100%',marginBottom:8}}
-              onClick={generateDescription}>📝 商品説明文を生成</button>
+              onClick={generateDescription}>📝 商品説明文を生成（{descFormat==='riko'?'りこぴ用':'自分用'}）</button>
 
             {showDesc && (
               <div style={{marginBottom:12}}>
