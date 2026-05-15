@@ -1793,6 +1793,8 @@ const PurchaseTab = () => {
   bundleItemsRef.current = bundleItems;
   const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
   const [formError, setFormError] = React.useState(null); // インラインバリデーションエラー
+  const [postSaveItem, setPostSaveItem] = React.useState(null); // 保存後メルカリ誘導シート用
+  const postSaveNavRef = React.useRef(null); // 保存後ナビゲーション処理
 
   // ── 下書き自動保存 ──
   const DRAFT_KEY = 'nobushop_purchase_draft';
@@ -2773,17 +2775,19 @@ const PurchaseTab = () => {
         const savedId = editingItem.id;
         const goSell = postSaveNavToSale.current;
         postSaveNavToSale.current = false;
-        const returnTab = pendingReturnTab; // 保存後に戻るタブ
-        const returnSection = pendingReturnSection; // 保存後にOtherTabで表示するセクション
+        const returnTab = pendingReturnTab;
+        const returnSection = pendingReturnSection;
         clearEditDraft(savedId);
         console.log('[Save] edit success:', savedId);
         try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
-        resetForm();
-        if (goSell) { setPendingSaleItemId(savedId); setTab('sales'); }
-        else if (returnTab) {
-          if (returnSection) setPendingReturnSection(returnSection);
-          setTab(returnTab);
-        }
+        if (goSell) { resetForm(); setPendingSaleItemId(savedId); setTab('sales'); return; }
+        // ★ 編集保存後：メルカリ誘導シートを表示（nav処理をRefに保持し、閉じ時に実行）
+        const savedItem = updated.find(i => i.id === savedId) || editingItem;
+        postSaveNavRef.current = () => {
+          resetForm();
+          if (returnTab) { if (returnSection) setPendingReturnSection(returnSection); setTab(returnTab); }
+        };
+        setPostSaveItem(savedItem);
         return;
       }
 
@@ -3010,6 +3014,13 @@ const PurchaseTab = () => {
           </button>
         </div>
       )}
+      {/* ── 編集保存後：メルカリ誘導シート ── */}
+      {postSaveItem && React.createElement(MercariPrepPanel, {
+        item: postSaveItem,
+        onClose: () => { setPostSaveItem(null); if (postSaveNavRef.current) { postSaveNavRef.current(); postSaveNavRef.current = null; } },
+        toast,
+      })}
+
       <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12}}>
         <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
           {!editingItem && (
@@ -4800,7 +4811,6 @@ const InventoryTab = () => {
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
-  const [mercariMode, setMercariMode] = React.useState(false);
 
   // ★ マウント時: pending値をクリア & スクロール位置を復元
   // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
@@ -5597,18 +5607,6 @@ const InventoryTab = () => {
 
             {/* アクションボタン */}
             <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:12}}>
-              {/* メルカリ出品準備ボタン */}
-              {selected.status !== 'sold' && (
-                <button
-                  onClick={() => setMercariMode(true)}
-                  style={{width:'100%',padding:'13px',borderRadius:13,border:'none',
-                    background:'linear-gradient(135deg,#e40017,#ff1744)',color:'white',
-                    fontSize:15,fontWeight:800,cursor:'pointer',
-                    WebkitTapHighlightColor:'transparent',
-                    boxShadow:'0 3px 12px rgba(228,0,23,0.28)'}}>
-                  🛒 メルカリ出品準備モード
-                </button>
-              )}
               {/* 編集ボタン */}
               <button className="btn-secondary" style={{width:'100%'}}
                 onClick={() => {
@@ -5690,12 +5688,6 @@ const InventoryTab = () => {
         </div>
       )}
 
-      {/* メルカリ出品準備パネル */}
-      {mercariMode && selected && React.createElement(MercariPrepPanel, {
-        item: selected,
-        onClose: () => setMercariMode(false),
-        toast,
-      })}
     </div>
   );
 };
