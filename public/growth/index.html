@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<title>GROWTH ─ 事業RPG</title>
+<link rel="manifest" href="/growth/manifest.json">
+<link rel="icon" href="/growth/icon.svg">
+<meta name="theme-color" content="#0a0a14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+/* ── RESET ── */
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+input,textarea{-webkit-user-select:text;user-select:text}
+button{border:none;background:none;font:inherit;color:inherit;cursor:pointer}
+
+/* ── TOKENS ── */
+:root{
+  --bg:#0a0a14;
+  --bg2:#14141f;
+  --card:rgba(255,255,255,.04);
+  --bdr:rgba(0,240,255,.15);
+  --bdr-strong:rgba(0,240,255,.4);
+  --tx:#e8e8f0;
+  --tx2:#8a8a9e;
+  --tx3:#5a5a6e;
+  --cy:#00f0ff;
+  --mg:#ff00d4;
+  --gd:#ffd700;
+  --pk:#ff5588;
+  --gr:#00ff88;
+  --or:#ff8800;
+  --rd:#ff3366;
+  --safe-top:env(safe-area-inset-top);
+  --safe-bot:env(safe-area-inset-bottom);
+}
+
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Helvetica Neue","Hiragino Sans","Yu Gothic UI",sans-serif;
+  background:var(--bg);
+  color:var(--tx);
+  font-size:15px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* Animated grid background */
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:
+    linear-gradient(rgba(0,240,255,.03) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(0,240,255,.03) 1px,transparent 1px);
+  background-size:40px 40px;
+  mask-image:radial-gradient(ellipse at center,black 30%,transparent 80%);
+  -webkit-mask-image:radial-gradient(ellipse at center,black 30%,transparent 80%);
+  animation:grid-pan 60s linear infinite;
+}
+@keyframes grid-pan{from{background-position:0 0}to{background-position:40px 40px}}
+
+/* Floating glow orbs */
+body::after{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(circle at 20% 10%,rgba(0,240,255,.08),transparent 40%),
+    radial-gradient(circle at 80% 80%,rgba(255,0,212,.08),transparent 40%),
+    radial-gradient(circle at 50% 50%,rgba(255,215,0,.04),transparent 50%);
+}
+
+#app{position:relative;z-index:1;height:100%;display:flex;flex-direction:column}
+
+/* ── TOP HEADER ── */
+.top{
+  flex-shrink:0;
+  padding:calc(var(--safe-top) + 12px) 16px 14px;
+  background:linear-gradient(180deg,rgba(10,10,20,.95) 0%,rgba(10,10,20,.7) 100%);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--bdr);
+}
+.top-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.lv-wrap{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.lv-badge{
+  width:42px;height:42px;border-radius:12px;flex-shrink:0;
+  background:linear-gradient(135deg,#00f0ff 0%,#ff00d4 100%);
+  display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:18px;color:#0a0a14;
+  box-shadow:0 0 20px rgba(0,240,255,.4),inset 0 1px 0 rgba(255,255,255,.3);
+  font-family:"SF Mono","Menlo",monospace;
+}
+.lv-info{flex:1;min-width:0}
+.lv-label{font-size:10px;color:var(--tx2);letter-spacing:.15em;font-weight:600;margin-bottom:2px}
+.lv-text{font-size:15px;font-weight:700;color:var(--cy);text-shadow:0 0 10px rgba(0,240,255,.6)}
+.streak{
+  display:flex;align-items:center;gap:6px;
+  padding:6px 12px;border-radius:999px;
+  background:linear-gradient(135deg,rgba(255,136,0,.2),rgba(255,51,102,.2));
+  border:1px solid rgba(255,136,0,.4);
+}
+.streak-ico{font-size:14px;filter:drop-shadow(0 0 4px #ff8800)}
+.streak-n{font-weight:800;color:#ffaa44;font-family:"SF Mono","Menlo",monospace;font-size:14px}
+.streak-l{font-size:10px;color:#ffaa44}
+
+.xp-bar{height:8px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden;position:relative;margin-bottom:10px}
+.xp-fill{
+  height:100%;
+  background:linear-gradient(90deg,#00f0ff 0%,#00ffaa 50%,#ffd700 100%);
+  border-radius:999px;
+  box-shadow:0 0 12px rgba(0,240,255,.6);
+  transition:width .8s cubic-bezier(.4,.8,.2,1);
+  position:relative;
+}
+.xp-fill::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);
+  animation:xp-shimmer 2s linear infinite;
+}
+@keyframes xp-shimmer{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.xp-text{display:flex;justify-content:space-between;font-size:11px;color:var(--tx2);font-family:"SF Mono","Menlo",monospace}
+
+.profit-bar{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding:10px 14px;border-radius:14px;background:linear-gradient(135deg,rgba(255,215,0,.08),rgba(255,215,0,.02));border:1px solid rgba(255,215,0,.25)}
+.profit-left{display:flex;flex-direction:column;gap:2px}
+.profit-label{font-size:10px;letter-spacing:.15em;color:#ffd700;font-weight:600}
+.profit-value{font-size:22px;font-weight:800;color:#ffd700;font-family:"SF Mono","Menlo",monospace;text-shadow:0 0 12px rgba(255,215,0,.5);letter-spacing:-.02em}
+.profit-today{text-align:right}
+.profit-today-l{font-size:10px;color:var(--tx2);letter-spacing:.1em}
+.profit-today-v{font-size:14px;font-weight:700;color:#00ff88;font-family:"SF Mono","Menlo",monospace}
+
+/* ── SCREENS ── */
+.scroll{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-bottom:calc(var(--safe-bot) + 90px)}
+.screen{display:none;padding:14px 14px 20px}
+.screen.active{display:block}
+
+.sec-lbl{display:flex;align-items:center;gap:8px;font-size:10px;letter-spacing:.2em;color:var(--tx2);font-weight:700;margin:18px 4px 10px;text-transform:uppercase}
+.sec-lbl:first-child{margin-top:0}
+.sec-lbl::before{content:'';width:14px;height:2px;background:linear-gradient(90deg,#00f0ff,transparent);border-radius:2px}
+
+.card{
+  background:var(--card);
+  border:1px solid var(--bdr);
+  border-radius:18px;
+  padding:14px;
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+}
+.card+.card{margin-top:10px}
+
+/* ── MISSIONS ── */
+.miss-card{padding:12px 14px}
+.miss-row{
+  display:flex;align-items:center;gap:10px;padding:10px 0;
+  border-bottom:1px solid rgba(255,255,255,.05);
+}
+.miss-row:last-child{border-bottom:none}
+.miss-row.done{opacity:.45}
+.miss-row.done .miss-text{text-decoration:line-through}
+.miss-chk{
+  width:22px;height:22px;border-radius:50%;border:2px solid var(--bdr-strong);flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .3s;
+}
+.miss-row.done .miss-chk{
+  background:linear-gradient(135deg,#00ff88,#00f0ff);
+  border-color:transparent;
+  box-shadow:0 0 12px rgba(0,255,136,.6);
+}
+.miss-row.done .miss-chk::after{content:'✓';color:#0a0a14;font-weight:900;font-size:12px}
+.miss-body{flex:1;min-width:0}
+.miss-text{font-size:14px;font-weight:600;color:var(--tx)}
+.miss-prog{font-size:11px;color:var(--tx2);font-family:"SF Mono","Menlo",monospace;margin-top:2px}
+.miss-rew{
+  font-size:11px;font-weight:800;
+  padding:4px 8px;border-radius:6px;
+  background:linear-gradient(135deg,rgba(255,215,0,.2),rgba(255,136,0,.2));
+  color:#ffd700;border:1px solid rgba(255,215,0,.4);
+  flex-shrink:0;font-family:"SF Mono","Menlo",monospace;
+}
+
+/* ── ACTION GRID ── */
+.act-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.act-btn{
+  position:relative;
+  aspect-ratio:1;
+  border-radius:18px;
+  background:var(--card);
+  border:1px solid var(--bdr);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  transition:all .15s;
+  overflow:hidden;
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+}
+.act-btn::before{
+  content:'';position:absolute;inset:0;border-radius:18px;
+  background:linear-gradient(135deg,var(--c1,#00f0ff),var(--c2,#ff00d4));
+  opacity:0;transition:opacity .2s;
+  z-index:0;
+}
+.act-btn:active{transform:scale(.94)}
+.act-btn:active::before{opacity:.15}
+.act-ico{font-size:28px;z-index:1;filter:drop-shadow(0 0 6px var(--c1,#00f0ff))}
+.act-name{font-size:11px;font-weight:700;letter-spacing:.05em;z-index:1;color:var(--tx)}
+.act-xp{font-size:9px;color:var(--tx2);z-index:1;font-family:"SF Mono","Menlo",monospace}
+.act-cnt{
+  position:absolute;top:8px;right:8px;z-index:2;
+  font-size:10px;font-weight:800;font-family:"SF Mono","Menlo",monospace;
+  padding:2px 6px;border-radius:6px;
+  background:rgba(0,0,0,.5);color:var(--c1,#00f0ff);
+  border:1px solid var(--c1,#00f0ff);min-width:18px;text-align:center;
+}
+.act-btn[data-act="list"]{--c1:#00f0ff;--c2:#0088ff}
+.act-btn[data-act="ship"]{--c1:#ff00d4;--c2:#7700ff}
+.act-btn[data-act="buy"]{--c1:#ffd700;--c2:#ff8800}
+.act-btn[data-act="sns"]{--c1:#ff5588;--c2:#ff0066}
+.act-btn[data-act="research"]{--c1:#00ff88;--c2:#00ccaa}
+
+/* ── PROFIT BUTTON ── */
+.profit-btn{
+  width:100%;padding:18px;border-radius:18px;margin-top:12px;
+  background:linear-gradient(135deg,#ffd700 0%,#ff8800 50%,#ff00d4 100%);
+  background-size:200% 200%;
+  font-size:16px;font-weight:900;letter-spacing:.05em;
+  color:#0a0a14;
+  box-shadow:0 0 24px rgba(255,215,0,.4),inset 0 1px 0 rgba(255,255,255,.4);
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:transform .15s;
+  animation:profit-shine 3s ease-in-out infinite;
+}
+@keyframes profit-shine{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.profit-btn:active{transform:scale(.97)}
+
+/* ── RECENT LOG ── */
+.log-row{
+  display:flex;align-items:center;gap:10px;padding:10px 0;
+  border-bottom:1px solid rgba(255,255,255,.04);font-size:13px;
+}
+.log-row:last-child{border-bottom:none}
+.log-ico{
+  width:30px;height:30px;border-radius:9px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:14px;
+  background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
+}
+.log-text{flex:1;min-width:0;color:var(--tx2);font-size:12px}
+.log-amt{font-family:"SF Mono","Menlo",monospace;font-weight:700;font-size:12px;color:var(--gr)}
+.log-amt.neg{color:var(--rd)}
+.log-amt.xp{color:var(--cy)}
+.log-empty{text-align:center;color:var(--tx3);font-size:12px;padding:30px 10px}
+
+/* ── STATS ── */
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat-box{
+  padding:14px;border-radius:14px;background:var(--card);border:1px solid var(--bdr);
+}
+.stat-l{font-size:10px;letter-spacing:.15em;color:var(--tx2);font-weight:600;margin-bottom:4px}
+.stat-v{font-size:20px;font-weight:800;font-family:"SF Mono","Menlo",monospace;letter-spacing:-.02em}
+.stat-v.cy{color:var(--cy);text-shadow:0 0 8px rgba(0,240,255,.4)}
+.stat-v.gd{color:var(--gd);text-shadow:0 0 8px rgba(255,215,0,.4)}
+.stat-v.mg{color:var(--mg);text-shadow:0 0 8px rgba(255,0,212,.4)}
+.stat-v.gr{color:var(--gr);text-shadow:0 0 8px rgba(0,255,136,.4)}
+.stat-v.or{color:var(--or);text-shadow:0 0 8px rgba(255,136,0,.4)}
+
+.chart{height:160px;width:100%;display:block}
+.chart-empty{text-align:center;color:var(--tx3);font-size:12px;padding:50px 10px}
+
+/* ── ACHIEVEMENTS ── */
+.ach-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.ach-card{
+  aspect-ratio:1;border-radius:14px;padding:10px 6px;
+  background:var(--card);border:1px solid rgba(255,255,255,.08);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;
+  position:relative;overflow:hidden;
+}
+.ach-card.un{
+  background:linear-gradient(135deg,rgba(255,215,0,.12),rgba(255,0,212,.08));
+  border:1px solid rgba(255,215,0,.45);
+  box-shadow:0 0 16px rgba(255,215,0,.15);
+}
+.ach-ico{font-size:28px;filter:grayscale(1);opacity:.4}
+.ach-card.un .ach-ico{filter:none;opacity:1;filter:drop-shadow(0 0 8px #ffd700)}
+.ach-name{font-size:10px;font-weight:700;color:var(--tx2);line-height:1.2}
+.ach-card.un .ach-name{color:#ffd700}
+.ach-desc{font-size:9px;color:var(--tx3);line-height:1.2}
+
+/* ── SETTINGS ── */
+.set-row{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;background:var(--card);border:1px solid var(--bdr);border-radius:14px;margin-bottom:10px;
+}
+.set-row button{font-size:13px;font-weight:600}
+.danger-btn{padding:14px;width:100%;border-radius:14px;background:rgba(255,51,102,.1);border:1px solid rgba(255,51,102,.4);color:#ff3366;font-weight:700;font-size:13px;margin-top:20px}
+
+/* ── BOTTOM NAV ── */
+.nav{
+  position:absolute;bottom:0;left:0;right:0;z-index:10;
+  display:flex;justify-content:space-around;align-items:center;
+  padding:10px 8px calc(var(--safe-bot) + 10px);
+  background:linear-gradient(180deg,transparent,rgba(10,10,20,.9) 30%);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-top:1px solid var(--bdr);
+}
+.nav-btn{
+  display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:6px 14px;border-radius:12px;transition:all .2s;
+  color:var(--tx3);
+}
+.nav-btn.active{color:var(--cy)}
+.nav-btn.active .nav-ico{filter:drop-shadow(0 0 6px var(--cy))}
+.nav-ico{font-size:18px}
+.nav-lbl{font-size:9px;font-weight:700;letter-spacing:.1em}
+
+/* ── MODAL ── */
+.modal-bg{
+  position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.75);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  display:flex;align-items:flex-end;justify-content:center;padding:0;
+  opacity:0;pointer-events:none;transition:opacity .2s;
+}
+.modal-bg.show{opacity:1;pointer-events:auto}
+.modal{
+  width:100%;max-width:480px;background:#14141f;border-top:1px solid var(--bdr-strong);
+  border-radius:24px 24px 0 0;padding:20px 20px calc(var(--safe-bot) + 20px);
+  transform:translateY(100%);transition:transform .3s cubic-bezier(.2,1,.3,1);
+}
+.modal-bg.show .modal{transform:translateY(0)}
+.modal-title{font-size:16px;font-weight:800;letter-spacing:.05em;margin-bottom:16px;text-align:center}
+.modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.inp-wrap{display:flex;flex-direction:column;gap:6px}
+.inp-l{font-size:11px;letter-spacing:.1em;color:var(--tx2);font-weight:600}
+.inp{
+  padding:14px 12px;border-radius:12px;background:rgba(0,0,0,.4);
+  border:1px solid var(--bdr);color:var(--tx);font-size:18px;font-weight:700;
+  font-family:"SF Mono","Menlo",monospace;text-align:right;-webkit-appearance:none;width:100%;
+}
+.inp:focus{outline:none;border-color:var(--cy);box-shadow:0 0 12px rgba(0,240,255,.3)}
+.calc-row{display:flex;justify-content:space-between;align-items:center;padding:12px;border-radius:10px;background:rgba(0,0,0,.3);margin-bottom:14px}
+.calc-l{font-size:11px;letter-spacing:.1em;color:var(--tx2);font-weight:600}
+.calc-v{font-size:22px;font-weight:800;font-family:"SF Mono","Menlo",monospace;color:#ffd700;text-shadow:0 0 8px rgba(255,215,0,.4)}
+.calc-v.neg{color:#ff3366;text-shadow:0 0 8px rgba(255,51,102,.4)}
+.modal-btns{display:flex;gap:10px}
+.modal-btn{flex:1;padding:14px;border-radius:12px;font-weight:700;font-size:14px}
+.btn-cancel{background:rgba(255,255,255,.05);color:var(--tx2);border:1px solid rgba(255,255,255,.1)}
+.btn-ok{background:linear-gradient(135deg,#ffd700,#ff8800);color:#0a0a14;box-shadow:0 0 16px rgba(255,215,0,.4)}
+.btn-ok:active,.btn-cancel:active{transform:scale(.97)}
+
+/* ── FX LAYER ── */
+.fx-layer{position:fixed;inset:0;z-index:200;pointer-events:none;overflow:hidden}
+
+/* Floating numbers (+XP, +¥) */
+.fx-pop{
+  position:absolute;font-weight:900;font-size:20px;
+  font-family:"SF Mono","Menlo",monospace;letter-spacing:-.02em;
+  animation:pop-up 1.4s cubic-bezier(.2,.8,.4,1) forwards;
+  text-shadow:0 0 12px currentColor,0 2px 8px rgba(0,0,0,.5);
+}
+@keyframes pop-up{
+  0%{transform:translate(-50%,0) scale(.5);opacity:0}
+  15%{transform:translate(-50%,-10px) scale(1.2);opacity:1}
+  30%{transform:translate(-50%,-20px) scale(1)}
+  100%{transform:translate(-50%,-80px) scale(.9);opacity:0}
+}
+
+/* Coin shower */
+.coin{
+  position:absolute;width:24px;height:24px;border-radius:50%;
+  background:radial-gradient(circle at 35% 35%,#fff5b0,#ffd700 40%,#cc8800);
+  box-shadow:0 0 12px rgba(255,215,0,.8),inset 0 -2px 4px rgba(150,80,0,.5);
+  animation:coin-fall 1.6s cubic-bezier(.4,.2,.6,1) forwards;
+}
+.coin::after{content:'¥';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#aa6600;font-weight:900;font-size:13px}
+@keyframes coin-fall{
+  0%{transform:translateY(-30px) rotateY(0deg) scale(.5);opacity:0}
+  10%{opacity:1;transform:translateY(0) rotateY(180deg) scale(1)}
+  100%{transform:translateY(110vh) rotateY(1800deg) scale(.8);opacity:1}
+}
+
+/* Level-up flash */
+.lvup-overlay{
+  position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;
+  pointer-events:none;
+  background:radial-gradient(circle,rgba(255,215,0,.3),rgba(255,0,212,.2),transparent 70%);
+  opacity:0;animation:lvup-fade 2.2s ease-out forwards;
+}
+@keyframes lvup-fade{0%{opacity:0}15%{opacity:1}80%{opacity:1}100%{opacity:0}}
+.lvup-text{
+  font-size:48px;font-weight:900;letter-spacing:.1em;
+  background:linear-gradient(135deg,#00f0ff,#ffd700,#ff00d4);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  text-shadow:0 0 30px rgba(255,215,0,.6);
+  animation:lvup-pop 2.2s cubic-bezier(.2,1.5,.3,1) forwards;
+  text-align:center;line-height:1;
+}
+.lvup-text small{display:block;font-size:14px;color:#fff;margin-top:8px;letter-spacing:.3em;-webkit-text-fill-color:#fff}
+@keyframes lvup-pop{
+  0%{transform:scale(.3);opacity:0}
+  20%{transform:scale(1.3);opacity:1}
+  30%{transform:scale(1)}
+  85%{transform:scale(1);opacity:1}
+  100%{transform:scale(1.5);opacity:0}
+}
+
+/* Achievement toast */
+.ach-toast{
+  position:fixed;left:50%;bottom:calc(var(--safe-bot) + 100px);z-index:250;
+  transform:translateX(-50%) translateY(120%);
+  background:linear-gradient(135deg,rgba(255,215,0,.95),rgba(255,136,0,.95));
+  color:#0a0a14;padding:14px 20px;border-radius:14px;
+  display:flex;align-items:center;gap:12px;
+  box-shadow:0 8px 32px rgba(255,215,0,.5),0 0 24px rgba(255,215,0,.4);
+  animation:ach-toast 3.5s cubic-bezier(.2,1,.3,1) forwards;
+  max-width:90%;
+}
+@keyframes ach-toast{
+  0%{transform:translateX(-50%) translateY(120%)}
+  15%{transform:translateX(-50%) translateY(0)}
+  85%{transform:translateX(-50%) translateY(0)}
+  100%{transform:translateX(-50%) translateY(120%)}
+}
+.ach-toast-ico{font-size:28px;filter:drop-shadow(0 0 6px #fff)}
+.ach-toast-body{flex:1}
+.ach-toast-l{font-size:9px;font-weight:800;letter-spacing:.2em;opacity:.7}
+.ach-toast-n{font-size:14px;font-weight:900}
+
+/* Action ripple */
+.ripple{position:absolute;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.5),transparent 70%);pointer-events:none;animation:ripple .6s ease-out forwards}
+@keyframes ripple{from{transform:scale(0);opacity:1}to{transform:scale(4);opacity:0}}
+
+/* ── TOGGLE SWITCH ── */
+.toggle{position:relative;display:inline-block;width:46px;height:26px;cursor:pointer}
+.toggle input{display:none}
+.toggle-slider{
+  position:absolute;inset:0;border-radius:999px;
+  background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.1);
+  transition:.3s;
+}
+.toggle-slider::before{
+  content:'';position:absolute;top:2px;left:2px;
+  width:20px;height:20px;border-radius:50%;
+  background:#888;transition:.3s;
+}
+.toggle input:checked + .toggle-slider{
+  background:linear-gradient(135deg,#00f0ff,#00ff88);
+  border-color:transparent;
+  box-shadow:0 0 12px rgba(0,240,255,.5);
+}
+.toggle input:checked + .toggle-slider::before{transform:translateX(20px);background:#fff;box-shadow:0 0 6px rgba(255,255,255,.5)}
+
+/* ── TIME INPUT (settings) ── */
+.time-inp{
+  background:rgba(0,0,0,.4);border:1px solid var(--bdr);
+  color:var(--cy);font-family:"SF Mono","Menlo",monospace;font-size:14px;font-weight:700;
+  padding:6px 10px;border-radius:8px;-webkit-appearance:none;
+}
+.time-inp::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.5)}
+
+/* ── CUSTOM MISSION LIST ── */
+.cm-row{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.05)}
+.cm-row:last-child{border-bottom:none}
+.cm-body{flex:1;min-width:0}
+.cm-text{font-size:14px;font-weight:600;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cm-sub{font-size:11px;color:var(--tx2);margin-top:2px;font-family:"SF Mono","Menlo",monospace}
+.cm-del{font-size:14px;opacity:.6;padding:6px;border-radius:8px}
+.cm-del:active{background:rgba(255,51,102,.2);opacity:1}
+
+/* Select dropdown styling */
+select.inp{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%2300f0ff' d='M6 8L0 0h12z'/></svg>");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px}
+
+/* ── MORNING CARD ── */
+.morning-card{
+  margin-bottom:14px;
+  background:linear-gradient(135deg,rgba(0,240,255,.07) 0%,rgba(255,0,212,.05) 100%);
+  border:1px solid rgba(0,240,255,.28);
+  border-radius:18px;padding:20px 18px;
+  text-align:center;position:relative;overflow:hidden;
+}
+.morning-card::before{
+  content:'';position:absolute;inset:0;border-radius:18px;
+  background:radial-gradient(ellipse at 50% -10%,rgba(0,240,255,.12),transparent 60%);
+  pointer-events:none;
+}
+.morning-greeting{font-size:17px;font-weight:800;color:var(--tx);margin-bottom:10px;position:relative}
+.morning-quote{
+  font-size:13px;color:var(--tx2);line-height:1.7;margin-bottom:14px;
+  position:relative;font-style:italic;padding:0 10px;
+  border-left:2px solid rgba(0,240,255,.3);text-align:left;
+}
+.morning-yesterday{font-size:13px;color:var(--tx2);margin-bottom:10px;font-family:"SF Mono","Menlo",monospace;position:relative}
+.morning-yesterday span{color:var(--gd);font-weight:700}
+.morning-hint{font-size:10px;color:var(--tx3);letter-spacing:.12em;position:relative;animation:hint-pulse 2s ease-in-out infinite}
+@keyframes hint-pulse{0%,100%{opacity:.4}50%{opacity:1}}
+
+/* ── NOBUSHOP SYNC ── */
+.nb-sync{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 14px;margin-top:10px;border-radius:12px;
+  background:rgba(0,255,136,.06);border:1px solid rgba(0,255,136,.2);
+  font-size:11px;color:var(--gr);font-weight:600;letter-spacing:.04em;cursor:pointer;
+  position:relative;overflow:hidden;
+}
+.nb-sync:active{opacity:.7}
+.nb-dot{width:7px;height:7px;border-radius:50%;background:var(--gr);flex-shrink:0;box-shadow:0 0 6px var(--gr);animation:nb-pulse 2s ease-in-out infinite}
+@keyframes nb-pulse{0%,100%{opacity:.5;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
+.nb-sync-txt{flex:1}
+.nb-sync-sub{font-size:9px;color:var(--tx3);font-weight:400;letter-spacing:.02em;margin-top:1px}
+
+/* ── SETUP SCREEN ── */
+.setup{
+  position:absolute;inset:0;z-index:50;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:30px;text-align:center;background:var(--bg);
+}
+.setup-logo{
+  font-size:48px;font-weight:900;letter-spacing:.1em;
+  background:linear-gradient(135deg,#00f0ff,#ff00d4);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  margin-bottom:6px;
+}
+.setup-sub{font-size:11px;letter-spacing:.3em;color:var(--tx2);margin-bottom:40px;font-weight:600}
+.setup-msg{font-size:14px;color:var(--tx2);margin-bottom:30px;line-height:1.7;max-width:280px}
+.setup-btn{
+  padding:16px 40px;border-radius:14px;
+  background:linear-gradient(135deg,#00f0ff,#ff00d4);
+  color:#0a0a14;font-weight:800;font-size:15px;letter-spacing:.1em;
+  box-shadow:0 0 24px rgba(0,240,255,.5);
+}
+.setup-btn:active{transform:scale(.97)}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- Top header -->
+  <header class="top" id="top"></header>
+
+  <!-- Scrollable area -->
+  <div class="scroll">
+    <div id="screen-home" class="screen active"></div>
+    <div id="screen-stats" class="screen"></div>
+    <div id="screen-ach" class="screen"></div>
+    <div id="screen-set" class="screen"></div>
+  </div>
+
+  <!-- Bottom nav -->
+  <nav class="nav">
+    <button class="nav-btn active" data-tab="home"><div class="nav-ico">🏠</div><div class="nav-lbl">HOME</div></button>
+    <button class="nav-btn" data-tab="stats"><div class="nav-ico">📊</div><div class="nav-lbl">STATS</div></button>
+    <button class="nav-btn" data-tab="ach"><div class="nav-ico">🏆</div><div class="nav-lbl">AWARDS</div></button>
+    <button class="nav-btn" data-tab="set"><div class="nav-ico">⚙️</div><div class="nav-lbl">SETUP</div></button>
+  </nav>
+</div>
+
+<!-- Profit modal -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <div class="modal-title">💰 今日の利益を記録</div>
+    <div class="inp-wrap" style="margin-bottom:10px">
+      <div class="inp-l">利益 (¥)</div>
+      <input class="inp" id="m-profit-val" type="number" inputmode="numeric" placeholder="0" style="font-size:28px;text-align:center">
+    </div>
+    <div id="m-xp-preview" style="text-align:center;font-size:14px;font-weight:800;color:var(--cy);min-height:22px;margin-bottom:10px;font-family:'SF Mono','Menlo',monospace;text-shadow:0 0 8px rgba(0,240,255,.5)"></div>
+    <div style="font-size:11px;color:var(--tx3);text-align:center;margin-bottom:16px;line-height:1.7">
+      売上管理アプリで確認した利益額をそのまま入力<br>マイナスも記録できます
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn btn-cancel" id="m-cancel">キャンセル</button>
+      <button class="modal-btn btn-ok" id="m-save">記録する</button>
+    </div>
+  </div>
+</div>
+
+<!-- Custom Mission modal -->
+<div class="modal-bg" id="cm-modal">
+  <div class="modal">
+    <div class="modal-title">🎯 カスタムミッション追加</div>
+    <div class="inp-wrap" style="margin-bottom:12px">
+      <div class="inp-l">ミッション内容</div>
+      <input class="inp" id="cm-text" type="text" placeholder="例: 仕入れリサーチを5件" style="text-align:left;font-size:14px">
+    </div>
+    <div class="inp-wrap" style="margin-bottom:12px">
+      <div class="inp-l">種類</div>
+      <select class="inp" id="cm-type" style="text-align:left;font-size:14px">
+        <option value="list">📦 出品 (回数)</option>
+        <option value="ship">🚚 発送 (回数)</option>
+        <option value="buy">🛒 仕入れ (回数)</option>
+        <option value="sns">📱 SNS投稿 (回数)</option>
+        <option value="research">🔍 リサーチ (回数)</option>
+        <option value="sum">⚡ 合計アクション (回数)</option>
+        <option value="profit">💰 利益額 (¥)</option>
+      </select>
+    </div>
+    <div class="modal-grid">
+      <div class="inp-wrap">
+        <div class="inp-l">目標値</div>
+        <input class="inp" id="cm-target" type="number" inputmode="numeric" placeholder="例: 5">
+      </div>
+      <div class="inp-wrap">
+        <div class="inp-l">報酬 (XP)</div>
+        <input class="inp" id="cm-rew" type="number" inputmode="numeric" value="50">
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn btn-cancel" id="cm-cancel">キャンセル</button>
+      <button class="modal-btn btn-ok" id="cm-save">追加する</button>
+    </div>
+  </div>
+</div>
+
+<!-- Setup screen -->
+<div class="setup" id="setup" style="display:none">
+  <div class="setup-logo">GROWTH</div>
+  <div class="setup-sub">事業 RPG</div>
+  <div class="setup-msg">作業がそのまま経験値・資金になる。<br>レベルアップで強くなれ。<br>今日から、あなたの事業を冒険にしよう。</div>
+  <button class="setup-btn" id="setup-start">START</button>
+</div>
+
+<!-- Effects layer -->
+<div class="fx-layer" id="fx"></div>
+
+<script>
+/* ──────────────────────────────────────────
+   GROWTH ─ 事業RPG
+   ────────────────────────────────────────── */
+
+const LS = 'growth_v1';
+const ACTIONS = {
+  list:     {icon:'📦', name:'出品',    xp:10, color:'#00f0ff'},
+  ship:     {icon:'🚚', name:'発送',    xp:15, color:'#ff00d4'},
+  buy:      {icon:'🛒', name:'仕入れ',  xp:10, color:'#ffd700'},
+  sns:      {icon:'📱', name:'SNS投稿', xp:12, color:'#ff5588'},
+  research: {icon:'🔍', name:'リサーチ',xp:8,  color:'#00ff88'},
+};
+const ACT_KEYS = Object.keys(ACTIONS);
+
+const ACHIEVEMENTS = [
+  {id:'first_list',  ico:'📦', name:'初めての出品',   desc:'1回出品',    chk:s=>totalActs(s,'list')>=1},
+  {id:'first_ship',  ico:'🚚', name:'初めての発送',   desc:'1回発送',    chk:s=>totalActs(s,'ship')>=1},
+  {id:'first_buy',   ico:'🛒', name:'初めての仕入れ', desc:'1回仕入れ',  chk:s=>totalActs(s,'buy')>=1},
+  {id:'first_sns',   ico:'📱', name:'初めての投稿',   desc:'1回SNS',     chk:s=>totalActs(s,'sns')>=1},
+  {id:'first_rese',  ico:'🔍', name:'初めてのリサーチ', desc:'1回リサーチ', chk:s=>totalActs(s,'research')>=1},
+  {id:'first_profit',ico:'💰', name:'初利益',         desc:'利益を1回記録', chk:s=>s.totalRev>0||s.totalProfit>0},
+  {id:'lv5',         ico:'⭐', name:'レベル5',        desc:'Lv.5達成',   chk:s=>s.level>=5},
+  {id:'lv10',        ico:'🌟', name:'レベル10',       desc:'Lv.10達成',  chk:s=>s.level>=10},
+  {id:'lv20',        ico:'💫', name:'レベル20',       desc:'Lv.20達成',  chk:s=>s.level>=20},
+  {id:'lv50',        ico:'👑', name:'レベル50',       desc:'Lv.50達成',  chk:s=>s.level>=50},
+  {id:'p10k',        ico:'💴', name:'利益1万円',      desc:'累計¥10,000',chk:s=>s.totalProfit>=10000},
+  {id:'p100k',       ico:'💵', name:'利益10万円',     desc:'累計¥100,000',chk:s=>s.totalProfit>=100000},
+  {id:'p1m',         ico:'💎', name:'利益100万円',    desc:'累計¥1,000,000',chk:s=>s.totalProfit>=1000000},
+  {id:'p10m',        ico:'🏰', name:'利益1000万円',   desc:'累計¥10,000,000',chk:s=>s.totalProfit>=10000000},
+  {id:'streak3',     ico:'🔥', name:'3日連続',        desc:'3日連続作業',chk:s=>s.streakMax>=3},
+  {id:'streak7',     ico:'🔥', name:'1週間連続',      desc:'7日連続作業',chk:s=>s.streakMax>=7},
+  {id:'streak30',    ico:'🌋', name:'1ヶ月連続',      desc:'30日連続',  chk:s=>s.streakMax>=30},
+  {id:'streak100',   ico:'☄️', name:'100日連続',      desc:'100日連続', chk:s=>s.streakMax>=100},
+  {id:'all_acts',    ico:'🎯', name:'全アクション制覇', desc:'1日で5種類全部', chk:s=>Object.values(s.days||{}).some(d=>ACT_KEYS.every(k=>(d.acts?.[k]||0)>0))},
+  {id:'busy_day',    ico:'⚡', name:'多忙な1日',       desc:'1日に20アクション', chk:s=>Object.values(s.days||{}).some(d=>ACT_KEYS.reduce((a,k)=>a+(d.acts?.[k]||0),0)>=20)},
+  {id:'big_day',     ico:'🚀', name:'爆発の日',       desc:'1日で利益¥50,000', chk:s=>Object.values(s.days||{}).some(d=>(d.profit||0)>=50000)},
+  {id:'mission_5',   ico:'✅', name:'ミッションマスター', desc:'累計5ミッション達成', chk:s=>(s.missDone||0)>=5},
+  {id:'mission_30',  ico:'🎖️', name:'ミッション王',  desc:'累計30ミッション', chk:s=>(s.missDone||0)>=30},
+];
+
+const MISSION_POOL = [
+  {key:'list3',  text:'出品を3回する',      target:3, type:'act', act:'list', rew:50},
+  {key:'sns2',   text:'SNS投稿を2回',       target:2, type:'act', act:'sns',  rew:40},
+  {key:'buy1',   text:'仕入れを1回',         target:1, type:'act', act:'buy',  rew:30},
+  {key:'ship5',  text:'発送を5回',           target:5, type:'act', act:'ship', rew:60},
+  {key:'rese3',  text:'リサーチを3回',       target:3, type:'act', act:'research', rew:40},
+  {key:'all1',   text:'5種類のアクション全部', target:5, type:'all', rew:100},
+  {key:'p5k',    text:'利益¥5,000を記録',   target:5000, type:'profit', rew:80},
+  {key:'acts10', text:'1日10アクション',     target:10, type:'sum', rew:80},
+];
+
+let S = JSON.parse(localStorage.getItem(LS) || '{}');
+let tab = 'home';
+
+/* ── HELPERS ── */
+function save(){ localStorage.setItem(LS, JSON.stringify(S)); }
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function fmtY(n){ return '¥'+(n||0).toLocaleString('ja-JP'); }
+function fmtN(n){ return (n||0).toLocaleString('ja-JP'); }
+function xpForLevel(n){ return 50 * n * (n - 1); }
+function levelFromXP(xp){ let n=1; while(xpForLevel(n+1) <= xp) n++; return n; }
+function totalActs(s, key){ return Object.values(s.days||{}).reduce((a,d)=>a+(d.acts?.[key]||0),0); }
+function dayData(date){
+  S.days = S.days || {};
+  if(!S.days[date]) S.days[date] = {acts:{}, profit:0, rev:0, cost:0, fee:0, missions:null};
+  const d = S.days[date];
+  if(!d.acts) d.acts = {};
+  return d;
+}
+function pickMissions(date){
+  // Deterministic 3 missions per day based on date hash
+  let h = 0;
+  for(let i=0;i<date.length;i++){ h = (h*31 + date.charCodeAt(i)) >>> 0; }
+  const pool = MISSION_POOL.concat((S.customMissions||[]).map(c=>({...c,custom:true})));
+  const shuffled = pool.slice().sort(()=>{ h = (h*1103515245 + 12345) & 0x7fffffff; return (h%1000) - 500; });
+  return shuffled.slice(0, 3).map(m => ({...m, cur:0, done:false}));
+}
+function ensureToday(){
+  const t = todayStr();
+  const d = dayData(t);
+  if(!d.missions) d.missions = pickMissions(t);
+  // streak
+  if(!S.lastActive){
+    S.streak = 0; S.streakMax = 0;
+  } else if(S.lastActive !== t){
+    const prev = new Date(S.lastActive); prev.setDate(prev.getDate()+1);
+    const expected = prev.getFullYear()+'-'+String(prev.getMonth()+1).padStart(2,'0')+'-'+String(prev.getDate()).padStart(2,'0');
+    if(expected !== t) S.streak = 0;
+  }
+}
+
+function initState(){
+  S = {
+    startedAt: todayStr(),
+    xp: 0, level: 1,
+    totalProfit: 0, totalRev: 0, totalCost: 0, totalFee: 0,
+    streak: 0, streakMax: 0,
+    lastActive: null,
+    days: {},
+    log: [],
+    achs: [],
+    missDone: 0,
+    customMissions: [],
+    notif: {on:false, time:'09:00'},
+  };
+  ensureToday();
+  save();
+}
+
+/* ── XP / LEVEL ── */
+function addXP(amount, source){
+  const oldLv = S.level;
+  S.xp += amount;
+  const newLv = levelFromXP(S.xp);
+  S.level = newLv;
+  if(newLv > oldLv){
+    fxLevelUp(newLv);
+  }
+}
+
+/* ── ACTIONS ── */
+function doAction(key, e){
+  ensureToday();
+  const t = todayStr();
+  const d = dayData(t);
+  d.acts[key] = (d.acts[key]||0) + 1;
+  const cfg = ACTIONS[key];
+  addXP(cfg.xp, key);
+
+  // streak update
+  if(S.lastActive !== t){
+    if(S.lastActive){
+      const prev = new Date(S.lastActive); prev.setDate(prev.getDate()+1);
+      const expected = prev.getFullYear()+'-'+String(prev.getMonth()+1).padStart(2,'0')+'-'+String(prev.getDate()).padStart(2,'0');
+      S.streak = (expected === t) ? (S.streak||0)+1 : 1;
+    } else {
+      S.streak = 1;
+    }
+    S.streakMax = Math.max(S.streakMax||0, S.streak);
+    S.lastActive = t;
+  }
+
+  // log entry
+  pushLog({type:'act', key, xp:cfg.xp, ts:Date.now()});
+  // missions
+  updateMissions(t, 'act', {act:key});
+  // achievements
+  checkAchievements();
+  save();
+  // FX
+  if(e) fxRipple(e.currentTarget, cfg.color);
+  fxPop(`+${cfg.xp} XP`, cfg.color, e?.clientX, e?.clientY);
+  renderTop();
+  renderHome();
+}
+
+/* ── PROFIT MODAL ── */
+function openProfit(){
+  document.getElementById('m-profit-val').value = '';
+  document.getElementById('m-xp-preview').textContent = '';
+  document.getElementById('modal').classList.add('show');
+  setTimeout(()=>document.getElementById('m-profit-val').focus(), 300);
+}
+function closeProfit(){ document.getElementById('modal').classList.remove('show'); }
+function updateProfitPreview(){
+  const val = +document.getElementById('m-profit-val').value || 0;
+  const xpGain = val ? Math.max(5, Math.min(5000, Math.floor(Math.abs(val) * 0.01))) : 0;
+  const el = document.getElementById('m-xp-preview');
+  el.textContent = val ? `+${xpGain} XP 獲得` : '';
+  el.style.color = val < 0 ? 'var(--rd)' : 'var(--cy)';
+}
+function saveProfit(){
+  const profit = +document.getElementById('m-profit-val').value;
+  if(!profit){ closeProfit(); return; }
+  ensureToday();
+  const t = todayStr();
+  const d = dayData(t);
+  d.profit = (d.profit||0) + profit;
+  S.totalProfit = (S.totalProfit||0) + profit;
+
+  // XP gain: 1% of profit (min 5, max 5000)
+  const xpGain = Math.max(5, Math.min(5000, Math.floor(Math.abs(profit) * 0.01)));
+  addXP(xpGain, 'profit');
+
+  // streak
+  if(S.lastActive !== t){
+    if(S.lastActive){
+      const prev = new Date(S.lastActive); prev.setDate(prev.getDate()+1);
+      const expected = prev.getFullYear()+'-'+String(prev.getMonth()+1).padStart(2,'0')+'-'+String(prev.getDate()).padStart(2,'0');
+      S.streak = (expected === t) ? (S.streak||0)+1 : 1;
+    } else { S.streak = 1; }
+    S.streakMax = Math.max(S.streakMax||0, S.streak);
+    S.lastActive = t;
+  }
+
+  pushLog({type:'profit', amt:profit, xp:xpGain, ts:Date.now()});
+  updateMissions(t, 'profit', {amount:profit});
+  checkAchievements();
+  save();
+  closeProfit();
+
+  // Big celebration
+  if(profit > 0){
+    fxCoinShower(Math.min(40, Math.max(10, Math.floor(profit/500))));
+    fxBigProfit(profit);
+  } else {
+    fxPop(fmtY(profit), '#ff3366', window.innerWidth/2, window.innerHeight/2);
+  }
+  renderTop();
+  renderHome();
+}
+
+/* ── MISSIONS ── */
+function updateMissions(date, type, data){
+  const d = dayData(date);
+  if(!d.missions) d.missions = pickMissions(date);
+  d.missions.forEach(m => {
+    if(m.done) return;
+    let inc = 0;
+    if(type === 'act' && m.type === 'act' && m.act === data.act) inc = 1;
+    else if(type === 'act' && m.type === 'sum') inc = 1;
+    else if(type === 'act' && m.type === 'all'){
+      const acts = d.acts;
+      const kinds = ACT_KEYS.filter(k => (acts[k]||0) > 0).length;
+      m.cur = kinds; if(kinds >= m.target){ m.done = true; missionComplete(m); }
+      return;
+    } else if(type === 'profit' && m.type === 'profit' && data.amount > 0) inc = data.amount;
+    if(inc){
+      m.cur = Math.min(m.target, (m.cur||0) + inc);
+      if(m.cur >= m.target){ m.done = true; missionComplete(m); }
+    }
+  });
+}
+function missionComplete(m){
+  S.missDone = (S.missDone||0) + 1;
+  addXP(m.rew, 'mission');
+  setTimeout(()=>{
+    fxPop(`MISSION CLEAR +${m.rew}XP`, '#00ff88', window.innerWidth/2, window.innerHeight/2 + 40);
+  }, 300);
+}
+
+/* ── ACHIEVEMENTS ── */
+function checkAchievements(){
+  S.achs = S.achs || [];
+  ACHIEVEMENTS.forEach(a => {
+    if(!S.achs.includes(a.id) && a.chk(S)){
+      S.achs.push(a.id);
+      fxAchievement(a);
+    }
+  });
+}
+
+/* ── LOG ── */
+function pushLog(entry){
+  S.log = S.log || [];
+  S.log.unshift(entry);
+  if(S.log.length > 50) S.log = S.log.slice(0, 50);
+}
+
+/* ── FX ── */
+const fx = document.getElementById('fx');
+function fxPop(text, color, x, y){
+  const el = document.createElement('div');
+  el.className = 'fx-pop';
+  el.textContent = text;
+  el.style.color = color;
+  el.style.left = (x ?? window.innerWidth/2) + 'px';
+  el.style.top  = (y ?? window.innerHeight/2) + 'px';
+  fx.appendChild(el);
+  setTimeout(()=>el.remove(), 1400);
+}
+function fxRipple(target, color){
+  const r = target.getBoundingClientRect();
+  const el = document.createElement('div');
+  el.className = 'ripple';
+  const size = Math.max(r.width, r.height);
+  el.style.width = el.style.height = size + 'px';
+  el.style.left = (r.left + r.width/2 - size/2) + 'px';
+  el.style.top = (r.top + r.height/2 - size/2) + 'px';
+  el.style.background = `radial-gradient(circle,${color}88,transparent 70%)`;
+  fx.appendChild(el);
+  setTimeout(()=>el.remove(), 600);
+}
+function fxCoinShower(count){
+  for(let i=0;i<count;i++){
+    setTimeout(()=>{
+      const c = document.createElement('div');
+      c.className = 'coin';
+      c.style.left = (Math.random()*100) + 'vw';
+      c.style.animationDuration = (1.2 + Math.random()*1.2) + 's';
+      c.style.animationDelay = (Math.random()*.3) + 's';
+      fx.appendChild(c);
+      setTimeout(()=>c.remove(), 3000);
+    }, i*30);
+  }
+}
+function fxBigProfit(amount){
+  const el = document.createElement('div');
+  el.className = 'lvup-overlay';
+  el.innerHTML = `<div class="lvup-text">+${fmtY(amount)}<small>PROFIT GAINED</small></div>`;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(), 2400);
+  vibrate([20,30,40,30,80]);
+}
+function fxLevelUp(lv){
+  const el = document.createElement('div');
+  el.className = 'lvup-overlay';
+  el.innerHTML = `<div class="lvup-text">LEVEL ${lv}<small>LEVEL UP!</small></div>`;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(), 2400);
+  fxCoinShower(20);
+  vibrate([30,40,30,40,80]);
+}
+function fxAchievement(a){
+  const el = document.createElement('div');
+  el.className = 'ach-toast';
+  el.innerHTML = `<div class="ach-toast-ico">${a.ico}</div><div class="ach-toast-body"><div class="ach-toast-l">ACHIEVEMENT</div><div class="ach-toast-n">${a.name}</div></div>`;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(), 3700);
+  vibrate([40,50,40]);
+}
+function vibrate(p){ try{ navigator.vibrate?.(p); }catch(e){} }
+
+/* ── RENDER: TOP ── */
+function renderTop(){
+  const lv = S.level || 1;
+  const curBase = xpForLevel(lv);
+  const nextBase = xpForLevel(lv+1);
+  const into = S.xp - curBase;
+  const span = nextBase - curBase;
+  const pct = Math.min(100, Math.max(0, (into/span)*100));
+  const tStr = todayStr();
+  const todayProfit = (S.days?.[tStr]?.profit) || 0;
+  document.getElementById('top').innerHTML = `
+    <div class="top-row">
+      <div class="lv-wrap">
+        <div class="lv-badge">${lv}</div>
+        <div class="lv-info">
+          <div class="lv-label">LEVEL</div>
+          <div class="lv-text">Lv.${lv}</div>
+        </div>
+      </div>
+      <div class="streak">
+        <span class="streak-ico">🔥</span>
+        <span class="streak-n">${S.streak||0}</span>
+        <span class="streak-l">日連続</span>
+      </div>
+    </div>
+    <div class="xp-bar"><div class="xp-fill" style="width:${pct}%"></div></div>
+    <div class="xp-text"><span>XP ${fmtN(into)} / ${fmtN(span)}</span><span>NEXT Lv.${lv+1}</span></div>
+    <div class="profit-bar">
+      <div class="profit-left">
+        <div class="profit-label">TOTAL PROFIT</div>
+        <div class="profit-value">${fmtY(S.totalProfit||0)}</div>
+      </div>
+      <div class="profit-today">
+        <div class="profit-today-l">TODAY</div>
+        <div class="profit-today-v">${todayProfit>=0?'+':''}${fmtY(todayProfit)}</div>
+      </div>
+    </div>`;
+}
+
+/* ── QUOTES ── */
+const QUOTES = [
+  '今日の1アクションが、未来を変える',
+  '小さな積み上げが、大きな成果になる',
+  'ライバルは昨日の自分だけだ',
+  '動いた分だけ、必ず前に進む',
+  '出品は出口、仕入れは未来への投資',
+  'どんな日も、1回だけ出品できる',
+  '継続は最強の武器。今日も磨け',
+  'まず動く。考えるのは動いた後でいい',
+  '今日のリサーチが、明日の利益になる',
+  '誰も見てなくても、積み上げは消えない',
+  '利益は結果、アクションが原因',
+  '稼ぎたいなら、まず手を動かせ',
+  '休んだ昨日より、動く今日が強い',
+  '1日1出品。それだけで変わる',
+  '迷ったら出品。答えは市場が教えてくれる',
+];
+
+function morningCard(){
+  const t = todayStr();
+  const d = dayData(t);
+  const totalToday = ACT_KEYS.reduce((a,k)=>a+(d.acts?.[k]||0),0);
+  if(totalToday > 0) return '';
+
+  const hour = new Date().getHours();
+  const greeting = hour < 10 ? '☀️ おはよう' : hour < 17 ? '⚡ こんにちは' : '🌙 今日まだ動いてないよ';
+
+  // Yesterday
+  const yDate = new Date(); yDate.setDate(yDate.getDate()-1);
+  const yKey = yDate.getFullYear()+'-'+String(yDate.getMonth()+1).padStart(2,'0')+'-'+String(yDate.getDate()).padStart(2,'0');
+  const yd = S.days?.[yKey];
+  const yActs = yd ? ACT_KEYS.reduce((a,k)=>a+(yd.acts?.[k]||0),0) : 0;
+  const yProfit = yd?.profit || 0;
+  let yLine = '';
+  if(yActs > 0){
+    yLine = `昨日: <span>${yActs}アクション</span>${yProfit > 0 ? ` · <span>+${fmtY(yProfit)}</span>` : ''}`;
+  } else if(S.streak > 0){
+    yLine = `🔥 <span>${S.streak}日連続</span> 継続中！`;
+  } else {
+    yLine = '<span>今日から連続記録を狙え</span>';
+  }
+
+  // Quote by date
+  let h = 0;
+  for(let i=0;i<t.length;i++) h = (h*31+t.charCodeAt(i))>>>0;
+  const quote = QUOTES[h % QUOTES.length];
+
+  return `<div class="morning-card">
+    <div class="morning-greeting">${greeting}、<span style="color:var(--gd)">Lv.${S.level}</span> の勇者</div>
+    <div class="morning-quote">"${quote}"</div>
+    <div class="morning-yesterday">${yLine}</div>
+    <div class="morning-hint">↓ 今日のミッションを確認して最初のアクションへ ↓</div>
+  </div>`;
+}
+
+/* ── RENDER: HOME ── */
+function renderHome(){
+  const t = todayStr();
+  const d = dayData(t);
+  if(!d.missions) d.missions = pickMissions(t);
+
+  const missHTML = d.missions.map(m => {
+    const pct = Math.min(100, (m.cur/m.target)*100);
+    const progText = m.type === 'profit'
+      ? `${fmtY(m.cur)} / ${fmtY(m.target)}`
+      : `${m.cur} / ${m.target}`;
+    return `<div class="miss-row ${m.done?'done':''}">
+      <div class="miss-chk"></div>
+      <div class="miss-body">
+        <div class="miss-text">${m.text}</div>
+        <div class="miss-prog">${progText} (${Math.floor(pct)}%)</div>
+      </div>
+      <div class="miss-rew">+${m.rew}XP</div>
+    </div>`;
+  }).join('');
+
+  const actHTML = ACT_KEYS.map(k => {
+    const a = ACTIONS[k];
+    const cnt = d.acts[k] || 0;
+    return `<button class="act-btn" data-act="${k}">
+      ${cnt>0?`<div class="act-cnt">${cnt}</div>`:''}
+      <div class="act-ico">${a.icon}</div>
+      <div class="act-name">${a.name}</div>
+      <div class="act-xp">+${a.xp}XP</div>
+    </button>`;
+  }).join('');
+
+  const log = (S.log||[]).slice(0, 8);
+  const logHTML = log.length === 0
+    ? `<div class="log-empty">まだ記録がありません<br>アクションをタップしてスタート 🚀</div>`
+    : log.map(e => {
+        const ago = timeAgo(e.ts);
+        if(e.type === 'act'){
+          const a = ACTIONS[e.key];
+          return `<div class="log-row">
+            <div class="log-ico" style="color:${a.color}">${a.icon}</div>
+            <div class="log-text">${a.name} ・ ${ago}</div>
+            <div class="log-amt xp">+${e.xp}XP</div>
+          </div>`;
+        } else if(e.type === 'profit'){
+          return `<div class="log-row">
+            <div class="log-ico" style="color:#ffd700">💰</div>
+            <div class="log-text">利益記録 ・ ${ago}</div>
+            <div class="log-amt ${e.amt<0?'neg':''}">${e.amt>=0?'+':''}${fmtY(e.amt)}</div>
+          </div>`;
+        }
+        return '';
+      }).join('');
+
+  const nbAvailable = isNobushopAvailable();
+  const nbPending = getNobushopPendingCount();
+  const nbHTML = nbAvailable
+    ? `<div class="nb-sync" id="nb-sync-btn">
+        <span class="nb-dot"></span>
+        <div class="nb-sync-txt">
+          <div>下書き管理アプリと連携中</div>
+          <div class="nb-sync-sub">${nbPending > 0 ? `⚡ 未反映の売上が${nbPending}件あります。タップして同期` : '✓ 今日の売上は反映済み'}</div>
+        </div>
+        <span style="font-size:11px;color:var(--tx3)">›</span>
+      </div>`
+    : '';
+
+  document.getElementById('screen-home').innerHTML = `
+    ${morningCard()}
+    <div class="sec-lbl">今日のミッション</div>
+    <div class="card miss-card">${missHTML}</div>
+
+    <div class="sec-lbl">アクション</div>
+    <div class="act-grid">${actHTML}</div>
+
+    <button class="profit-btn" id="profit-btn">💰 利益を手入力する</button>
+    ${nbHTML}
+
+    <div class="sec-lbl">最近のアクティビティ</div>
+    <div class="card">${logHTML}</div>
+  `;
+}
+
+function timeAgo(ts){
+  const s = Math.floor((Date.now()-ts)/1000);
+  if(s<60) return 'たった今';
+  if(s<3600) return Math.floor(s/60)+'分前';
+  if(s<86400) return Math.floor(s/3600)+'時間前';
+  return Math.floor(s/86400)+'日前';
+}
+
+/* ── RENDER: STATS ── */
+function renderStats(){
+  const totalActs = ACT_KEYS.reduce((a,k)=>a+totalActsOf(k),0);
+  const days = Object.keys(S.days||{}).length;
+  const bestDay = Math.max(0, ...Object.values(S.days||{}).map(d=>d.profit||0));
+  const now = new Date();
+  const mPrefix = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const thisMonth = Object.entries(S.days||{}).filter(([k])=>k.startsWith(mPrefix)).reduce((a,[,d])=>a+(d.profit||0),0);
+
+  const actStats = ACT_KEYS.map(k=>{
+    const a = ACTIONS[k];
+    return `<div class="log-row">
+      <div class="log-ico" style="color:${a.color}">${a.icon}</div>
+      <div class="log-text">${a.name}</div>
+      <div class="log-amt xp" style="color:${a.color}">${totalActsOf(k)} 回</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('screen-stats').innerHTML = `
+    <div class="sec-lbl">利益サマリ</div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-l">TOTAL PROFIT</div><div class="stat-v gd">${fmtY(S.totalProfit||0)}</div></div>
+      <div class="stat-box"><div class="stat-l">THIS MONTH</div><div class="stat-v cy">${fmtY(thisMonth)}</div></div>
+      <div class="stat-box"><div class="stat-l">BEST DAY</div><div class="stat-v mg">${fmtY(bestDay)}</div></div>
+      <div class="stat-box"><div class="stat-l">DAYS ACTIVE</div><div class="stat-v gr">${days}</div></div>
+    </div>
+
+    <div class="sec-lbl">利益推移 (直近30日)</div>
+    <div class="card">${renderChart()}</div>
+
+    <div class="sec-lbl">アクション統計</div>
+    <div class="card">${actStats}<div class="log-row" style="border-top:1px solid rgba(255,255,255,.06);border-bottom:none;margin-top:6px;padding-top:12px"><div class="log-ico" style="color:#fff">∑</div><div class="log-text">合計</div><div class="log-amt xp">${totalActs} 回</div></div></div>
+
+    <div class="sec-lbl">レコード</div>
+    <div class="stat-grid">
+      <div class="stat-box"><div class="stat-l">CURRENT XP</div><div class="stat-v cy">${fmtN(S.xp||0)}</div></div>
+      <div class="stat-box"><div class="stat-l">MAX STREAK</div><div class="stat-v gd">${S.streakMax||0} 日</div></div>
+      <div class="stat-box"><div class="stat-l">MISSIONS DONE</div><div class="stat-v gr">${S.missDone||0}</div></div>
+      <div class="stat-box"><div class="stat-l">AWARDS</div><div class="stat-v mg">${(S.achs||[]).length} / ${ACHIEVEMENTS.length}</div></div>
+    </div>
+  `;
+}
+function totalActsOf(k){ return Object.values(S.days||{}).reduce((a,d)=>a+(d.acts?.[k]||0),0); }
+
+function renderChart(){
+  const days = [];
+  for(let i=29;i>=0;i--){
+    const d = new Date(); d.setDate(d.getDate()-i);
+    const key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    days.push({key, profit:(S.days?.[key]?.profit)||0, label:(d.getMonth()+1)+'/'+d.getDate()});
+  }
+  const maxP = Math.max(1, ...days.map(d=>Math.abs(d.profit)));
+  if(maxP <= 1) return '<div class="chart-empty">まだデータがありません</div>';
+  const w = 320, h = 160, pad = 24;
+  const bw = (w - pad*2) / days.length;
+  const bars = days.map((d,i)=>{
+    const x = pad + i*bw;
+    const bh = Math.abs(d.profit)/maxP * (h - pad*2);
+    const y = h - pad - bh;
+    const isPos = d.profit >= 0;
+    return `<rect x="${x+1}" y="${y}" width="${bw-2}" height="${bh}" rx="2" fill="url(#${isPos?'gp':'gn'})" opacity="${d.profit?1:.1}"/>`;
+  }).join('');
+  const lblIdx = [0,7,14,21,29];
+  const lbls = lblIdx.map(i=>{
+    const x = pad + i*bw + bw/2;
+    return `<text x="${x}" y="${h-6}" text-anchor="middle" fill="#5a5a6e" font-size="9" font-family="SF Mono,Menlo,monospace">${days[i].label}</text>`;
+  }).join('');
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}">
+    <defs>
+      <linearGradient id="gp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffd700"/><stop offset="1" stop-color="#ff8800"/></linearGradient>
+      <linearGradient id="gn" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff3366"/><stop offset="1" stop-color="#aa1133"/></linearGradient>
+    </defs>
+    ${bars}
+    ${lbls}
+  </svg>`;
+}
+
+/* ── RENDER: ACHIEVEMENTS ── */
+function renderAch(){
+  S.achs = S.achs || [];
+  const unCount = S.achs.length;
+  const total = ACHIEVEMENTS.length;
+  const items = ACHIEVEMENTS.map(a=>{
+    const un = S.achs.includes(a.id);
+    return `<div class="ach-card ${un?'un':''}">
+      <div class="ach-ico">${a.ico}</div>
+      <div class="ach-name">${a.name}</div>
+      <div class="ach-desc">${a.desc}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('screen-ach').innerHTML = `
+    <div class="sec-lbl">アンロック ${unCount} / ${total}</div>
+    <div class="ach-grid">${items}</div>
+  `;
+}
+
+/* ── RENDER: SETTINGS ── */
+function renderSet(){
+  S.notif = S.notif || {on:false, time:'09:00'};
+  S.customMissions = S.customMissions || [];
+  const cmHTML = S.customMissions.length === 0
+    ? `<div class="log-empty" style="padding:18px 10px">カスタムミッション未登録<br>「＋ 追加」から作成</div>`
+    : S.customMissions.map((m,i)=>{
+        const typeLabel = m.type === 'profit' ? `利益 ${fmtY(m.target)}`
+          : m.type === 'sum' ? `合計 ${m.target} アクション`
+          : m.type === 'all' ? `5種類のアクション ${m.target}個`
+          : `${ACTIONS[m.act]?.name||m.act} ${m.target} 回`;
+        return `<div class="cm-row">
+          <div class="cm-body">
+            <div class="cm-text">${escapeHTML(m.text)}</div>
+            <div class="cm-sub">${typeLabel} ・ +${m.rew}XP</div>
+          </div>
+          <button class="cm-del" data-cm-del="${i}">🗑️</button>
+        </div>`;
+      }).join('');
+
+  document.getElementById('screen-set').innerHTML = `
+    <div class="sec-lbl">通知</div>
+    <div class="set-row"><span>毎日リマインダー</span>
+      <label class="toggle"><input type="checkbox" id="notif-on" ${S.notif.on?'checked':''}><span class="toggle-slider"></span></label>
+    </div>
+    <div class="set-row"><span>通知時刻</span>
+      <input type="time" id="notif-time" value="${S.notif.time}" class="time-inp">
+    </div>
+    <div style="font-size:11px;color:var(--tx3);padding:4px 14px 8px;line-height:1.5">指定時刻にその日まだアクションが無ければブラウザ通知。<br>初回ON時にブラウザの通知許可が必要。</div>
+
+    <div class="sec-lbl">カスタムミッション</div>
+    <div class="card" style="padding:8px 0">${cmHTML}</div>
+    <button class="set-row" id="cm-add-btn" style="width:100%;display:flex;justify-content:center;color:var(--cy);font-weight:700;margin-top:10px"><span>＋ ミッションを追加</span></button>
+
+    <div class="sec-lbl">アプリ情報</div>
+    <div class="set-row"><span>バージョン</span><span style="color:var(--tx2);font-family:SF Mono,Menlo,monospace;font-size:12px">v1.1.0</span></div>
+    <div class="set-row"><span>開始日</span><span style="color:var(--tx2);font-family:SF Mono,Menlo,monospace;font-size:12px">${S.startedAt||'-'}</span></div>
+    <div class="set-row"><span>累計XP</span><span style="color:#00f0ff;font-family:SF Mono,Menlo,monospace;font-size:13px;font-weight:700">${fmtN(S.xp||0)}</span></div>
+
+    <div class="sec-lbl">データ</div>
+    <button class="set-row" id="export-btn" style="width:100%;display:flex"><span>📤 データをエクスポート (JSON)</span><span style="color:#8a8a9e">›</span></button>
+    <button class="set-row" id="import-btn" style="width:100%;display:flex"><span>📥 データをインポート (JSON)</span><span style="color:#8a8a9e">›</span></button>
+    <input type="file" id="import-file" accept="application/json,.json" style="display:none">
+    <button class="danger-btn" id="reset-btn">⚠️ すべてのデータをリセット</button>
+  `;
+  document.getElementById('export-btn').addEventListener('click', exportData);
+  document.getElementById('import-btn').addEventListener('click', ()=>document.getElementById('import-file').click());
+  document.getElementById('import-file').addEventListener('change', importData);
+  document.getElementById('reset-btn').addEventListener('click', ()=>{
+    if(confirm('すべてのデータをリセットしますか?\nこの操作は元に戻せません。')){
+      localStorage.removeItem(LS);
+      initState();
+      renderAll();
+    }
+  });
+  document.getElementById('notif-on').addEventListener('change', ev=>{
+    if(ev.target.checked){
+      requestNotifPerm().then(ok=>{
+        S.notif.on = ok;
+        if(!ok) ev.target.checked = false;
+        save(); scheduleNotif();
+      });
+    } else { S.notif.on = false; save(); scheduleNotif(); }
+  });
+  document.getElementById('notif-time').addEventListener('change', ev=>{
+    S.notif.time = ev.target.value || '09:00';
+    save(); scheduleNotif();
+  });
+  document.getElementById('cm-add-btn').addEventListener('click', openCMModal);
+  document.querySelectorAll('[data-cm-del]').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      const i = +b.dataset.cmDel;
+      if(confirm('このミッションを削除しますか?')){
+        S.customMissions.splice(i,1); save(); renderSet();
+      }
+    });
+  });
+}
+function escapeHTML(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function exportData(){
+  const blob = new Blob([JSON.stringify(S,null,2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `growth_backup_${todayStr()}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+function importData(ev){
+  const file = ev.target.files?.[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try{
+      const data = JSON.parse(e.target.result);
+      if(typeof data !== 'object' || !data.startedAt) throw new Error('不正なフォーマット');
+      if(!confirm('現在のデータを上書きしてインポートしますか?\nこの操作は元に戻せません。')) return;
+      S = data;
+      save();
+      ensureToday();
+      renderAll();
+      renderSet();
+      fxPop('✓ インポート完了', '#00ff88', window.innerWidth/2, window.innerHeight/2);
+    } catch(err){
+      alert('インポート失敗: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  ev.target.value = '';
+}
+
+/* ── CUSTOM MISSION MODAL ── */
+function openCMModal(){
+  document.getElementById('cm-text').value = '';
+  document.getElementById('cm-target').value = '';
+  document.getElementById('cm-rew').value = '50';
+  document.getElementById('cm-type').value = 'list';
+  document.getElementById('cm-modal').classList.add('show');
+  setTimeout(()=>document.getElementById('cm-text').focus(), 300);
+}
+function closeCMModal(){ document.getElementById('cm-modal').classList.remove('show'); }
+function saveCM(){
+  const text = document.getElementById('cm-text').value.trim();
+  const target = +document.getElementById('cm-target').value || 0;
+  const rew = +document.getElementById('cm-rew').value || 0;
+  const sel = document.getElementById('cm-type').value;
+  if(!text || !target || !rew){ alert('全項目を入力してください'); return; }
+  let mission;
+  if(sel === 'profit') mission = {key:'cm'+Date.now(), text, type:'profit', target, rew};
+  else if(sel === 'sum') mission = {key:'cm'+Date.now(), text, type:'sum', target, rew};
+  else mission = {key:'cm'+Date.now(), text, type:'act', act:sel, target, rew};
+  S.customMissions = S.customMissions || [];
+  S.customMissions.push(mission);
+  save(); closeCMModal(); renderSet();
+  fxPop('✓ 追加完了', '#00ff88', window.innerWidth/2, window.innerHeight/2);
+}
+
+/* ── NOTIFICATIONS ── */
+let notifTimer = null;
+function requestNotifPerm(){
+  if(!('Notification' in window)) return Promise.resolve(false);
+  if(Notification.permission === 'granted') return Promise.resolve(true);
+  if(Notification.permission === 'denied'){
+    alert('通知が拒否されています。ブラウザ設定から許可してください。');
+    return Promise.resolve(false);
+  }
+  return Notification.requestPermission().then(p => p === 'granted');
+}
+function scheduleNotif(){
+  if(notifTimer){ clearTimeout(notifTimer); notifTimer = null; }
+  if(!S.notif?.on) return;
+  if(!('Notification' in window) || Notification.permission !== 'granted') return;
+  const [hh, mm] = (S.notif.time||'09:00').split(':').map(n=>+n);
+  const now = new Date();
+  const target = new Date();
+  target.setHours(hh, mm, 0, 0);
+  if(target <= now) target.setDate(target.getDate()+1);
+  const delay = target - now;
+  notifTimer = setTimeout(()=>{
+    fireNotifCheck();
+    scheduleNotif();
+  }, delay);
+}
+function fireNotifCheck(){
+  const t = todayStr();
+  const d = S.days?.[t];
+  const totalToday = d ? ACT_KEYS.reduce((a,k)=>a+(d.acts?.[k]||0),0) + (d.profit?1:0) : 0;
+  if(totalToday > 0) return;
+  try{
+    new Notification('GROWTH ⚔️ 今日の冒険まだ?', {
+      body: `Lv.${S.level||1} ・ 連続${S.streak||0}日 ・ 累計${fmtY(S.totalProfit||0)}\nアクションでXPを稼ごう!`,
+      icon: '/icon.svg',
+      tag: 'growth-daily'
+    });
+  } catch(e){}
+}
+
+/* ── NOBUSHOP SYNC ── */
+function isNobushopAvailable(){
+  try{ return !!localStorage.getItem('nobushop_data'); }catch(e){ return false; }
+}
+
+function syncFromNobushop(){
+  if(!isNobushopAvailable()) return {count:0, profit:0};
+  try{
+    const raw = localStorage.getItem('nobushop_data');
+    const data = JSON.parse(raw);
+    const sales = data.sales || [];
+    S.nobushopSynced = S.nobushopSynced || {};
+    const t = todayStr();
+    let newProfit = 0, newCount = 0;
+    for(const sale of sales){
+      if(!sale.saleDate || !sale.saleDate.startsWith(t)) continue;
+      if(S.nobushopSynced[sale.id]) continue;
+      const profit = sale.profit || 0;
+      S.nobushopSynced[sale.id] = true;
+      newProfit += profit;
+      newCount++;
+    }
+    if(newCount > 0){
+      ensureToday();
+      const d = dayData(t);
+      d.profit = (d.profit||0) + newProfit;
+      S.totalProfit = (S.totalProfit||0) + newProfit;
+      const xpGain = Math.max(5, Math.min(5000, Math.floor(Math.abs(newProfit)*0.01)));
+      addXP(xpGain, 'profit');
+      if(S.lastActive !== t){
+        if(S.lastActive){
+          const prev = new Date(S.lastActive); prev.setDate(prev.getDate()+1);
+          const exp = prev.getFullYear()+'-'+String(prev.getMonth()+1).padStart(2,'0')+'-'+String(prev.getDate()).padStart(2,'0');
+          S.streak = (exp===t)?(S.streak||0)+1:1;
+        } else { S.streak=1; }
+        S.streakMax = Math.max(S.streakMax||0, S.streak);
+        S.lastActive = t;
+      }
+      pushLog({type:'profit', amt:newProfit, xp:xpGain, ts:Date.now(), source:'nobushop'});
+      updateMissions(t, 'profit', {amount:newProfit});
+      checkAchievements();
+      save();
+    }
+    return {count:newCount, profit:newProfit};
+  } catch(e){
+    console.warn('[nobushop sync]', e);
+    return {count:0, profit:0};
+  }
+}
+
+// 今日の nobushop 未同期売上件数を返す（同期済みは除く）
+function getNobushopPendingCount(){
+  if(!isNobushopAvailable()) return 0;
+  try{
+    const raw = localStorage.getItem('nobushop_data');
+    const data = JSON.parse(raw);
+    const t = todayStr();
+    const synced = S.nobushopSynced || {};
+    return (data.sales||[]).filter(s=>s.saleDate?.startsWith(t) && !synced[s.id] && (s.profit||0)!==0).length;
+  } catch(e){ return 0; }
+}
+
+/* ── ROUTER ── */
+function showTab(t){
+  tab = t;
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('screen-'+t).classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
+  if(t==='home'){
+    const sync = syncFromNobushop();
+    renderHome();
+    if(sync.count > 0){
+      renderTop();
+      setTimeout(()=>{
+        fxPop(`📥 nobushop ${sync.count}件 +${fmtY(sync.profit)}`, '#00ff88', window.innerWidth/2, window.innerHeight*.4);
+        if(sync.profit > 0) fxCoinShower(Math.min(15, Math.max(5, Math.floor(sync.profit/1000))));
+      }, 200);
+    }
+  }
+  else if(t==='stats') renderStats();
+  else if(t==='ach') renderAch();
+  else if(t==='set') renderSet();
+}
+
+function renderAll(){
+  renderTop();
+  renderHome();
+}
+
+/* ── EVENTS ── */
+document.querySelectorAll('.nav-btn').forEach(b=>{
+  b.addEventListener('click', ()=>showTab(b.dataset.tab));
+});
+
+document.getElementById('screen-home').addEventListener('click', ev=>{
+  const btn = ev.target.closest('.act-btn');
+  if(btn){ doAction(btn.dataset.act, ev); return; }
+  if(ev.target.closest('#profit-btn')){ openProfit(); return; }
+  if(ev.target.closest('#nb-sync-btn')){
+    const sync = syncFromNobushop();
+    renderTop(); renderHome();
+    if(sync.count > 0){
+      fxPop(`📥 ${sync.count}件 +${fmtY(sync.profit)}`, '#00ff88', window.innerWidth/2, window.innerHeight*.4);
+      if(sync.profit > 0) fxCoinShower(Math.min(20, Math.max(5, Math.floor(sync.profit/1000))));
+    } else {
+      fxPop('✓ 最新です', '#00ff88', window.innerWidth/2, window.innerHeight*.4);
+    }
+    return;
+  }
+});
+
+document.getElementById('m-cancel').addEventListener('click', closeProfit);
+document.getElementById('m-save').addEventListener('click', saveProfit);
+document.getElementById('modal').addEventListener('click', ev=>{
+  if(ev.target.id === 'modal') closeProfit();
+});
+document.getElementById('m-profit-val').addEventListener('input', updateProfitPreview);
+
+document.getElementById('cm-cancel').addEventListener('click', closeCMModal);
+document.getElementById('cm-save').addEventListener('click', saveCM);
+document.getElementById('cm-modal').addEventListener('click', ev=>{
+  if(ev.target.id === 'cm-modal') closeCMModal();
+});
+
+document.getElementById('setup-start').addEventListener('click', ()=>{
+  initState();
+  document.getElementById('setup').style.display = 'none';
+  renderAll();
+});
+
+/* ── BOOT ── */
+function boot(){
+  if(!S || !S.startedAt){
+    document.getElementById('setup').style.display = 'flex';
+  } else {
+    S.customMissions = S.customMissions || [];
+    S.notif = S.notif || {on:false, time:'09:00'};
+    ensureToday();
+    const sync = syncFromNobushop();
+    renderAll();
+    if(sync.count > 0){
+      setTimeout(()=>{
+        fxPop(`📥 nobushop ${sync.count}件 +${fmtY(sync.profit)}`, '#00ff88', window.innerWidth/2, window.innerHeight*.4);
+        if(sync.profit > 0) fxCoinShower(Math.min(20, Math.max(5, Math.floor(sync.profit/1000))));
+      }, 600);
+    }
+    scheduleNotif();
+  }
+}
+// Auto-sync when app becomes visible again
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible' && S?.startedAt && tab==='home'){
+    const sync = syncFromNobushop();
+    if(sync.count > 0){ renderTop(); renderHome(); }
+  }
+});
+boot();
+</script>
+</body>
+</html>

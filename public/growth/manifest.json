@@ -1,0 +1,11 @@
+{
+  "name": "GROWTH - 事業RPG",
+  "short_name": "GROWTH",
+  "start_url": "/growth/",
+  "display": "standalone",
+  "background_color": "#0a0a14",
+  "theme_color": "#00f0ff",
+  "icons": [
+    {"src": "/growth/icon.svg", "sizes": "any", "type": "image/svg+xml"}
+  ]
+}
