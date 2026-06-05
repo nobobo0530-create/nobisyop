@@ -5602,10 +5602,10 @@ const InventoryTab = () => {
                     仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます。
                   </div>
                   {/* 分割数選択 */}
-                  <div style={{display:'flex',gap:6,marginBottom:12}}>
-                    {[2,3,4].map(n => (
+                  <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+                    {[2,3,4,5,6,7,8,9,10].map(n => (
                       <button key={n} onClick={() => { setSplitCount(n); setSplitItems(initItems(n)); }}
-                        style={{flex:1,padding:'7px 0',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
+                        style={{flex:'0 0 auto',minWidth:44,padding:'7px 10px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
                           background:splitCount===n?'#1e293b':'#f1f5f9',color:splitCount===n?'white':'#555',
                           WebkitTapHighlightColor:'transparent'}}>
                         {n}件
@@ -5669,18 +5669,24 @@ const InventoryTab = () => {
                       const newDeletedIds = { ...(data.settings?._deletedIds || {}), [selected.id]: nowTs };
                       const newInventory = data.inventory.filter(i => i.id !== selected.id).concat(newItems);
                       setData({ ...data, inventory: newInventory, settings: { ...data.settings, _deletedIds: newDeletedIds } });
-                      // ★ トゥームストーンを即座にlocalStorageへ同期書き込み
+                      // ★ 分割データ全体を即座にlocalStorageへ同期書き込み
                       // saveData は setTimeout(0) で非同期のため、アプリを即座に閉じると保存されない場合がある。
-                      // 分割元IDのトゥームストーンだけでも即時保存することで、Supabase不通+アプリ終了の組み合わせ時に
-                      // 再起動後クラウドから元アイテムが復元されるのを防ぐ。
+                      // トゥームストーンだけでなく新しい分割アイテムも含めて全状態を即時保存することで
+                      // Supabase不通+アプリ終了の組み合わせ時でも分割結果が消えないようにする。
                       try {
                         const _raw = localStorage.getItem('nobushop_data');
-                        if (_raw) {
-                          const _stored = JSON.parse(_raw);
-                          if (!_stored.settings) _stored.settings = {};
-                          _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [selected.id]: nowTs };
-                          localStorage.setItem('nobushop_data', JSON.stringify(_stored));
-                        }
+                        const _stored = _raw ? JSON.parse(_raw) : {};
+                        const _cu = _stored.currentUser || 'self';
+                        // 他ユーザーの在庫は保持、現ユーザーは分割後の新アイテムに置き換え
+                        const _otherInv = (_stored.inventory || []).filter(i => (i.userId || 'self') !== _cu);
+                        const _strippedNew = newInventory.map(item => ({
+                          ...item,
+                          photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
+                        }));
+                        if (!_stored.settings) _stored.settings = {};
+                        _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [selected.id]: nowTs };
+                        _stored.inventory = [..._otherInv, ..._strippedNew];
+                        localStorage.setItem('nobushop_data', JSON.stringify(_stored));
                       } catch(_e) {}
                       setSplitMode(false);
                       setSplitItems([]);
