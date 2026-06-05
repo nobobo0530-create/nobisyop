@@ -5669,6 +5669,19 @@ const InventoryTab = () => {
                       const newDeletedIds = { ...(data.settings?._deletedIds || {}), [selected.id]: nowTs };
                       const newInventory = data.inventory.filter(i => i.id !== selected.id).concat(newItems);
                       setData({ ...data, inventory: newInventory, settings: { ...data.settings, _deletedIds: newDeletedIds } });
+                      // ★ トゥームストーンを即座にlocalStorageへ同期書き込み
+                      // saveData は setTimeout(0) で非同期のため、アプリを即座に閉じると保存されない場合がある。
+                      // 分割元IDのトゥームストーンだけでも即時保存することで、Supabase不通+アプリ終了の組み合わせ時に
+                      // 再起動後クラウドから元アイテムが復元されるのを防ぐ。
+                      try {
+                        const _raw = localStorage.getItem('nobushop_data');
+                        if (_raw) {
+                          const _stored = JSON.parse(_raw);
+                          if (!_stored.settings) _stored.settings = {};
+                          _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [selected.id]: nowTs };
+                          localStorage.setItem('nobushop_data', JSON.stringify(_stored));
+                        }
+                      } catch(_e) {}
                       setSplitMode(false);
                       setSplitItems([]);
                       setSelected(null);
