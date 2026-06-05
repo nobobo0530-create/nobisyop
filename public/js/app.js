@@ -4879,7 +4879,7 @@ const InventoryTab = () => {
   // その間にスクロールが実行されて「未出品の下の方に飛ぶ」バグが起きる。
   // useState の初期化関数はマウント時に1回だけ実行され、最初のレンダリングから正しいタブが表示される。
   const [filter, setFilter] = React.useState(() => pendingInventoryFilter || 'unlisted');
-  const [sort, setSort]     = React.useState('old');  // 古い順がデフォルト（滞留把握）
+  const [sort, setSort]     = React.useState('new');  // 新しい順がデフォルト（最新登録を上に）
   const [search, setSearch] = React.useState('');
   const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
   const [selected, setSelected] = React.useState(null);
