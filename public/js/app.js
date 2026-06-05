@@ -6756,10 +6756,11 @@ const SalesTab = () => {
         {/* 月次サマリー */}
         {months.length > 0 && (
           <>
-            {/* 平均月利 */}
+            {/* 1個あたり平均利益 */}
             {(() => {
-              const totalProfit = months.reduce((s, m) => s + salesByMonth[m].profit, 0);
-              const avg = Math.round(totalProfit / months.length);
+              const totalProfit = summarySales.reduce((s, sale) => s + (sale.profit || 0), 0);
+              const count = summarySales.length;
+              const avg = count > 0 ? Math.round(totalProfit / count) : 0;
               const isPos = avg >= 0;
               return (
                 <div style={{background: isPos ? 'linear-gradient(135deg,#0f172a,#1e3a5f)' : 'linear-gradient(135deg,#7f1d1d,#991b1b)',
@@ -6767,7 +6768,7 @@ const SalesTab = () => {
                   display:'flex', justifyContent:'space-between', alignItems:'center'}}>
                   <div>
                     <div style={{fontSize:11,color:'rgba(255,255,255,0.55)',fontWeight:700,letterSpacing:'0.06em',marginBottom:4}}>
-                      平均月利（{months.length}ヶ月）
+                      1個あたり平均利益（全{count}件）
                     </div>
                     <div style={{fontSize:26,fontWeight:800,color: isPos ? '#4ade80' : '#f87171',letterSpacing:'-0.03em'}}>
                       {isPos ? '' : '-'}¥{Math.abs(avg).toLocaleString()}
