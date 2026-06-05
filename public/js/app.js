@@ -6756,6 +6756,27 @@ const SalesTab = () => {
         {/* 月次サマリー */}
         {months.length > 0 && (
           <>
+            {/* 平均月利 */}
+            {(() => {
+              const totalProfit = months.reduce((s, m) => s + salesByMonth[m].profit, 0);
+              const avg = Math.round(totalProfit / months.length);
+              const isPos = avg >= 0;
+              return (
+                <div style={{background: isPos ? 'linear-gradient(135deg,#0f172a,#1e3a5f)' : 'linear-gradient(135deg,#7f1d1d,#991b1b)',
+                  borderRadius:14, padding:'14px 18px', marginBottom:14,
+                  display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                  <div>
+                    <div style={{fontSize:11,color:'rgba(255,255,255,0.55)',fontWeight:700,letterSpacing:'0.06em',marginBottom:4}}>
+                      平均月利（{months.length}ヶ月）
+                    </div>
+                    <div style={{fontSize:26,fontWeight:800,color: isPos ? '#4ade80' : '#f87171',letterSpacing:'-0.03em'}}>
+                      {isPos ? '' : '-'}¥{Math.abs(avg).toLocaleString()}
+                    </div>
+                  </div>
+                  <div style={{fontSize:30}}>{isPos ? '📈' : '📉'}</div>
+                </div>
+              );
+            })()}
             <div className="section-title">月次サマリー</div>
             {months.map(m => {
               const mData = salesByMonth[m];
