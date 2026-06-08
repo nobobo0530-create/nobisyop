@@ -6799,14 +6799,20 @@ const SalesTab = () => {
                     </div>
                   </div>
                   <div style={{padding:'12px 16px'}}>
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:10}}>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}}>
                       <div>
-                        <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>売上</div>
-                        <div style={{fontWeight:800,fontSize:20,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(mData.revenue)}</div>
+                        <div style={{fontSize:10,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>売上</div>
+                        <div style={{fontWeight:800,fontSize:17,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(mData.revenue)}</div>
                       </div>
                       <div>
-                        <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>純利益</div>
-                        <div style={{fontWeight:800,fontSize:20,color: isGood ? '#16a34a' : '#dc2626',letterSpacing:'-0.02em'}}>¥{formatMoney(mData.profit)}</div>
+                        <div style={{fontSize:10,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>純利益</div>
+                        <div style={{fontWeight:800,fontSize:17,color: isGood ? '#16a34a' : '#dc2626',letterSpacing:'-0.02em'}}>¥{formatMoney(mData.profit)}</div>
+                      </div>
+                      <div>
+                        <div style={{fontSize:10,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>平均/個</div>
+                        <div style={{fontWeight:800,fontSize:17,color: isGood ? '#16a34a' : '#dc2626',letterSpacing:'-0.02em'}}>
+                          ¥{formatMoney(Math.round(mData.profit / mData.count))}
+                        </div>
                       </div>
                     </div>
                     {platformEntries.length > 0 && (
