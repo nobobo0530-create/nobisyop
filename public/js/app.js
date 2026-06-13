@@ -4545,8 +4545,10 @@ const PurchaseTab = () => {
       {step >= 3 && ReactDOM.createPortal(
         <div style={{
           position:'fixed',
-          bottom: kbOffset > 0 ? `${kbOffset + 4}px` : 'calc(64px + env(safe-area-inset-bottom))',
+          bottom: 'calc(64px + env(safe-area-inset-bottom))',
           left:0,right:0,
+          // ★ キーボード表示中は非表示にして入力欄を塞がない（せり上がり廃止）
+          display: kbOffset > 0 ? 'none' : 'block',
           background:'white',padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',
           zIndex:9000,boxShadow:'0 -4px 12px rgba(0,0,0,0.08)',
           touchAction:'manipulation',
