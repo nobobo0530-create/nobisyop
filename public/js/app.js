@@ -529,13 +529,39 @@ const stripPhotosForStorage = (data) => ({
   })),
 });
 
+// ★ 容量エラー通知（保存失敗をユーザーに見える形で知らせる）
+// App側の useEffect でハンドラーが登録される（_onSyncStatus と同じパターン）
+let _onStorageError = null;
+
+// ★ localStorage使用量を計測（UTF-16なので1文字=2バイト換算）
+// main: 大事なデータ(在庫・売上・設定) / thumbs: サムネイル保険(消えても再生成可) / total: 全体
+const getStorageUsage = () => {
+  let main = 0, thumbs = 0, total = 0;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      const v = localStorage.getItem(k) || '';
+      const b = (k.length + v.length) * 2;
+      total += b;
+      if (k === STORAGE_KEY) main += b;
+      else if (k.startsWith('nobushop_thumbs')) thumbs += b;
+    }
+  } catch(_) {}
+  return { main, thumbs, total };
+};
+const STORAGE_LIMIT_BYTES = 5 * 1024 * 1024; // iOS Safari の目安上限 5MB
+
 const saveData = (data) => {
   // setTimeout(0) で JSON.stringify を非同期化し、大きなデータでもUIをブロックしない
   setTimeout(() => {
     try {
       const stripped = stripPhotosForStorage(data);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
-    } catch(e) { console.error('[saveData] error:', e); }
+    } catch(e) {
+      console.error('[saveData] error:', e);
+      // ★ 容量超過などで保存失敗 → 画面に警告を出す（サイレント失敗させない）
+      if (_onStorageError) { try { _onStorageError(e); } catch(_) {} }
+    }
     // ★ thumbDataUrlを別キーに保存（IndexedDB消失時の保険・3重バックアップの1つ目）
     try { saveThumbMap(data); } catch(e) {}
   }, 0);
@@ -11766,6 +11792,38 @@ const OtherTab = () => {
               <div style={{fontSize:11,color:'#999',marginTop:6}}>この端末のみに保存されます（クラウドには送信されません）</div>
             </div>
 
+            {/* ★ localStorage使用量メーター（大事なデータの iOS Safari 上限≈5MB に対する使用状況） */}
+            {(() => {
+              const u = getStorageUsage();
+              const pct = Math.min(100, Math.round(u.main / STORAGE_LIMIT_BYTES * 100));
+              const mainMb  = (u.main  / 1048576).toFixed(2);
+              const thumbMb = (u.thumbs / 1048576).toFixed(2);
+              const barColor = pct >= 80 ? '#dc2626' : pct >= 60 ? '#f59e0b' : '#16a34a';
+              return (
+                <div className="card" style={{padding:16,marginBottom:12}}>
+                  <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📦 端末ストレージ使用量</div>
+                  <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                    在庫・売上データの使用量です。iPhoneのSafariは約5MBまでが目安。
+                  </div>
+                  <div style={{background:'#f0f0f0',borderRadius:8,height:14,overflow:'hidden'}}>
+                    <div style={{width:`${Math.max(pct,2)}%`,height:'100%',background:barColor,borderRadius:8,transition:'width 0.3s'}}/>
+                  </div>
+                  <div style={{fontSize:12,color:'#666',marginTop:6,display:'flex',justifyContent:'space-between'}}>
+                    <span>データ {mainMb} MB / 約5 MB</span>
+                    <span style={{fontWeight:700,color:barColor}}>{pct}%</span>
+                  </div>
+                  <div style={{fontSize:11,color:'#999',marginTop:6}}>
+                    ほかに写真サムネイルの保険コピー {thumbMb} MB（消えても自動で作り直されます）
+                  </div>
+                  {pct >= 60 && (
+                    <div style={{fontSize:11,color:'#b45309',marginTop:8,background:'#fffbeb',borderRadius:8,padding:8}}>
+                      ⚠️ データ量が増えています。クラウド同期が有効なら安全ですが、念のためエクスポート（バックアップ）をおすすめします。
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>✂️ Remove.bg APIキー</div>
               <div style={{fontSize:12,color:'#666',marginBottom:10}}>
@@ -12116,6 +12174,7 @@ const App = () => {
   const [syncStatus,   setSyncStatus]   = React.useState('idle'); // 'idle'|'syncing'|'ok'|'error'
   const [lastSyncTime, setLastSyncTime] = React.useState(null);   // 最終同期成功時刻(ms)
   const [syncError,    setSyncError]    = React.useState('');
+  const [storageError, setStorageError] = React.useState(false);  // ★ localStorage保存失敗（容量超過等）
   const dataRef = React.useRef(fullData);
 
   const currentUser = fullData.currentUser || 'self';
@@ -12200,6 +12259,12 @@ const App = () => {
     return () => { _onSyncStatus = null; };
   }, []);
 
+  // ★ localStorage保存失敗（容量超過）をユーザーに知らせるコールバックを設定
+  React.useEffect(() => {
+    _onStorageError = () => setStorageError(true);
+    return () => { _onStorageError = null; };
+  }, []);
+
   // ★ 手動で全データを今すぐクラウド同期する（「今すぐ同期」ボタン用）
   const manualSync = React.useCallback(() => {
     if (!_cloudEnabled) return;
@@ -12235,7 +12300,10 @@ const App = () => {
         // ★ thumbDataUrl（base64画像）を除外して保存（iOS Safariの5MB上限＋同期書き込みフリーズ防止）
         const stripped = stripPhotosForStorage(dataRef.current);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
-      } catch(e) {}
+      } catch(e) {
+        // ★ 容量超過などで保存失敗 → 画面に警告を出す
+        if (_onStorageError) { try { _onStorageError(e); } catch(_) {} }
+      }
       // ★ thumbMapはsaveDataのsetTimeout(0)で保存済みのため、ここでは呼ばない
       // （visibilitychangeでJSON.stringify+localStorageの重い処理をするとiOSカメラピッカーが起動しなくなる）
     };
@@ -12825,6 +12893,14 @@ const App = () => {
                          textAlign:'center',padding:'6px 16px',fontSize:12}}
                  onClick={() => setTab('other')}>
               ☁️ Supabase未設定。ローカル保存中 → 設定画面へ
+            </div>
+          )}
+          {/* ★ localStorage保存失敗（容量超過）警告 — データ消失リスクのため消えないバナーで表示 */}
+          {storageError && (
+            <div style={{position:'fixed',top:0,left:0,right:0,zIndex:10000,background:'#b91c1c',color:'white',
+                         textAlign:'center',padding:'8px 16px',fontSize:12,cursor:'pointer'}}
+                 onClick={() => setTab('other')}>
+              🚨 端末への保存に失敗しました（容量不足の可能性）。クラウド同期があれば安全です → その他タブで容量を確認
             </div>
           )}
 
