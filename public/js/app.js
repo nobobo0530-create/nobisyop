@@ -2815,7 +2815,7 @@ const PurchaseTab = () => {
           status: registrationMode === 'listed' ? 'listed' : 'unlisted',
           // 出品済みに変更した場合、listDateが未設定なら今日の日付をセット
           listDate: registrationMode === 'listed'
-            ? (form.listDate || editingItem.listDate || new Date().toISOString().slice(0, 10))
+            ? (form.listDate || editingItem.listDate || today())
             : (form.listDate || editingItem.listDate || ''),
           size: computedSize,
           purchasePrice: totalPurchaseTaxIn,
@@ -9847,7 +9847,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     setKeyTesting(false);
   };
 
-  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const todayStr = () => today(); // ★ UTCズレ防止: ローカル日付を返す共通関数を使用
 
   const handleFilesSelected = (e) => {
     const files = Array.from(e.target.files || []);
