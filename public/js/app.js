@@ -454,9 +454,28 @@ const saveThumbMap = (data) => {
     });
     localStorage.setItem(THUMBS_KEY, JSON.stringify(map));
   } catch(e) {
-    // 容量超過時はサイレント失敗（メインデータに影響なし）
-    console.warn('[saveThumbMap] 容量超過、スキップ:', e.message);
+    // 容量超過時はスキップし、古い保険コピーも削除して空きを確保する
+    // （サムネイル本体は IndexedDB とクラウドにあるため消えても安全・自動再生成される）
+    console.warn('[saveThumbMap] 容量超過、保険コピーを削除して空きを確保:', e.message);
+    try { localStorage.removeItem(THUMBS_KEY); } catch(_) {}
   }
+};
+
+// ★ 容量不足時に「消えても安全なデータ」を削除して空きを作る
+// 対象: サムネイル保険コピー / Babelコンパイルキャッシュ / 整合性バックアップ（すべて自動再生成される）
+const freeStorageSpace = () => {
+  try {
+    const removable = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k === THUMBS_KEY ||
+          k.startsWith('nobushop_compiled_') ||
+          k.startsWith('nobushop_integrity_backup_')) removable.push(k);
+    }
+    removable.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
+    console.warn('[freeStorageSpace] 削除:', removable.length, '件');
+    return removable.length;
+  } catch(_) { return 0; }
 };
 
 // thumbMap を読み込んで返す
@@ -583,10 +602,19 @@ const saveData = (data) => {
     try {
       const stripped = stripPhotosForStorage(data);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+      if (_onStorageError) { try { _onStorageError(null); } catch(_) {} } // 成功 → 警告を消す
     } catch(e) {
       console.error('[saveData] error:', e);
-      // ★ 容量超過などで保存失敗 → 画面に警告を出す（サイレント失敗させない）
-      if (_onStorageError) { try { _onStorageError(e); } catch(_) {} }
+      // ★ 容量不足 → 消えても安全なデータを削除して1回だけ再試行（本体データを最優先）
+      try {
+        freeStorageSpace();
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripPhotosForStorage(data)));
+        console.warn('[saveData] 空きを確保して保存に成功');
+        if (_onStorageError) { try { _onStorageError(null); } catch(_) {} }
+      } catch(e2) {
+        // それでも失敗 → 画面に警告を出す（サイレント失敗させない）
+        if (_onStorageError) { try { _onStorageError(e2); } catch(_) {} }
+      }
     }
     // ★ thumbDataUrlを別キーに保存（IndexedDB消失時の保険・3重バックアップの1つ目）
     try { saveThumbMap(data); } catch(e) {}
@@ -12307,8 +12335,9 @@ const App = () => {
   }, []);
 
   // ★ localStorage保存失敗（容量超過）をユーザーに知らせるコールバックを設定
+  // e が null のときは「保存成功」の合図 → 警告を消す
   React.useEffect(() => {
-    _onStorageError = () => setStorageError(true);
+    _onStorageError = (e) => setStorageError(!!e);
     return () => { _onStorageError = null; };
   }, []);
 
@@ -12354,8 +12383,13 @@ const App = () => {
         const stripped = stripPhotosForStorage(dataRef.current);
         localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
       } catch(e) {
-        // ★ 容量超過などで保存失敗 → 画面に警告を出す
-        if (_onStorageError) { try { _onStorageError(e); } catch(_) {} }
+        // ★ 容量不足 → 消えても安全なデータを削除して再試行
+        try {
+          freeStorageSpace();
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(stripPhotosForStorage(dataRef.current)));
+        } catch(e2) {
+          if (_onStorageError) { try { _onStorageError(e2); } catch(_) {} }
+        }
       }
       // ★ thumbMapはsaveDataのsetTimeout(0)で保存済みのため、ここでは呼ばない
       // （visibilitychangeでJSON.stringify+localStorageの重い処理をするとiOSカメラピッカーが起動しなくなる）
