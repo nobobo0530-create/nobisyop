@@ -14,13 +14,14 @@
   <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
   <link rel="shortcut icon" href="/favicon.ico">
 
+  <!-- ★ ライブラリはローカル同梱（CDN廃止・障害でアプリが起動不能になるのを防止） -->
   <!-- QRコード -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin></script>
+  <script src="/vendor/qrcode.min.js"></script>
   <!-- React 本番ビルド（開発版の約8倍高速・小さい） -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
   <!-- Tailwind -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/vendor/tailwind.js"></script>
   <!-- Google OAuth 設定（Client IDをここで一元管理） -->
   <script src="/js/google-config.js?v=20260413d"></script>
   <!-- Google OAuth（非同期） -->
@@ -487,7 +488,7 @@
           });
       };
       if (typeof Babel !== 'undefined') doFetch();
-      else loadScript('https://unpkg.com/@babel/standalone/babel.min.js', doFetch,
+      else loadScript('/vendor/babel.min.js', doFetch,
         function() { setStatus('Babel読込失敗。再読込してください。'); });
     }
 

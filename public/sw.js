@@ -1,25 +1,23 @@
-// SalesLog Service Worker v20260608  ── オフライン完全対応版
-var CACHE = 'nobushop-20260608';
+// SalesLog Service Worker v20260703  ── オフライン完全対応版
+var CACHE = 'nobushop-20260703';
 
 // アプリの動作に必須なリソース（インストール時に必ずキャッシュ）
+// ★ ライブラリはCDNではなく /vendor/ にローカル同梱（CDN廃止・障害対策）
 var PRECACHE_CORE = [
   '/',
   '/index.html',
   '/manifest.json',
   '/js/app.js',
   '/js/google-config.js',
+  '/vendor/react.production.min.js',
+  '/vendor/react-dom.production.min.js',
+  '/vendor/qrcode.min.js',
+  '/vendor/tailwind.js',
+  '/vendor/babel.min.js',
   '/icon-192.png',
   '/icon-512.png',
   '/apple-touch-icon.png',
   '/favicon.ico',
-];
-
-// CDN リソース（取得失敗してもインストールは継続）
-var PRECACHE_CDN = [
-  'https://unpkg.com/react@18/umd/react.production.min.js',
-  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
-  'https://cdn.tailwindcss.com',
 ];
 
 self.addEventListener('install', function(e) {
@@ -31,12 +29,7 @@ self.addEventListener('install', function(e) {
           console.warn('[SW] core cache skip:', url, err.message);
         });
       });
-      // CDNは取得試みるが失敗してもインストール継続
-      var cdnPromises = PRECACHE_CDN.map(function(url) {
-        return c.add(new Request(url, { mode: 'cors', credentials: 'omit' }))
-          .catch(function(err) { console.warn('[SW] cdn cache skip:', url, err.message); });
-      });
-      return Promise.all([...corePromises, ...cdnPromises]);
+      return Promise.all(corePromises);
     }).then(function() { return self.skipWaiting(); })
   );
 });
@@ -63,8 +56,6 @@ self.addEventListener('fetch', function(e) {
   if (url.includes('api.remove.bg')) return;
   // Supabase はSW通さない（リアルタイム同期のため）
   if (url.includes('supabase.co')) return;
-  // Babel は通さない（LocalStorageキャッシュで管理）
-  if (url.includes('@babel/standalone')) return;
   // Google Sign-In
   if (url.includes('gsi/client')) return;
 
