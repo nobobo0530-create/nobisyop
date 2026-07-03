@@ -555,6 +555,18 @@ const _API_BASE = (() => {
   return 'https://nobisyop.vercel.app'; // ローカル開発: Vercel本番APIを使用
 })();
 
+// ★ 同期トークン（API認証用）
+// settingsではなくlocalStorage直保存: 設定自体がAPI経由で同期されるため、
+// トークンを設定に入れると「トークンがないと取得できない場所」に保存する矛盾が起きる
+const SYNC_TOKEN_KEY = 'nobushop_sync_token';
+const getSyncToken = () => { try { return (localStorage.getItem(SYNC_TOKEN_KEY) || '').trim(); } catch { return ''; } };
+const setSyncToken = (v) => { try { localStorage.setItem(SYNC_TOKEN_KEY, (v || '').trim()); } catch(_) {} };
+// fetch用ヘッダー（トークン未設定なら付けない = サーバー側も未設定なら従来どおり動く）
+const authHeaders = (extra = {}) => {
+  const t = getSyncToken();
+  return t ? { ...extra, 'X-Sync-Token': t } : extra;
+};
+
 // 初期化確認のみ（実際の通信はサーバー側 api/data.js が行う）
 const initSupabase = (url, key) => {
   if (!url || !key) throw new Error('Cloud config is empty on server');
@@ -564,7 +576,7 @@ const initSupabase = (url, key) => {
 
 // 全データ取得（/api/data GET）
 const fetchSupabaseData = async () => {
-  const resp = await fetch(`${_API_BASE}/api/data`, { cache: 'no-store' });
+  const resp = await fetch(`${_API_BASE}/api/data`, { cache: 'no-store', headers: authHeaders() });
   const json = await resp.json();
   if (!resp.ok || !json.ok) {
     const msg = json.error || `HTTP ${resp.status}`;
@@ -585,7 +597,7 @@ const migrateLocalToSupabase = async (localData) => {
   try {
     await fetch(`${_API_BASE}/api/data`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         invUpsert:   (localData.inventory || []).map(item => ({ id: item.id, data: item })),
         salesUpsert: (localData.sales     || []).map(s    => ({ id: s.id,    data: s    })),
@@ -655,7 +667,7 @@ const syncToSupabase = async (oldData, newData) => {
       try {
         const resp = await fetch(`${_API_BASE}/api/data`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             invUpsert, invDelete, salesUpsert, salesDelete,
             settings: settingsChanged ? newData.settings : undefined,
@@ -9768,7 +9780,7 @@ const runRemoveBg = async (file, apiKey) => {
   const imageBase64 = await fileToBase64(file);
   const res = await fetch('/api/removebg', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ imageBase64, apiKey }),
     cache: 'no-store',
   });
@@ -11741,6 +11753,17 @@ const OtherTab = () => {
                 onChange={e => setSetting('apiKey', e.target.value)}
                 placeholder="sk-ant-api..."/>
               <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🔐 同期トークン</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                クラウド同期の合言葉。Vercelの環境変数 SYNC_TOKEN と同じ文字列を入力してください（iPhone/Macそれぞれで1回）。
+              </div>
+              <input className="input-field" type="password" defaultValue={getSyncToken()}
+                onChange={e => setSyncToken(e.target.value)}
+                placeholder="同期トークン（SYNC_TOKENと同じ値）"/>
+              <div style={{fontSize:11,color:'#999',marginTop:6}}>この端末のみに保存されます（クラウドには送信されません）</div>
             </div>
 
             <div className="card" style={{padding:16,marginBottom:12}}>

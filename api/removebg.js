@@ -6,14 +6,22 @@ export const config = {
   api: { bodyParser: { sizeLimit: '15mb' } },
 };
 
+// ★ 同期トークン認証（api/data.js と共通。SYNC_TOKEN 設定時のみ有効）
+const SYNC_TOKEN = process.env.SYNC_TOKEN || '';
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sync-Token');
   res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   if (req.method !== 'POST') { res.status(405).json({ error: 'Method not allowed' }); return; }
+
+  if (SYNC_TOKEN && req.headers['x-sync-token'] !== SYNC_TOKEN) {
+    res.status(401).json({ error: '認証エラー: 設定タブで同期トークンを入力してください' });
+    return;
+  }
 
   try {
     const { imageBase64, apiKey } = req.body || {};

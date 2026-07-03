@@ -4,6 +4,9 @@
 
 const SB_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SB_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+// ★ 同期トークン認証: Vercel環境変数 SYNC_TOKEN を設定すると有効になる
+// 未設定の間は従来どおり動作する（後方互換・デプロイ直後にアプリが壊れない）
+const SYNC_TOKEN = process.env.SYNC_TOKEN || '';
 
 async function sbFetch(path, options = {}) {
   const url = `${SB_URL}/rest/v1/${path}`;
@@ -25,10 +28,16 @@ async function sbFetch(path, options = {}) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sync-Token');
   res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  // ★ 認証チェック（SYNC_TOKEN 設定時のみ）
+  if (SYNC_TOKEN && req.headers['x-sync-token'] !== SYNC_TOKEN) {
+    res.status(401).json({ ok: false, error: '認証エラー: 設定タブで同期トークンを入力してください' });
+    return;
+  }
 
   if (!SB_URL || !SB_KEY) {
     res.status(500).json({ ok: false, error: 'Supabase env vars not set on server' });
