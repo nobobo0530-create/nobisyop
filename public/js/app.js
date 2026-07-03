@@ -231,9 +231,10 @@ const parsePurchaseDate = (raw) => {
     }
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  // 年が現在年より古い場合（AIのモデル訓練年誤作動を防ぐ）は現在年に補正
+  // 年が2年より前または未来の場合（AIのモデル訓練年誤作動を防ぐ）は現在年に補正
+  // 2年前まで許容: 繰越在庫の仕入れ日（例: 2年前購入分）が正しく保存できる
   const y = parseInt(s.slice(0, 4), 10);
-  if (y < cy) s = `${cy}${s.slice(4)}`;
+  if (y < cy - 2 || y > cy) s = `${cy}${s.slice(4)}`;
   return s;
 };
 
@@ -2477,6 +2478,13 @@ const PurchaseTab = () => {
 
   const feeRate = data.settings?.platformFees?.['メルカリ'] || 0.10;
   const profit = calcProfit(Number(form.listPrice), totalPurchaseTaxIn, feeRate, CONFIG.ESTIMATED_SHIPPING);
+  // 3プラットフォーム見込み利益
+  const platformFees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+  const profitByPlatform = [
+    { name: 'メルカリ', profit: calcProfit(Number(form.listPrice), totalPurchaseTaxIn, platformFees['メルカリ'] ?? 0.10, CONFIG.ESTIMATED_SHIPPING) },
+    { name: 'ラクマ',   profit: calcProfit(Number(form.listPrice), totalPurchaseTaxIn, platformFees['ラクマ']   ?? 0.045, CONFIG.ESTIMATED_SHIPPING) },
+    { name: 'ヤフオク', profit: calcProfit(Number(form.listPrice), totalPurchaseTaxIn, platformFees['ヤフオク'] ?? 0.10, CONFIG.ESTIMATED_SHIPPING) },
+  ];
   const divisor = data.settings?.priceSplitDivisor || 100;
   const mgmtNo = form.purchaseDate && totalPurchaseTaxIn
     ? generateMgmtNo(form.purchaseDate, form.listDate, totalPurchaseTaxIn, divisor)
@@ -4329,12 +4337,19 @@ const PurchaseTab = () => {
               </div>
             </div>
 
-            {/* 見込み利益 */}
+            {/* 見込み利益（3プラットフォーム） */}
             {form.listPrice && form.purchasePrice && (
               <div style={{background: profit >= 0 ? '#f0fdf4' : '#fef2f2', border: `1px solid ${profit >= 0 ? '#bbf7d0' : '#fecaca'}`, borderRadius:10,padding:12,marginBottom:12}}>
-                <div style={{fontSize:12,color:'#666',marginBottom:4}}>見込み利益（手数料{(feeRate*100).toFixed(1)}% + 送料概算¥{CONFIG.ESTIMATED_SHIPPING}）</div>
-                <div style={{fontSize:22,fontWeight:700,color: profit >= 0 ? '#16a34a' : '#dc2626'}}>
-                  ¥{formatMoney(profit)}
+                <div style={{fontSize:12,color:'#666',marginBottom:6}}>見込み利益（送料概算¥{CONFIG.ESTIMATED_SHIPPING}）</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {profitByPlatform.map(({name, profit: p}) => (
+                    <div key={name} style={{flex:'1 1 auto',minWidth:80,textAlign:'center',background:'white',borderRadius:8,padding:'4px 6px',border:`1px solid ${p >= 0 ? '#bbf7d0' : '#fecaca'}`}}>
+                      <div style={{fontSize:11,color:'#888',marginBottom:2}}>{name}</div>
+                      <div style={{fontSize:14,fontWeight:700,color: p >= 0 ? '#16a34a' : '#dc2626'}}>
+                        {p >= 0 ? '+' : ''}¥{formatMoney(p)}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -5069,8 +5084,10 @@ const InventoryTab = () => {
     if (sort === 'new')    return (b.purchaseDate||'') > (a.purchaseDate||'') ? 1 : -1;
     if (sort === 'old')    return (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1;
     if (sort === 'profit') {
-      const pa = (a.listPrice||0) - (a.purchasePrice||0);
-      const pb = (b.listPrice||0) - (b.purchasePrice||0);
+      const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+      const getFeeRate = (item) => fees[item.platform] ?? fees['メルカリ'] ?? 0.10;
+      const pa = calcProfit(a.listPrice||0, a.purchasePrice||0, getFeeRate(a), CONFIG.ESTIMATED_SHIPPING);
+      const pb = calcProfit(b.listPrice||0, b.purchasePrice||0, getFeeRate(b), CONFIG.ESTIMATED_SHIPPING);
       return pb - pa;
     }
     return 0;
@@ -8662,7 +8679,14 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
         const profit    = parseNum(row[10]);
         const fee       = parseNum(row[13]);
         const shipping  = parseNum(row[14]);
-        const feeRate   = salePrice > 0 ? Math.round(fee / salePrice * 100) / 100 : 0;
+        const platform  = String(row[12]||'');
+        // ⑥ プラットフォームが既知なら設定値を優先（丸め誤差を防ぐ）、不明な場合は小数3桁精度で逆算
+        const knownFeeRate = platform
+          ? (data.settings?.platformFees?.[platform] ?? CONFIG.PLATFORM_FEES[platform])
+          : undefined;
+        const feeRate = knownFeeRate != null
+          ? knownFeeRate
+          : (salePrice > 0 ? Math.round(fee / salePrice * 1000) / 1000 : 0);
         const sale = {
           ...(existing || {}),
           id,
@@ -8671,7 +8695,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           profit,
           feeRate,
           shipping,
-          platform:    String(row[12]||''),
+          platform,
           userId:      currentUser,
           createdAt:   existing?.createdAt || new Date().toISOString(),
           updatedAt:   new Date().toISOString(),
@@ -12490,8 +12514,8 @@ const App = () => {
             for (const [k, v] of Object.entries(cloud || {})) {
               if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
             }
-            // ★ _deletedIds はユニオンマージ（ローカル・クラウド両方の削除記録を保持）
-            base._deletedIds = { ...(cloud?._deletedIds || {}), ...(local?._deletedIds || {}) };
+            // ★ _deletedIds はユニオンマージ（ローカル・クラウド両方の削除記録を保持）＋90日パージ
+            base._deletedIds = mergedDeletedIds;
             // ★ storeLicenses.セカンドストリートが空の場合はデフォルト値を復元
             if (!base.storeLicenses) base.storeLicenses = {};
             if (!base.storeLicenses['セカンドストリート']) {
@@ -12512,10 +12536,20 @@ const App = () => {
             return base;
           };
           // ★ 削除トゥームストーンをローカル・クラウド双方からマージしてmergeByLastWriteに渡す
-          const mergedDeletedIds = {
+          const rawMergedDeletedIds = {
             ...(localData.settings?._deletedIds || {}),
             ...(cloudData.settings?._deletedIds || {}),
           };
+          // ★ 90日超過のトゥームストーンをパージ（無限蓄積を防ぐ）
+          // 90日以内の削除は同期伝播に使われるため削除しない
+          const PURGE_MS = 90 * 24 * 60 * 60 * 1000;
+          const purgeThreshold = Date.now() - PURGE_MS;
+          const mergedDeletedIds = Object.fromEntries(
+            Object.entries(rawMergedDeletedIds).filter(([, ts]) => {
+              const t = new Date(ts).getTime();
+              return !isNaN(t) && t >= purgeThreshold;
+            })
+          );
           // ★ レシートのマージ（id で名寄せ・updatedAt/createdAt で新しい方を採用）
           const mergeReceipts = (local, cloud) => {
             const m = new Map();
@@ -12542,9 +12576,13 @@ const App = () => {
           setFullDataRaw(cleanedMerged);
           saveData(cleanedMerged);
           // マージ結果（ローカル優先分）をクラウドへ反映
-          const invChanged  = JSON.stringify(cleanedMerged.inventory) !== JSON.stringify(cloudData.inventory);
-          const salesChanged = JSON.stringify(cleanedMerged.sales)    !== JSON.stringify(cloudData.sales);
-          if (invChanged || salesChanged || cleanedMerged !== mergedData) {
+          // ⑧ cleanedMerged !== mergedData は参照比較のため常にtrueになり毎起動同期が走っていた
+          // → inventory/sales/settings/receipts の内容比較に変更
+          const invChanged      = JSON.stringify(cleanedMerged.inventory) !== JSON.stringify(cloudData.inventory);
+          const salesChanged    = JSON.stringify(cleanedMerged.sales)    !== JSON.stringify(cloudData.sales);
+          const settingsChanged = JSON.stringify(cleanedMerged.settings) !== JSON.stringify(cloudData.settings);
+          const receiptsChanged = JSON.stringify(cleanedMerged.receipts || []) !== JSON.stringify(cloudData.receipts || []);
+          if (invChanged || salesChanged || settingsChanged || receiptsChanged) {
             syncToSupabase(cloudData, cleanedMerged);
           } else {
             // 変更なし = 起動時点でクラウドと同期済み
@@ -12829,8 +12867,13 @@ const App = () => {
             };
             dataRef.current = nf;
             saveData(nf);
-            // base64 込みで強制 upsert（重いので遅延実行）
-            setTimeout(function() { syncToSupabase({ inventory: [] }, nf); }, 500);
+            // 変更があった写真アイテムのみ差分 upsert（全件送信を避ける）
+            // updatedItems は写真が変化したアイテムのリスト（nf.inventory に反映済み）
+            const prevInvWithoutUpdated = (prev.inventory || []).filter(
+              i => !updatedMap.has(i.id)
+            );
+            const partialOld = { ...prev, inventory: prevInvWithoutUpdated };
+            setTimeout(function() { syncToSupabase(partialOld, nf); }, 500);
             return nf;
           });
           console.log('[AutoPhotoBackup] ' + updatedItems.length + ' 件の写真をクラウドにバックアップしました');
