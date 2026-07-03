@@ -551,6 +551,32 @@ const getStorageUsage = () => {
 };
 const STORAGE_LIMIT_BYTES = 5 * 1024 * 1024; // iOS Safari の目安上限 5MB
 
+// ★ バックアップリマインダー（30日以上バックアップしていなければ起動時に通知）
+const LAST_BACKUP_KEY   = 'nobushop_last_backup';
+const BACKUP_SNOOZE_KEY = 'nobushop_backup_snooze';
+const BACKUP_REMIND_DAYS = 30;
+let _onBackupDone = null; // App側でバナーを閉じるためのコールバック
+const markBackupDone = () => {
+  try { localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); } catch(_) {}
+  if (_onBackupDone) { try { _onBackupDone(); } catch(_) {} }
+};
+const needsBackupReminder = () => {
+  try {
+    const snooze = Number(localStorage.getItem(BACKUP_SNOOZE_KEY) || 0);
+    if (Date.now() < snooze) return false;
+    const last = Number(localStorage.getItem(LAST_BACKUP_KEY) || 0);
+    // 一度もバックアップしていない場合は「初回起動日」を基準にする（初日から警告しない）
+    if (!last) {
+      localStorage.setItem(LAST_BACKUP_KEY, String(Date.now()));
+      return false;
+    }
+    return (Date.now() - last) > BACKUP_REMIND_DAYS * 86400000;
+  } catch { return false; }
+};
+const snoozeBackupReminder = (days = 3) => {
+  try { localStorage.setItem(BACKUP_SNOOZE_KEY, String(Date.now() + days * 86400000)); } catch(_) {}
+};
+
 const saveData = (data) => {
   // setTimeout(0) で JSON.stringify を非同期化し、大きなデータでもUIをブロックしない
   setTimeout(() => {
@@ -10711,6 +10737,7 @@ const OtherTab = () => {
     a.download = `nobushop_backup_${today()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    markBackupDone(); // ★ バックアップ日時を記録（リマインダーをリセット）
     toast('📥 バックアップをダウンロードしました');
   };
 
@@ -12175,6 +12202,7 @@ const App = () => {
   const [lastSyncTime, setLastSyncTime] = React.useState(null);   // 最終同期成功時刻(ms)
   const [syncError,    setSyncError]    = React.useState('');
   const [storageError, setStorageError] = React.useState(false);  // ★ localStorage保存失敗（容量超過等）
+  const [backupRemind, setBackupRemind] = React.useState(() => needsBackupReminder()); // ★ 30日超バックアップなし通知
   const dataRef = React.useRef(fullData);
 
   const currentUser = fullData.currentUser || 'self';
@@ -12263,6 +12291,12 @@ const App = () => {
   React.useEffect(() => {
     _onStorageError = () => setStorageError(true);
     return () => { _onStorageError = null; };
+  }, []);
+
+  // ★ バックアップ完了時にリマインダーバナーを閉じるコールバックを設定
+  React.useEffect(() => {
+    _onBackupDone = () => setBackupRemind(false);
+    return () => { _onBackupDone = null; };
   }, []);
 
   // ★ 手動で全データを今すぐクラウド同期する（「今すぐ同期」ボタン用）
@@ -12901,6 +12935,22 @@ const App = () => {
                          textAlign:'center',padding:'8px 16px',fontSize:12,cursor:'pointer'}}
                  onClick={() => setTab('other')}>
               🚨 端末への保存に失敗しました（容量不足の可能性）。クラウド同期があれば安全です → その他タブで容量を確認
+            </div>
+          )}
+          {/* ★ バックアップリマインダー（30日以上バックアップなし） */}
+          {backupRemind && (
+            <div style={{background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:0,
+                         padding:'10px 14px',fontSize:12,color:'#92400e',
+                         display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+              <span style={{flex:1,minWidth:180}}>💾 最後のバックアップから30日以上経っています。エクスポート画面からバックアップをおすすめします。</span>
+              <button onClick={() => { setTab('other'); setBackupRemind(false); snoozeBackupReminder(1); }}
+                style={{background:'#f59e0b',color:'white',border:'none',borderRadius:8,padding:'6px 12px',fontSize:12,fontWeight:700}}>
+                今すぐ
+              </button>
+              <button onClick={() => { snoozeBackupReminder(3); setBackupRemind(false); }}
+                style={{background:'transparent',color:'#92400e',border:'1px solid #fcd34d',borderRadius:8,padding:'6px 12px',fontSize:12}}>
+                3日後に再通知
+              </button>
             </div>
           )}
 
