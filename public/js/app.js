@@ -619,6 +619,14 @@ const authHeaders = (extra = {}) => {
   return t ? { ...extra, 'X-Sync-Token': t } : extra;
 };
 
+// ★ AIモデル名（設定画面から上書き可能 — モデル廃止時にコード編集なしで変更できる）
+const AI_MODEL_KEY = 'nobushop_ai_model';
+const getAiModel = () => {
+  try { return (localStorage.getItem(AI_MODEL_KEY) || '').trim() || CONFIG.MODEL; }
+  catch { return CONFIG.MODEL; }
+};
+const setAiModel = (v) => { try { localStorage.setItem(AI_MODEL_KEY, (v || '').trim()); } catch(_) {} };
+
 // 初期化確認のみ（実際の通信はサーバー側 api/data.js が行う）
 const initSupabase = (url, key) => {
   if (!url || !key) throw new Error('Cloud config is empty on server');
@@ -892,7 +900,7 @@ const analyzeImagesWithClaude = async (imageDataList, apiKey, prompt, maxTokens 
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: CONFIG.MODEL,
+        model: getAiModel(),
         max_tokens: maxTokens,
         messages: [{ role: 'user', content }],
       }),
@@ -9879,7 +9887,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: CONFIG.MODEL,
+          model: getAiModel(),
           max_tokens: 10,
           messages: [{ role: 'user', content: 'hi' }],
         }),
@@ -9972,7 +9980,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true',
         },
-        body: JSON.stringify({ model: CONFIG.MODEL, max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] }),
+        body: JSON.stringify({ model: getAiModel(), max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] }),
       });
       if (!testRes.ok) {
         const e = await testRes.json().catch(() => ({}));
@@ -11806,6 +11814,17 @@ const OtherTab = () => {
                 onChange={e => setSetting('apiKey', e.target.value)}
                 placeholder="sk-ant-api..."/>
               <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🤖 AIモデル名</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                写真解析に使うClaudeのモデル。将来モデルが廃止されてエラーになったら、ここに新しいモデル名を入力すれば直ります。
+              </div>
+              <input className="input-field" type="text" defaultValue={getAiModel()}
+                onChange={e => setAiModel(e.target.value)}
+                placeholder={CONFIG.MODEL}/>
+              <div style={{fontSize:11,color:'#999',marginTop:6}}>空欄にすると標準（{CONFIG.MODEL}）に戻ります</div>
             </div>
 
             <div className="card" style={{padding:16,marginBottom:12}}>
