@@ -20,14 +20,132 @@
       -webkit-tap-highlight-color: transparent;
     }
     #root { max-width: 480px; margin: 0 auto; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .spinner {
-      width: 32px; height: 32px;
-      border: 3px solid #fed7aa;
-      border-top-color: #f97316;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      margin: 40px auto;
+
+    /* ========== アニメーション ========== */
+    @keyframes taskComplete {
+      0%   { transform: scale(1); }
+      40%  { transform: scale(1.04); }
+      100% { transform: scale(1); }
+    }
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes confettiFall {
+      0%   { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+      80%  { opacity: 1; }
+      100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+    }
+    @keyframes celebrationPop {
+      0%   { transform: scale(0.7); opacity: 0; }
+      60%  { transform: scale(1.08); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    @keyframes progressGrow {
+      from { width: 0%; }
+    }
+
+    .task-card {
+      animation: fadeSlide 0.22s ease;
+    }
+    .task-card.completed {
+      animation: taskComplete 0.25s ease;
+    }
+    .confetti-piece {
+      position: fixed;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      animation: confettiFall linear forwards;
+      pointer-events: none;
+      z-index: 9999;
+    }
+    .celebration-msg {
+      animation: celebrationPop 0.4s cubic-bezier(0.34,1.56,0.64,1) forwards;
+    }
+
+    /* モーダルオーバーレイ */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 200;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      animation: fadeSlide 0.2s ease;
+    }
+    .modal-sheet {
+      background: #fff;
+      border-radius: 20px 20px 0 0;
+      width: 100%;
+      max-width: 480px;
+      max-height: 88vh;
+      overflow-y: auto;
+      padding: 0 0 env(safe-area-inset-bottom, 16px);
+    }
+    .modal-handle {
+      width: 36px;
+      height: 4px;
+      background: #d1d5db;
+      border-radius: 2px;
+      margin: 10px auto 0;
+    }
+
+    /* 下部ナビ */
+    .bottom-nav {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 480px;
+      background: #fff;
+      border-top: 1px solid #e5e7eb;
+      display: flex;
+      z-index: 100;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    .nav-tab {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 4px;
+      cursor: pointer;
+      border: none;
+      background: none;
+      color: #9ca3af;
+      font-size: 10px;
+      font-weight: 700;
+      gap: 2px;
+      transition: color 0.15s;
+      font-family: inherit;
+    }
+    .nav-tab.active {
+      color: #f97316;
+    }
+    .nav-tab-icon {
+      font-size: 22px;
+    }
+
+    /* スクロール領域 */
+    .tab-content {
+      padding-bottom: 80px;
+    }
+
+    /* ステータスチップ */
+    .status-chip {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+      white-space: nowrap;
     }
   </style>
 </head>
@@ -39,33 +157,20 @@
   <script src="/vendor/babel.min.js"></script>
 
   <script type="text/babel">
+
     // ============================================================
     // ユーティリティ
     // ============================================================
-
-    // ローカル時刻で YYYY-MM-DD を生成（UTC変換ズレ回避）
     function localDateStr(d) {
       if (!d) d = new Date();
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const y  = d.getFullYear();
+      const m  = String(d.getMonth() + 1).padStart(2, '0');
       const dd = String(d.getDate()).padStart(2, '0');
       return y + '-' + m + '-' + dd;
     }
 
     const todayStr = localDateStr();
 
-    function daysDiff(dateStr) {
-      if (!dateStr) return null;
-      try {
-        const d = new Date(dateStr + 'T00:00:00');
-        const t = new Date(todayStr + 'T00:00:00');
-        return Math.floor((t - d) / 86400000);
-      } catch (_) { return null; }
-    }
-
-    // ============================================================
-    // localStorage ヘルパー
-    // ============================================================
     function lsGet(key, fallback) {
       try {
         const raw = localStorage.getItem(key);
@@ -76,664 +181,1372 @@
     function lsSet(key, val) {
       try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {}
     }
+    function lsDel(key) {
+      try { localStorage.removeItem(key); } catch (_) {}
+    }
+
+    function fmtMin(min) {
+      if (!min || min <= 0) return '0分';
+      if (min < 60) return min + '分';
+      const h = Math.floor(min / 60);
+      const m = min % 60;
+      return m === 0 ? h + '時間' : h + '時間' + m + '分';
+    }
+
+    // 今週の月曜日の日付文字列を返す
+    function getMondayStr(dateStr) {
+      const d = new Date(dateStr + 'T00:00:00');
+      const day = d.getDay(); // 0=日
+      const diff = day === 0 ? -6 : 1 - day;
+      d.setDate(d.getDate() + diff);
+      return localDateStr(d);
+    }
+
+    // YYYY-MM-DDをDateに変換（ローカル時刻）
+    function dateFromStr(s) {
+      return new Date(s + 'T00:00:00');
+    }
+
+    function daysDiff(a, b) {
+      // a,bはYYYY-MM-DD文字列
+      const da = dateFromStr(a);
+      const db = dateFromStr(b);
+      return Math.floor((db - da) / 86400000);
+    }
 
     // ============================================================
-    // デフォルトルーティン定義
+    // 旧キー削除（初回）
     // ============================================================
-    const DEFAULT_ROUTINES = [
-      { id: 'r1', text: 'コメント・取引メッセージの返信', tag: '自分' },
-      { id: 'r2', text: '新規仕入れ分の検品・撮影・採寸', tag: '外注候補' },
-      { id: 'r3', text: '出品文の作成（写真AI読み取り）', tag: 'Claude' },
-      { id: 'r4', text: '出品作業（1日5件）', tag: '自分' },
-      { id: 'r5', text: '値下げ・再出品の実行', tag: '自分' },
-      { id: 'r6', text: '仕入れリサーチ（30分）', tag: '自分' },
-      { id: 'r7', text: '売上・在庫の記録（アプリで自動）', tag: 'Claude' },
-    ];
-
-    const TAG_STYLE = {
-      '自分':   { background: '#dbeafe', color: '#1d4ed8' },
-      'Claude': { background: '#ede9fe', color: '#6d28d9' },
-      '外注候補': { background: '#ffedd5', color: '#c2410c' },
-    };
+    function cleanOldKeys() {
+      const OLD_KEYS = [
+        'nobushop_today_pool','nobushop_today_plan','nobushop_today_done2',
+        'nobushop_today_streak','nobushop_today_shipped',
+      ];
+      OLD_KEYS.forEach(k => lsDel(k));
+    }
 
     // ============================================================
-    // shipped ローダー（14日超を自動削除）
+    // ストリーク計算
     // ============================================================
-    function loadShipped() {
-      const raw = lsGet('nobushop_today_shipped', {});
-      const cutoff = new Date(todayStr + 'T00:00:00').getTime() - 14 * 86400000;
+    function calcStreak(streakData) {
+      if (!streakData || typeof streakData !== 'object') return 0;
+      let streak = 0;
+      const d = new Date(todayStr + 'T00:00:00');
+      const checkToday = streakData[localDateStr(d)];
+      if (!checkToday) {
+        d.setDate(d.getDate() - 1);
+      }
+      while (true) {
+        const key = localDateStr(d);
+        if (streakData[key]) {
+          streak++;
+          d.setDate(d.getDate() - 1);
+        } else {
+          break;
+        }
+      }
+      return streak;
+    }
+
+    function cleanStreak(streakData) {
+      const cutoff = new Date(todayStr + 'T00:00:00');
+      cutoff.setDate(cutoff.getDate() - 90);
       const cleaned = {};
-      Object.entries(raw).forEach(([k, v]) => {
-        if (new Date(v).getTime() >= cutoff) cleaned[k] = v;
+      Object.entries(streakData || {}).forEach(([k, v]) => {
+        if (dateFromStr(k) >= cutoff) cleaned[k] = v;
       });
       return cleaned;
     }
 
     // ============================================================
-    // routine done ローダー（今日のみ保持）
+    // 初期テンプレート定義
     // ============================================================
-    function loadRoutineDone() {
-      try {
-        const map = lsGet('nobushop_today_routine_done', {});
-        const todayIds = map[todayStr] || [];
-        lsSet('nobushop_today_routine_done', { [todayStr]: todayIds });
-        return todayIds;
-      } catch (_) { return []; }
+    const DEFAULT_TEMPLATES = [
+      { id: 't1', name: '売れた商品確認・コメント返信',   emoji: '💬', freq: { type: 'daily' },              estMin: 10,  active: true },
+      { id: 't2', name: '売れた商品の発送準備＆発送',     emoji: '📦', freq: { type: 'daily' },              estMin: 30,  active: true },
+      { id: 't3', name: 'メルカリ セールコメント入力',    emoji: '🏷️', freq: { type: 'daily' },              estMin: 30,  active: true },
+      { id: 't4', name: 'メルカリに出品',                 emoji: '📸', freq: { type: 'daily' },
+        perUnit: { minutesPer: 10, per: 1, unitLabel: '商品' },          estMin: 10,  active: true },
+      { id: 't5', name: '仕入れ・売上入力',               emoji: '✍️', freq: { type: 'daily' },
+        perUnit: { minutesPer: 10, per: 30, unitLabel: '商品' },         estMin: 10,  active: true },
+      { id: 't6', name: 'ラクマ値下げ',                   emoji: '💰', freq: { type: 'weekly', timesPerWeek: 2 }, estMin: 30, active: true },
+      { id: 't7', name: '他フリマアプリにコピー出品',     emoji: '📋', freq: { type: 'weekly', timesPerWeek: 1 },
+        perUnit: { minutesPer: 30, per: 10, unitLabel: '商品' },         estMin: 30,  active: true },
+      { id: 't8', name: 'ヤフオク仕入れ',                 emoji: '🔨', freq: { type: 'weekly', timesPerWeek: 1 }, estMin: 60, active: true },
+    ];
+
+    // ============================================================
+    // データ初期化
+    // ============================================================
+    function initData() {
+      // 旧キー削除
+      cleanOldKeys();
+
+      // templates
+      let templates = lsGet('nobushop_todo2_templates', null);
+      if (!templates || !Array.isArray(templates) || templates.length === 0) {
+        templates = DEFAULT_TEMPLATES;
+        lsSet('nobushop_todo2_templates', templates);
+      }
+
+      // logs クリーンアップ (60日超)
+      let logs = lsGet('nobushop_todo2_logs', {});
+      const logCutoff = new Date(todayStr + 'T00:00:00');
+      logCutoff.setDate(logCutoff.getDate() - 60);
+      const cleanedLogs = {};
+      Object.entries(logs).forEach(([date, v]) => {
+        if (dateFromStr(date) >= logCutoff) cleanedLogs[date] = v;
+      });
+      lsSet('nobushop_todo2_logs', cleanedLogs);
+
+      // manual: 完了して7日超のもの削除
+      let manual = lsGet('nobushop_todo2_manual', []);
+      if (!Array.isArray(manual)) manual = [];
+      manual = manual.filter(t => {
+        if (!t || !t.id) return false;
+        if (t.done && t.doneDate) {
+          const diff = daysDiff(t.doneDate, todayStr);
+          if (diff >= 7) return false;
+        }
+        return true;
+      });
+      lsSet('nobushop_todo2_manual', manual);
+
+      // batches
+      let batches = lsGet('nobushop_todo2_batches', []);
+      if (!Array.isArray(batches)) batches = [];
+
+      // streak
+      let streak = lsGet('nobushop_todo2_streak', {});
+      streak = cleanStreak(streak);
+      lsSet('nobushop_todo2_streak', streak);
+
+      return { templates, logs: cleanedLogs, manual, batches, streak };
     }
 
     // ============================================================
-    // Section1: 発送セクション
+    // 週次カウント計算（月曜起点）
     // ============================================================
-    function ShipSection({ sales, inventory }) {
-      const [shipped, setShipped] = React.useState(loadShipped);
+    function getWeeklyCount(templateId, logs) {
+      const mondayStr = getMondayStr(todayStr);
+      let count = 0;
+      // 月曜から今日まで走査
+      const mon = dateFromStr(mondayStr);
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(mon);
+        d.setDate(d.getDate() + i);
+        const ds = localDateStr(d);
+        if (ds > todayStr) break;
+        const dayLogs = logs[ds] || {};
+        if (dayLogs[templateId] && dayLogs[templateId].done) count++;
+      }
+      return count;
+    }
 
-      const invMap = React.useMemo(() => {
-        const m = {};
-        (inventory || []).forEach(i => { if (i && i.id) m[i.id] = i; });
-        return m;
-      }, [inventory]);
+    // ============================================================
+    // 今日の実績時間合計（分）
+    // ============================================================
+    function calcTodayMin(logs, manual) {
+      let total = 0;
+      const dayLogs = logs[todayStr] || {};
+      Object.values(dayLogs).forEach(entry => {
+        if (entry && entry.done) {
+          total += (entry.min || 0);
+        }
+      });
+      // 完了した手動タスク
+      (manual || []).forEach(t => {
+        if (t.done && t.doneDate === todayStr) {
+          total += (t.estMin || 0);
+        }
+      });
+      return total;
+    }
 
-      const recentSales = React.useMemo(() => {
-        return (sales || []).filter(s => {
-          if (!s || !s.saleDate) return false;
-          const diff = daysDiff(s.saleDate);
-          return diff !== null && diff >= 0 && diff <= 2;
+    // 今週の時間合計（分）
+    function calcWeekMin(logs, manual) {
+      const mondayStr = getMondayStr(todayStr);
+      let total = 0;
+      const mon = dateFromStr(mondayStr);
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(mon);
+        d.setDate(d.getDate() + i);
+        const ds = localDateStr(d);
+        if (ds > todayStr) break;
+        const dayLogs = logs[ds] || {};
+        Object.values(dayLogs).forEach(entry => {
+          if (entry && entry.done) total += (entry.min || 0);
         });
-      }, [sales]);
+      }
+      // 完了した手動タスク（今週分）
+      (manual || []).forEach(t => {
+        if (t.done && t.doneDate && t.doneDate >= mondayStr && t.doneDate <= todayStr) {
+          total += (t.estMin || 0);
+        }
+      });
+      return total;
+    }
 
-      const toggleShipped = (saleId) => {
-        setShipped(prev => {
-          const next = { ...prev };
-          if (next[saleId]) {
-            delete next[saleId];
-          } else {
-            next[saleId] = new Date().toISOString();
-          }
-          lsSet('nobushop_today_shipped', next);
-          return next;
-        });
-      };
-
+    // ============================================================
+    // 紙吹雪
+    // ============================================================
+    function Confetti() {
+      const COLORS = ['#f97316','#facc15','#22c55e','#3b82f6','#a855f7','#ec4899','#ef4444'];
+      const pieces = React.useMemo(() => {
+        return Array.from({ length: 50 }, (_, i) => ({
+          id: i,
+          left: Math.random() * 100,
+          color: COLORS[Math.floor(Math.random() * COLORS.length)],
+          delay: Math.random() * 1.2,
+          duration: 1.8 + Math.random() * 1.5,
+          size: 7 + Math.random() * 7,
+          rotate: Math.random() * 360,
+        }));
+      }, []);
       return (
-        <div style={cardStyle('#fee2e2')}>
-          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10, color: '#dc2626' }}>🔴 発送する</div>
-          {recentSales.length === 0 ? (
-            <div style={{ fontSize: 14, color: '#9ca3af', padding: '8px 0 6px' }}>発送待ちはありません 🎉</div>
-          ) : (
-            recentSales.map(s => {
-              if (!s || !s.id) return null;
-              const inv = s.inventoryId ? invMap[s.inventoryId] : null;
-              const name = (inv && (inv.productName || inv.brand))
-                ? (inv.productName || inv.brand)
-                : (s.productName || '（商品名未設定）');
-              const isDone = !!shipped[s.id];
-              return (
-                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #fef2f2' }}>
-                  <input
-                    type="checkbox"
-                    checked={isDone}
-                    onChange={() => toggleShipped(s.id)}
-                    style={{ width: 20, height: 20, flexShrink: 0, accentColor: '#dc2626' }}
-                  />
-                  <div style={{ flex: 1, opacity: isDone ? 0.4 : 1, textDecoration: isDone ? 'line-through' : 'none' }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{name}</div>
-                    <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
-                      {s.platform || '不明'} ・ ¥{((s.salePrice || 0)).toLocaleString('ja-JP')} ・ {s.saleDate || '日付不明'}
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
+        <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9999, overflow: 'hidden' }}>
+          {pieces.map(p => (
+            <div key={p.id} className="confetti-piece" style={{
+              left: p.left + '%', top: 0,
+              width: p.size, height: p.size,
+              background: p.color,
+              animationDuration: p.duration + 's',
+              animationDelay: p.delay + 's',
+              transform: 'rotate(' + p.rotate + 'deg)',
+            }} />
+          ))}
         </div>
       );
     }
 
     // ============================================================
-    // Section2: ルーティン
+    // 数量入力ミニUI
     // ============================================================
-    function RoutineSection() {
-      const [routines, setRoutines] = React.useState(() => {
-        const saved = lsGet('nobushop_today_routines', null);
-        if (saved && Array.isArray(saved) && saved.length > 0) return saved;
-        lsSet('nobushop_today_routines', DEFAULT_ROUTINES);
-        return DEFAULT_ROUTINES;
-      });
-      const [routineDone, setRoutineDone] = React.useState(loadRoutineDone);
-      const [editMode, setEditMode] = React.useState(false);
-      const [editingId, setEditingId] = React.useState(null);
-      const [editText, setEditText] = React.useState('');
-      const [editTag, setEditTag] = React.useState('自分');
-      const [newText, setNewText] = React.useState('');
-      const [newTag, setNewTag] = React.useState('自分');
+    function QtyInput({ qty, onQty }) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}
+          onClick={e => e.stopPropagation()}>
+          <button
+            onClick={() => onQty(Math.max(0, qty - 1))}
+            style={{ width: 28, height: 28, borderRadius: 8, border: '1.5px solid #d1d5db', background: '#f9fafb', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#374151' }}
+          >−</button>
+          <input
+            type="number"
+            value={qty}
+            min={0}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10);
+              onQty(isNaN(v) || v < 0 ? 0 : v);
+            }}
+            style={{ width: 52, textAlign: 'center', padding: '4px', borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 15, fontWeight: 700 }}
+          />
+          <button
+            onClick={() => onQty(qty + 1)}
+            style={{ width: 28, height: 28, borderRadius: 8, border: '1.5px solid #d1d5db', background: '#f9fafb', fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#374151' }}
+          >＋</button>
+        </div>
+      );
+    }
 
-      const saveRoutines = (next) => {
-        setRoutines(next);
-        lsSet('nobushop_today_routines', next);
-      };
+    // ============================================================
+    // ステータスチップ（外注）
+    // ============================================================
+    const STATUS_LIST = ['none', 'requested', 'working', 'done'];
+    const STATUS_META = {
+      none:      { label: '未依頼', bg: '#f3f4f6', color: '#6b7280' },
+      requested: { label: '依頼済み', bg: '#dbeafe', color: '#1d4ed8' },
+      working:   { label: '作業中', bg: '#fef9c3', color: '#b45309' },
+      done:      { label: '完了', bg: '#bbf7d0', color: '#15803d' },
+    };
+    function StatusChip({ status, onClick }) {
+      const meta = STATUS_META[status] || STATUS_META['none'];
+      return (
+        <button className="status-chip" onClick={onClick}
+          style={{ background: meta.bg, color: meta.color }}>
+          {meta.label}
+        </button>
+      );
+    }
 
-      const toggleDone = (id) => {
-        setRoutineDone(prev => {
-          const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
-          lsSet('nobushop_today_routine_done', { [todayStr]: next });
-          return next;
-        });
-      };
+    // ============================================================
+    // タスクカード（毎日・週次共用）
+    // ============================================================
+    function TaskCard({ tmpl, done, entry, onToggle, onEntry, weekCount }) {
+      const isWeekly = tmpl.freq && tmpl.freq.type === 'weekly';
+      const timesPerWeek = (tmpl.freq && tmpl.freq.timesPerWeek) || 1;
+      const weekDone = weekCount >= timesPerWeek;
+
+      // 数量型
+      const hasUnit = !!tmpl.perUnit;
+      const [qty, setQty] = React.useState(() => (entry && entry.qty != null) ? entry.qty : 0);
+
+      // 数量→時間計算
+      function calcMin(q) {
+        if (!hasUnit) return tmpl.estMin || 0;
+        const { minutesPer, per } = tmpl.perUnit;
+        return Math.ceil((q / per) * minutesPer);
+      }
+
+      const computedMin = hasUnit ? calcMin(qty) : (tmpl.estMin || 0);
+
+      function handleToggle() {
+        if (weekDone && !done) return; // 今週の回数を満たしていれば追加チェック不要
+        if (hasUnit && !done) {
+          // チェックON: 現在のqtyで記録
+          onToggle(true, qty, computedMin);
+        } else if (done) {
+          onToggle(false, qty, computedMin);
+        } else {
+          onToggle(true, null, tmpl.estMin || 0);
+        }
+      }
+
+      function handleQty(newQty) {
+        setQty(newQty);
+        if (done) {
+          const m = calcMin(newQty);
+          onEntry({ qty: newQty, min: m, done: true });
+        }
+      }
+
+      // カード全体クリックで完了トグル（数量入力中は除く）
+      const borderColor = done ? '#bbf7d0' : (weekDone && isWeekly) ? '#d1fae5' : '#e5e7eb';
+      const cardBg = (weekDone && isWeekly && !done) ? '#f0fdf4' : '#fff';
 
       return (
-        <div style={cardStyle('#e5e7eb')}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: '#ea580c' }}>🟠 毎日のルーティン</div>
+        <div
+          className={'task-card' + (done ? ' completed' : '')}
+          onClick={handleToggle}
+          style={{
+            background: cardBg,
+            border: '2px solid ' + borderColor,
+            borderRadius: 16,
+            padding: '14px 16px',
+            marginBottom: 10,
+            cursor: (weekDone && !done && isWeekly) ? 'default' : 'pointer',
+            opacity: done ? 0.65 : 1,
+            transition: 'opacity 0.25s, border-color 0.25s',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {/* チェックボックス */}
+            <div style={{
+              width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+              border: '2px solid ' + (done ? '#22c55e' : (weekDone && isWeekly) ? '#86efac' : '#d1d5db'),
+              background: done ? '#22c55e' : (weekDone && isWeekly) ? '#f0fdf4' : '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.2s',
+            }}>
+              {done && <span style={{ color: '#fff', fontSize: 16, fontWeight: 900 }}>✓</span>}
+              {!done && weekDone && isWeekly && <span style={{ color: '#86efac', fontSize: 14, fontWeight: 900 }}>✓</span>}
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 16 }}>{tmpl.emoji}</span>
+                <span style={{
+                  fontSize: 15, fontWeight: 700,
+                  color: done ? '#9ca3af' : (weekDone && isWeekly) ? '#6b7280' : '#111827',
+                  textDecoration: done ? 'line-through' : 'none',
+                  transition: 'color 0.2s',
+                }}>{tmpl.name}</span>
+              </div>
+
+              {/* バッジ・時間 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                  {hasUnit && done
+                    ? qty + tmpl.perUnit.unitLabel + ' → ' + fmtMin(computedMin)
+                    : fmtMin(computedMin)
+                  }
+                </span>
+                {isWeekly && (
+                  <span style={{
+                    fontSize: 11, fontWeight: 700,
+                    padding: '2px 7px', borderRadius: 10,
+                    background: weekDone ? '#bbf7d0' : '#ffedd5',
+                    color: weekDone ? '#15803d' : '#c2410c',
+                  }}>
+                    今週 {weekCount}/{timesPerWeek}回
+                  </span>
+                )}
+                {weekDone && isWeekly && !done && (
+                  <span style={{ fontSize: 11, color: '#15803d', fontWeight: 700 }}>今週OK ✓</span>
+                )}
+              </div>
+
+              {/* 数量型: チェック時に入力UI */}
+              {hasUnit && done && (
+                <QtyInput qty={qty} onQty={handleQty} />
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 手動タスクカード
+    // ============================================================
+    function ManualTaskCard({ task, onToggle, onDelete }) {
+      const isCarryover = !task.done && task.createdDate < todayStr;
+      return (
+        <div
+          className={'task-card' + (task.done ? ' completed' : '')}
+          onClick={() => onToggle(task.id)}
+          style={{
+            background: '#fff', borderRadius: 16, padding: '14px 16px', marginBottom: 10,
+            border: '2px solid ' + (task.done ? '#bbf7d0' : '#e5e7eb'),
+            cursor: 'pointer', opacity: task.done ? 0.65 : 1,
+            transition: 'opacity 0.25s', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+              border: '2px solid ' + (task.done ? '#22c55e' : '#d1d5db'),
+              background: task.done ? '#22c55e' : '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {task.done && <span style={{ color: '#fff', fontSize: 16, fontWeight: 900 }}>✓</span>}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontSize: 15, fontWeight: 700,
+                  color: task.done ? '#9ca3af' : '#111827',
+                  textDecoration: task.done ? 'line-through' : 'none',
+                }}>{task.name}</span>
+                {isCarryover && (
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9' }}>⏭持ち越し</span>
+                )}
+              </div>
+              {task.estMin > 0 && (
+                <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>{fmtMin(task.estMin)}</div>
+              )}
+            </div>
             <button
-              onClick={() => { setEditMode(e => !e); setEditingId(null); }}
+              onClick={e => { e.stopPropagation(); onDelete(task.id); }}
+              style={{ background: 'none', border: 'none', color: '#d1d5db', fontSize: 18, cursor: 'pointer', padding: '0 4px', flexShrink: 0 }}
+            >✕</button>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 手動タスク追加フォーム
+    // ============================================================
+    function AddManualForm({ onAdd }) {
+      const [open, setOpen] = React.useState(false);
+      const [name, setName] = React.useState('');
+      const [estMin, setEstMin] = React.useState('');
+
+      function handleAdd() {
+        if (!name.trim()) return;
+        onAdd({ name: name.trim(), estMin: parseInt(estMin, 10) || 0 });
+        setName('');
+        setEstMin('');
+        setOpen(false);
+      }
+
+      if (!open) {
+        return (
+          <button
+            onClick={() => setOpen(true)}
+            style={{
+              width: '100%', marginTop: 4, marginBottom: 8,
+              padding: '12px', borderRadius: 12,
+              border: '2px dashed #fed7aa',
+              background: 'transparent',
+              color: '#f97316', fontWeight: 700, fontSize: 14,
+              cursor: 'pointer',
+            }}
+          >
+            ＋ タスク追加
+          </button>
+        );
+      }
+
+      return (
+        <div style={{ background: '#fff', borderRadius: 16, padding: '16px', marginBottom: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.06)', border: '2px solid #fed7aa' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 8 }}>タスクを追加</div>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="タスク名"
+            autoFocus
+            style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14, marginBottom: 8 }}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+          />
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <input
+              type="number"
+              value={estMin}
+              onChange={e => setEstMin(e.target.value)}
+              placeholder="目安(分)"
+              style={{ flex: 1, padding: '8px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={handleAdd}
+              style={{ flex: 1, padding: '10px', borderRadius: 10, background: 'linear-gradient(135deg,#f97316,#facc15)', color: '#fff', fontWeight: 800, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+              追加
+            </button>
+            <button onClick={() => { setOpen(false); setName(''); setEstMin(''); }}
+              style={{ padding: '10px 16px', borderRadius: 10, background: '#f3f4f6', color: '#374151', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+              キャンセル
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // ☀️ 今日タブ
+    // ============================================================
+    function TodayTab({ templates, logs, setLogs, manual, setManual, streak, streakData, setStreakData, onGoToBatches, batches }) {
+      const [showConfetti, setShowConfetti] = React.useState(false);
+      const prevAllDoneRef = React.useRef(false);
+
+      // 今日のログ
+      const todayLog = logs[todayStr] || {};
+
+      // 有効テンプレートのみ
+      const activeTmpl = templates.filter(t => t.active);
+      const dailyTmpl = activeTmpl.filter(t => t.freq && t.freq.type === 'daily');
+      const weeklyTmpl = activeTmpl.filter(t => t.freq && t.freq.type === 'weekly');
+
+      // 週次カウント
+      const weekCounts = React.useMemo(() => {
+        const m = {};
+        weeklyTmpl.forEach(t => {
+          m[t.id] = getWeeklyCount(t.id, logs);
+        });
+        return m;
+      }, [logs, weeklyTmpl]);
+
+      // 表示する週次タスク（今週の回数を満たしていても表示するが、満たしていれば薄く）
+      // 要件: 今週の回数を満たすと自動で消える
+      const visibleWeeklyTmpl = weeklyTmpl.filter(t => {
+        const wc = weekCounts[t.id] || 0;
+        const needed = (t.freq && t.freq.timesPerWeek) || 1;
+        // 今日分がdoneでない かつ 今週の回数を満たしている → 非表示
+        const todayDone = todayLog[t.id] && todayLog[t.id].done;
+        if (wc >= needed && !todayDone) return false;
+        return true;
+      });
+
+      // 手動タスク: 未完了 or 本日完了
+      const visibleManual = manual.filter(t => {
+        if (t.done && t.doneDate && t.doneDate !== todayStr) return false;
+        return true;
+      });
+
+      // 進捗計算
+      const totalTasks = dailyTmpl.length + visibleWeeklyTmpl.length + visibleManual.length;
+      const doneTasks = (() => {
+        let n = 0;
+        dailyTmpl.forEach(t => { if (todayLog[t.id] && todayLog[t.id].done) n++; });
+        visibleWeeklyTmpl.forEach(t => { if (todayLog[t.id] && todayLog[t.id].done) n++; });
+        visibleManual.forEach(t => { if (t.done) n++; });
+        return n;
+      })();
+      const pct = totalTasks === 0 ? 0 : Math.round(doneTasks / totalTasks * 100);
+      const allDone = totalTasks > 0 && doneTasks === totalTasks;
+
+      // ストリーク・紙吹雪
+      React.useEffect(() => {
+        if (allDone && !prevAllDoneRef.current) {
+          const newStreak = { ...streakData, [todayStr]: true };
+          const cleaned = cleanStreak(newStreak);
+          lsSet('nobushop_todo2_streak', cleaned);
+          setStreakData(cleaned);
+          setShowConfetti(true);
+          setTimeout(() => setShowConfetti(false), 3500);
+        }
+        prevAllDoneRef.current = allDone;
+      }, [allDone]);
+
+      const streakNum = React.useMemo(() => calcStreak(streakData), [streakData]);
+
+      // 時間カード
+      const todayMin = React.useMemo(() => calcTodayMin(logs, manual), [logs, manual]);
+      const weekMin = React.useMemo(() => calcWeekMin(logs, manual), [logs, manual]);
+
+      // 日付表示
+      const d = new Date();
+      const WEEK = ['日','月','火','水','木','金','土'];
+      const dateLabel = (d.getMonth() + 1) + '月' + d.getDate() + '日（' + WEEK[d.getDay()] + '）';
+
+      const progressMsg = pct === 0
+        ? '今日も一日がんばろう！'
+        : pct === 100
+          ? '全部完了！おつかれさま🎉'
+          : 'いい調子！✨';
+
+      // テンプレートの完了トグル
+      function handleTmplToggle(tmpl, isDone, qty, min) {
+        const newLogs = { ...logs };
+        const dayLog = { ...(newLogs[todayStr] || {}) };
+        if (isDone) {
+          dayLog[tmpl.id] = { done: true, qty: qty, min: min || tmpl.estMin || 0 };
+        } else {
+          delete dayLog[tmpl.id];
+        }
+        newLogs[todayStr] = dayLog;
+        lsSet('nobushop_todo2_logs', newLogs);
+        setLogs(newLogs);
+      }
+
+      // テンプレートのエントリー更新（数量変更時）
+      function handleTmplEntry(tmpl, entry) {
+        const newLogs = { ...logs };
+        const dayLog = { ...(newLogs[todayStr] || {}) };
+        dayLog[tmpl.id] = { ...dayLog[tmpl.id], ...entry };
+        newLogs[todayStr] = dayLog;
+        lsSet('nobushop_todo2_logs', newLogs);
+        setLogs(newLogs);
+      }
+
+      // 手動タスクのトグル
+      function handleManualToggle(id) {
+        const newManual = manual.map(t => {
+          if (t.id !== id) return t;
+          const nowDone = !t.done;
+          return { ...t, done: nowDone, doneDate: nowDone ? todayStr : null };
+        });
+        lsSet('nobushop_todo2_manual', newManual);
+        setManual(newManual);
+      }
+
+      function handleManualAdd(item) {
+        const t = { id: 'manual_' + Date.now(), name: item.name, estMin: item.estMin, createdDate: todayStr, done: false, doneDate: null };
+        const newManual = [...manual, t];
+        lsSet('nobushop_todo2_manual', newManual);
+        setManual(newManual);
+      }
+
+      function handleManualDelete(id) {
+        const newManual = manual.filter(t => t.id !== id);
+        lsSet('nobushop_todo2_manual', newManual);
+        setManual(newManual);
+      }
+
+      // 外注バッジ未完了ステップサマリー
+      const batchSummary = React.useMemo(() => {
+        const STEP_NAMES = { kenpin: '検品', satsuei: '撮影', saisun: '採寸' };
+        for (const b of (batches || [])) {
+          if (!b || !b.steps) continue;
+          const allDone = ['kenpin','satsuei','saisun'].every(s => b.steps[s] === 'done');
+          if (allDone) continue;
+          const inProg = ['kenpin','satsuei','saisun'].find(s => b.steps[s] === 'working');
+          if (inProg) return STEP_NAMES[inProg] + 'が作業中';
+          const req = ['kenpin','satsuei','saisun'].find(s => b.steps[s] === 'requested');
+          if (req) return STEP_NAMES[req] + 'が依頼済み';
+        }
+        return null;
+      }, [batches]);
+
+      return (
+        <div className="tab-content">
+          {showConfetti && <Confetti />}
+
+          {/* ヘッダー */}
+          <div style={{
+            background: 'linear-gradient(135deg, #f97316 0%, #fb923c 40%, #facc15 100%)',
+            padding: '18px 16px 16px',
+            position: 'sticky', top: 0, zIndex: 10,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#fff', letterSpacing: '-0.3px' }}>☀️ 今日やること</div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 2 }}>{dateLabel}</div>
+              </div>
+              {streakNum > 0 && (
+                <div style={{ background: 'rgba(255,255,255,0.25)', borderRadius: 10, padding: '4px 12px', fontSize: 14, fontWeight: 800, color: '#fff' }}>
+                  🔥 {streakNum}日連続
+                </div>
+              )}
+            </div>
+
+            {/* 進捗バー */}
+            <div style={{ marginTop: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>{progressMsg}</div>
+                <div style={{ fontSize: 14, fontWeight: 900, color: '#fff' }}>{doneTasks} / {totalTasks} 完了</div>
+              </div>
+              <div style={{ background: 'rgba(255,255,255,0.3)', borderRadius: 99, height: 10, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', width: pct + '%',
+                  background: pct === 100 ? '#fff' : 'rgba(255,255,255,0.9)',
+                  borderRadius: 99, transition: 'width 0.4s cubic-bezier(0.34,1.56,0.64,1)',
+                  animation: 'progressGrow 0.6s ease',
+                }} />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ padding: '12px 12px 0' }}>
+            {/* 時間カード */}
+            <div style={{
+              background: '#fff', borderRadius: 16, padding: '14px 16px', marginBottom: 10,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.06)', border: '1px solid #f3f4f6',
+              display: 'flex', justifyContent: 'space-around', alignItems: 'center',
+            }}>
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 700, marginBottom: 2 }}>⏱ 今日</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#f97316' }}>{fmtMin(todayMin)}</div>
+              </div>
+              <div style={{ width: 1, height: 40, background: '#f3f4f6' }} />
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 700, marginBottom: 2 }}>📅 今週</div>
+                <div style={{ fontSize: 22, fontWeight: 900, color: '#6d28d9' }}>{fmtMin(weekMin)}</div>
+              </div>
+            </div>
+
+            {/* 外注サマリーカード */}
+            {batchSummary && (
+              <div
+                onClick={onGoToBatches}
+                style={{
+                  background: '#fff', borderRadius: 14, padding: '12px 16px', marginBottom: 10,
+                  border: '2px solid #fed7aa', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                }}
+              >
+                <span style={{ fontSize: 20 }}>📦</span>
+                <div style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#c2410c' }}>
+                  外注さん: {batchSummary}
+                </div>
+                <span style={{ color: '#d1d5db', fontSize: 16 }}>›</span>
+              </div>
+            )}
+
+            {/* 全完了メッセージ */}
+            {allDone && (
+              <div className="celebration-msg" style={{
+                marginBottom: 10,
+                background: 'linear-gradient(135deg,#fef9c3,#fff7ed)',
+                border: '2px solid #fde68a',
+                borderRadius: 16, padding: '16px', textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 36, marginBottom: 6 }}>🎉</div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: '#b45309' }}>全部完了！おつかれさま</div>
+                <div style={{ fontSize: 13, color: '#92400e', marginTop: 4 }}>今日もよくがんばりました✨</div>
+              </div>
+            )}
+
+            {/* 毎日タスク */}
+            {dailyTmpl.length > 0 && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#9ca3af', marginBottom: 6, marginTop: 4, letterSpacing: '0.5px' }}>
+                毎日タスク
+              </div>
+            )}
+            {dailyTmpl.map(tmpl => (
+              <TaskCard
+                key={tmpl.id}
+                tmpl={tmpl}
+                done={!!(todayLog[tmpl.id] && todayLog[tmpl.id].done)}
+                entry={todayLog[tmpl.id] || null}
+                onToggle={(isDone, qty, min) => handleTmplToggle(tmpl, isDone, qty, min)}
+                onEntry={(entry) => handleTmplEntry(tmpl, entry)}
+                weekCount={0}
+              />
+            ))}
+
+            {/* 週次タスク */}
+            {visibleWeeklyTmpl.length > 0 && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#9ca3af', marginBottom: 6, marginTop: 8, letterSpacing: '0.5px' }}>
+                週次タスク
+              </div>
+            )}
+            {visibleWeeklyTmpl.map(tmpl => (
+              <TaskCard
+                key={tmpl.id}
+                tmpl={tmpl}
+                done={!!(todayLog[tmpl.id] && todayLog[tmpl.id].done)}
+                entry={todayLog[tmpl.id] || null}
+                onToggle={(isDone, qty, min) => handleTmplToggle(tmpl, isDone, qty, min)}
+                onEntry={(entry) => handleTmplEntry(tmpl, entry)}
+                weekCount={weekCounts[tmpl.id] || 0}
+              />
+            ))}
+
+            {/* 手動タスク */}
+            {visibleManual.length > 0 && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#9ca3af', marginBottom: 6, marginTop: 8, letterSpacing: '0.5px' }}>
+                追加タスク
+              </div>
+            )}
+            {visibleManual.map(task => (
+              <ManualTaskCard
+                key={task.id}
+                task={task}
+                onToggle={handleManualToggle}
+                onDelete={handleManualDelete}
+              />
+            ))}
+
+            {/* 追加フォーム */}
+            <div style={{ marginTop: 8 }}>
+              <AddManualForm onAdd={handleManualAdd} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // 📦 外注タブ
+    // ============================================================
+    const STEP_DEFS = [
+      { key: 'kenpin', label: '🔍 検品', estMin: 10 },
+      { key: 'satsuei', label: '📷 撮影', estMin: 120 },
+      { key: 'saisun', label: '📏 採寸', estMin: 10 },
+    ];
+
+    function BatchCard({ batch, onUpdateStep, onDelete }) {
+      const allDone = STEP_DEFS.every(s => batch.steps[s.key] === 'done');
+
+      function cycleStatus(key) {
+        const cur = batch.steps[key] || 'none';
+        const idx = STATUS_LIST.indexOf(cur);
+        const next = STATUS_LIST[(idx + 1) % STATUS_LIST.length];
+        onUpdateStep(batch.id, key, next);
+      }
+
+      return (
+        <div style={{
+          background: '#fff', borderRadius: 16, padding: '14px 16px', marginBottom: 10,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+          border: '2px solid ' + (allDone ? '#bbf7d0' : '#e5e7eb'),
+          opacity: allDone ? 0.7 : 1,
+        }}>
+          {/* バッチヘッダー */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>
+                {batch.label}
+              </div>
+              <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 1 }}>{batch.date}</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {allDone && (
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d', background: '#bbf7d0', padding: '3px 10px', borderRadius: 20 }}>
+                  ✅ 出品できます！
+                </span>
+              )}
+              <button
+                onClick={() => onDelete(batch.id)}
+                style={{ background: 'none', border: 'none', color: '#d1d5db', fontSize: 18, cursor: 'pointer', padding: '0 2px' }}
+              >✕</button>
+            </div>
+          </div>
+
+          {/* ステップ */}
+          {STEP_DEFS.map(step => (
+            <div key={step.key} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
+              <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: '#374151' }}>{step.label}</span>
+              <span style={{ fontSize: 11, color: '#9ca3af' }}>{fmtMin(step.estMin)}</span>
+              <StatusChip
+                status={batch.steps[step.key] || 'none'}
+                onClick={() => cycleStatus(step.key)}
+              />
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function BatchesTab({ batches, setBatches }) {
+      const [showAddForm, setShowAddForm] = React.useState(false);
+      const [newLabel, setNewLabel] = React.useState('');
+      const [newDate, setNewDate] = React.useState(todayStr);
+      const [deleteConfirmId, setDeleteConfirmId] = React.useState(null);
+
+      function handleAdd() {
+        if (!newLabel.trim()) return;
+        const batch = {
+          id: 'batch_' + Date.now(),
+          date: newDate || todayStr,
+          label: newLabel.trim(),
+          steps: { kenpin: 'none', satsuei: 'none', saisun: 'none' },
+        };
+        const next = [...batches, batch];
+        lsSet('nobushop_todo2_batches', next);
+        setBatches(next);
+        setNewLabel('');
+        setNewDate(todayStr);
+        setShowAddForm(false);
+      }
+
+      function handleUpdateStep(batchId, stepKey, status) {
+        const next = batches.map(b => {
+          if (b.id !== batchId) return b;
+          return { ...b, steps: { ...b.steps, [stepKey]: status } };
+        });
+        lsSet('nobushop_todo2_batches', next);
+        setBatches(next);
+      }
+
+      function handleDelete(id) {
+        if (deleteConfirmId !== id) {
+          setDeleteConfirmId(id);
+          return;
+        }
+        const next = batches.filter(b => b.id !== id);
+        lsSet('nobushop_todo2_batches', next);
+        setBatches(next);
+        setDeleteConfirmId(null);
+      }
+
+      // 完了バッチを後ろに
+      const sorted = [...batches].sort((a, b) => {
+        const aDone = STEP_DEFS.every(s => a.steps[s.key] === 'done');
+        const bDone = STEP_DEFS.every(s => b.steps[s.key] === 'done');
+        if (aDone && !bDone) return 1;
+        if (!aDone && bDone) return -1;
+        return 0;
+      });
+
+      return (
+        <div className="tab-content">
+          {/* ヘッダー */}
+          <div style={{
+            background: 'linear-gradient(135deg, #f97316 0%, #fb923c 40%, #facc15 100%)',
+            padding: '18px 16px 16px',
+          }}>
+            <div style={{ fontSize: 22, fontWeight: 900, color: '#fff' }}>📦 外注管理</div>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 2 }}>検品・撮影・採寸の進捗</div>
+          </div>
+
+          <div style={{ padding: '12px 12px 0' }}>
+            {/* 追加フォーム */}
+            {showAddForm ? (
+              <div style={{ background: '#fff', borderRadius: 16, padding: '16px', marginBottom: 10, border: '2px solid #fed7aa' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 8 }}>仕入れ分を追加</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <input
+                    type="date"
+                    value={newDate}
+                    onChange={e => setNewDate(e.target.value)}
+                    style={{ flex: 1, padding: '8px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+                  />
+                </div>
+                <input
+                  value={newLabel}
+                  onChange={e => setNewLabel(e.target.value)}
+                  placeholder="ラベル（例: 30着 古着セット）"
+                  autoFocus
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14, marginBottom: 10 }}
+                  onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={handleAdd}
+                    style={{ flex: 1, padding: '10px', borderRadius: 10, background: 'linear-gradient(135deg,#f97316,#facc15)', color: '#fff', fontWeight: 800, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+                    追加
+                  </button>
+                  <button onClick={() => { setShowAddForm(false); setNewLabel(''); setNewDate(todayStr); }}
+                    style={{ padding: '10px 16px', borderRadius: 10, background: '#f3f4f6', color: '#374151', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+                    キャンセル
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowAddForm(true)}
+                style={{
+                  width: '100%', marginBottom: 10,
+                  padding: '13px', borderRadius: 12,
+                  border: '2px dashed #fed7aa', background: 'transparent',
+                  color: '#f97316', fontWeight: 700, fontSize: 14, cursor: 'pointer',
+                }}
+              >
+                ＋ 仕入れ分を追加
+              </button>
+            )}
+
+            {sorted.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af' }}>
+                <div style={{ fontSize: 40, marginBottom: 8 }}>📦</div>
+                <div style={{ fontSize: 14, fontWeight: 600 }}>外注バッチがありません</div>
+              </div>
+            )}
+
+            {sorted.map(batch => (
+              <div key={batch.id}>
+                {deleteConfirmId === batch.id && (
+                  <div style={{
+                    background: '#fef2f2', borderRadius: 12, padding: '12px 14px', marginBottom: 6,
+                    border: '1.5px solid #fecaca', display: 'flex', alignItems: 'center', gap: 10,
+                  }}>
+                    <span style={{ flex: 1, fontSize: 13, color: '#dc2626', fontWeight: 700 }}>「{batch.label}」を削除しますか？</span>
+                    <button onClick={() => handleDelete(batch.id)}
+                      style={{ padding: '6px 14px', borderRadius: 8, background: '#dc2626', color: '#fff', fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer' }}>
+                      削除
+                    </button>
+                    <button onClick={() => setDeleteConfirmId(null)}
+                      style={{ padding: '6px 14px', borderRadius: 8, background: '#f3f4f6', color: '#374151', fontWeight: 700, fontSize: 13, border: 'none', cursor: 'pointer' }}>
+                      キャンセル
+                    </button>
+                  </div>
+                )}
+                <BatchCard
+                  batch={batch}
+                  onUpdateStep={handleUpdateStep}
+                  onDelete={handleDelete}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // ⚙️ 設定タブ
+    // ============================================================
+    const FREQ_OPTIONS = [
+      { value: 'daily', label: '毎日' },
+      { value: 'weekly_1', label: '週1回' },
+      { value: 'weekly_2', label: '週2回' },
+      { value: 'weekly_3', label: '週3回' },
+    ];
+
+    function freqToValue(freq) {
+      if (!freq || freq.type === 'daily') return 'daily';
+      return 'weekly_' + (freq.timesPerWeek || 1);
+    }
+    function valueToFreq(val) {
+      if (val === 'daily') return { type: 'daily' };
+      const n = parseInt(val.split('_')[1], 10);
+      return { type: 'weekly', timesPerWeek: n };
+    }
+
+    function TemplateRow({ tmpl, onChange, onDelete }) {
+      const [editing, setEditing] = React.useState(false);
+      const [name, setName] = React.useState(tmpl.name);
+      const [emoji, setEmoji] = React.useState(tmpl.emoji || '');
+      const [estMin, setEstMin] = React.useState(String(tmpl.estMin || ''));
+      const [freqVal, setFreqVal] = React.useState(freqToValue(tmpl.freq));
+      const [minutesPer, setMinutesPer] = React.useState(String((tmpl.perUnit && tmpl.perUnit.minutesPer) || ''));
+      const [per, setPer] = React.useState(String((tmpl.perUnit && tmpl.perUnit.per) || ''));
+      const [unitLabel, setUnitLabel] = React.useState((tmpl.perUnit && tmpl.perUnit.unitLabel) || '');
+      const [hasUnit, setHasUnit] = React.useState(!!tmpl.perUnit);
+
+      function handleSave() {
+        const updated = {
+          ...tmpl,
+          name: name.trim() || tmpl.name,
+          emoji: emoji.trim() || tmpl.emoji,
+          freq: valueToFreq(freqVal),
+          estMin: parseInt(estMin, 10) || 0,
+        };
+        if (hasUnit && minutesPer && per) {
+          updated.perUnit = {
+            minutesPer: parseInt(minutesPer, 10) || 10,
+            per: parseInt(per, 10) || 1,
+            unitLabel: unitLabel || '個',
+          };
+        } else {
+          delete updated.perUnit;
+        }
+        onChange(updated);
+        setEditing(false);
+      }
+
+      return (
+        <div style={{ background: '#fff', borderRadius: 14, marginBottom: 8, overflow: 'hidden', border: '1.5px solid #f3f4f6', boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
+          {/* 非編集行 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px' }}>
+            <span style={{ fontSize: 18 }}>{tmpl.emoji}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: tmpl.active ? '#111827' : '#9ca3af', textDecoration: tmpl.active ? 'none' : 'line-through' }}>
+                {tmpl.name}
+              </div>
+              <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                {freqToValue(tmpl.freq) === 'daily' ? '毎日' : ('週' + ((tmpl.freq && tmpl.freq.timesPerWeek) || 1) + '回')}
+                {' '}
+                {tmpl.perUnit
+                  ? tmpl.perUnit.per + tmpl.perUnit.unitLabel + '→' + tmpl.perUnit.minutesPer + '分'
+                  : fmtMin(tmpl.estMin)
+                }
+              </div>
+            </div>
+            {/* 有効トグル */}
+            <button
+              onClick={() => onChange({ ...tmpl, active: !tmpl.active })}
               style={{
-                fontSize: 12, padding: '3px 10px', borderRadius: 8,
-                border: '1px solid #d1d5db',
-                background: editMode ? '#f59e0b' : '#fff',
-                color: editMode ? '#fff' : '#374151',
-                fontWeight: 600, cursor: 'pointer'
+                width: 40, height: 22, borderRadius: 11,
+                background: tmpl.active ? '#f97316' : '#d1d5db',
+                border: 'none', cursor: 'pointer', position: 'relative',
+                transition: 'background 0.2s', flexShrink: 0,
               }}
             >
-              {editMode ? '完了' : '編集'}
+              <span style={{
+                position: 'absolute', top: 2, left: tmpl.active ? 20 : 2,
+                width: 18, height: 18, borderRadius: 9,
+                background: '#fff', transition: 'left 0.2s',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+              }} />
+            </button>
+            <button onClick={() => setEditing(e => !e)}
+              style={{ fontSize: 13, padding: '4px 10px', borderRadius: 8, border: '1px solid #d1d5db', background: editing ? '#f97316' : '#fff', color: editing ? '#fff' : '#374151', cursor: 'pointer', fontWeight: 700 }}>
+              {editing ? '閉じる' : '編集'}
+            </button>
+            <button onClick={() => onDelete(tmpl.id)}
+              style={{ fontSize: 13, padding: '4px 8px', borderRadius: 8, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer' }}>
+              🗑
             </button>
           </div>
 
-          {routines.map((r, idx) => {
-            if (!r || !r.id) return null;
-            const done = routineDone.includes(r.id);
-            const tagSt = TAG_STYLE[r.tag] || { background: '#f3f4f6', color: '#374151' };
-
-            if (editMode && editingId === r.id) {
-              return (
-                <div key={r.id} style={{ padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
+          {/* 編集フォーム */}
+          {editing && (
+            <div style={{ padding: '0 14px 14px', borderTop: '1px solid #f3f4f6' }}>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, marginTop: 10 }}>
+                <input
+                  value={emoji}
+                  onChange={e => setEmoji(e.target.value)}
+                  placeholder="絵文字"
+                  style={{ width: 50, padding: '7px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 16, textAlign: 'center' }}
+                />
+                <input
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="タスク名"
+                  style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                <select
+                  value={freqVal}
+                  onChange={e => setFreqVal(e.target.value)}
+                  style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14, background: '#fff' }}
+                >
+                  {FREQ_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                {!hasUnit && (
                   <input
-                    value={editText}
-                    onChange={e => setEditText(e.target.value)}
-                    style={{ width: '100%', padding: '6px 8px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, marginBottom: 6 }}
-                  />
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                    {['自分', 'Claude', '外注候補'].map(t => (
-                      <button key={t} onClick={() => setEditTag(t)}
-                        style={{
-                          fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #d1d5db',
-                          background: editTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].background : '#f3f4f6') : '#fff',
-                          color: editTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].color : '#374151') : '#374151',
-                          fontWeight: 600, cursor: 'pointer'
-                        }}>【{t}】</button>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button
-                      onClick={() => {
-                        const next = routines.map(x => x.id === r.id ? { ...x, text: editText, tag: editTag } : x);
-                        saveRoutines(next);
-                        setEditingId(null);
-                      }}
-                      style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, background: '#2563eb', color: '#fff', border: 'none', fontWeight: 700, cursor: 'pointer' }}
-                    >保存</button>
-                    <button
-                      onClick={() => setEditingId(null)}
-                      style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, background: '#f3f4f6', color: '#374151', border: 'none', fontWeight: 600, cursor: 'pointer' }}
-                    >キャンセル</button>
-                  </div>
-                </div>
-              );
-            }
-
-            return (
-              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #f3f4f6' }}>
-                {!editMode && (
-                  <input
-                    type="checkbox"
-                    checked={done}
-                    onChange={() => toggleDone(r.id)}
-                    style={{ width: 20, height: 20, flexShrink: 0, accentColor: '#ea580c' }}
+                    type="number"
+                    value={estMin}
+                    onChange={e => setEstMin(e.target.value)}
+                    placeholder="目安(分)"
+                    style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
                   />
                 )}
-                <div style={{ flex: 1, opacity: done && !editMode ? 0.4 : 1, textDecoration: done && !editMode ? 'line-through' : 'none' }}>
-                  <span style={{ fontSize: 13, color: '#111827' }}>
-                    <span style={{ fontWeight: 600 }}>{idx + 1}. </span>{r.text}
-                  </span>
-                </div>
-                <span style={{ ...tagSt, fontSize: 10, padding: '2px 7px', borderRadius: 6, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>【{r.tag}】</span>
-                {editMode && (
-                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-                    <button
-                      onClick={() => { setEditingId(r.id); setEditText(r.text); setEditTag(r.tag); }}
-                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff', color: '#374151', cursor: 'pointer' }}
-                    >✏️</button>
-                    <button
-                      onClick={() => saveRoutines(routines.filter(x => x.id !== r.id))}
-                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer' }}
-                    >🗑</button>
-                  </div>
-                )}
               </div>
-            );
-          })}
-
-          {editMode && (
-            <div style={{ padding: '10px 0 2px', borderTop: '1px solid #f3f4f6' }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 6 }}>タスクを追加</div>
-              <input
-                value={newText}
-                onChange={e => setNewText(e.target.value)}
-                placeholder="タスク名を入力..."
-                style={{ width: '100%', padding: '6px 8px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, marginBottom: 6 }}
-              />
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
-                {['自分', 'Claude', '外注候補'].map(t => (
-                  <button key={t} onClick={() => setNewTag(t)}
-                    style={{
-                      fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #d1d5db',
-                      background: newTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].background : '#f3f4f6') : '#fff',
-                      color: newTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].color : '#374151') : '#374151',
-                      fontWeight: 600, cursor: 'pointer'
-                    }}>【{t}】</button>
-                ))}
-              </div>
-              <button
-                onClick={() => {
-                  if (!newText.trim()) return;
-                  const item = { id: 'r' + Date.now(), text: newText.trim(), tag: newTag };
-                  saveRoutines([...routines, item]);
-                  setNewText('');
-                  setNewTag('自分');
-                }}
-                style={{ fontSize: 12, padding: '5px 14px', borderRadius: 8, background: '#22c55e', color: '#fff', border: 'none', fontWeight: 700, cursor: 'pointer' }}
-              >＋ 追加</button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ============================================================
-    // Section3: 出品ノルマ
-    // ============================================================
-    function QuotaSection({ inventory }) {
-      const [quota, setQuota] = React.useState(() => lsGet('nobushop_today_quota', 5));
-
-      const changeQuota = (n) => {
-        setQuota(n);
-        lsSet('nobushop_today_quota', n);
-      };
-
-      const unlistedItems = React.useMemo(() => {
-        return (inventory || [])
-          .filter(i => i && i.status === 'unlisted')
-          .sort((a, b) => {
-            const da = a.purchaseDate || '9999';
-            const db = b.purchaseDate || '9999';
-            return da < db ? -1 : da > db ? 1 : 0;
-          });
-      }, [inventory]);
-
-      const quotaItems = unlistedItems.slice(0, quota);
-
-      return (
-        <div style={cardStyle('#fef9c3')}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: '#b45309' }}>🟡 出品する（今日のノルマ）</div>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {[3, 5, 10].map(n => (
-                <button key={n} onClick={() => changeQuota(n)}
-                  style={{
-                    fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid #d1d5db',
-                    background: quota === n ? '#f59e0b' : '#fff',
-                    color: quota === n ? '#fff' : '#374151',
-                    fontWeight: 700, cursor: 'pointer'
-                  }}>{n}件</button>
-              ))}
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10 }}>未出品 残り {unlistedItems.length} 件</div>
-
-          {quotaItems.length === 0 ? (
-            <div style={{ fontSize: 14, color: '#9ca3af', padding: '8px 0 6px' }}>未出品の在庫はありません 🎉</div>
-          ) : (
-            quotaItems.map(item => {
-              if (!item || !item.id) return null;
-              const diff = daysDiff(item.purchaseDate);
-              const thumb = (Array.isArray(item.photos) && item.photos[0] && item.photos[0].thumbDataUrl)
-                ? item.photos[0].thumbDataUrl : null;
-              return (
-                <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #fefce8' }}>
-                  {thumb ? (
-                    <img src={thumb} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} onError={e => { e.target.style.display = 'none'; }} />
-                  ) : (
-                    <div style={{ width: 44, height: 44, borderRadius: 8, background: '#f3f4f6', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, color: '#d1d5db' }}>👗</div>
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    {item.brand && <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>{item.brand}</div>}
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {item.productName || '（商品名未設定）'}
-                    </div>
-                    <div style={{ fontSize: 11, color: diff !== null && diff > 30 ? '#dc2626' : '#9ca3af' }}>
-                      仕入れから {diff !== null ? diff + '日' : '不明'}
-                    </div>
-                  </div>
+              {/* 数量型トグル */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: '#374151' }}>
+                <input type="checkbox" checked={hasUnit} onChange={e => setHasUnit(e.target.checked)} style={{ width: 16, height: 16 }} />
+                数量型（〇個ごとに△分）
+              </label>
+              {hasUnit && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                  <input
+                    type="number"
+                    value={per}
+                    onChange={e => setPer(e.target.value)}
+                    placeholder="個数"
+                    style={{ width: 80, padding: '7px 8px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+                  />
+                  <input
+                    value={unitLabel}
+                    onChange={e => setUnitLabel(e.target.value)}
+                    placeholder="単位（商品など）"
+                    style={{ width: 110, padding: '7px 8px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+                  />
+                  <span style={{ alignSelf: 'center', fontSize: 13, color: '#6b7280' }}>あたり</span>
+                  <input
+                    type="number"
+                    value={minutesPer}
+                    onChange={e => setMinutesPer(e.target.value)}
+                    placeholder="分"
+                    style={{ width: 70, padding: '7px 8px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+                  />
+                  <span style={{ alignSelf: 'center', fontSize: 13, color: '#6b7280' }}>分</span>
                 </div>
-              );
-            })
-          )}
-        </div>
-      );
-    }
-
-    // ============================================================
-    // Section4: 値下げ候補
-    // ============================================================
-    function StaleSection({ inventory }) {
-      const [staleDays, setStaleDays] = React.useState(() => lsGet('nobushop_today_stale_days', 30));
-
-      const changeStaleDays = (n) => {
-        setStaleDays(n);
-        lsSet('nobushop_today_stale_days', n);
-      };
-
-      const staleItems = React.useMemo(() => {
-        return (inventory || [])
-          .filter(i => {
-            if (!i || i.status !== 'listed') return false;
-            const refDate = i.listDate || i.purchaseDate;
-            if (!refDate) return false;
-            const diff = daysDiff(refDate);
-            return diff !== null && diff >= staleDays;
-          })
-          .sort((a, b) => {
-            const da = daysDiff(a.listDate || a.purchaseDate || '9999') || 0;
-            const db = daysDiff(b.listDate || b.purchaseDate || '9999') || 0;
-            return db - da;
-          });
-      }, [inventory, staleDays]);
-
-      const staleShown = staleItems.slice(0, 10);
-      const staleRest = staleItems.length - staleShown.length;
-
-      return (
-        <div style={cardStyle('#dcfce7')}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: '#15803d' }}>🟢 値下げ候補</div>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {[14, 30, 60].map(n => (
-                <button key={n} onClick={() => changeStaleDays(n)}
-                  style={{
-                    fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid #d1d5db',
-                    background: staleDays === n ? '#22c55e' : '#fff',
-                    color: staleDays === n ? '#fff' : '#374151',
-                    fontWeight: 700, cursor: 'pointer'
-                  }}>{n}日</button>
-              ))}
-            </div>
-          </div>
-
-          {staleShown.length === 0 ? (
-            <div style={{ fontSize: 14, color: '#9ca3af', padding: '8px 0 6px' }}>値下げ候補はありません 🎉</div>
-          ) : (
-            <>
-              {staleShown.map(item => {
-                if (!item || !item.id) return null;
-                const refDate = item.listDate || item.purchaseDate;
-                const diff = daysDiff(refDate);
-                return (
-                  <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #f0fdf4' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {item.brand && <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>{item.brand}</div>}
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {item.productName || '（商品名未設定）'}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#6b7280' }}>
-                        ¥{((item.listPrice || 0)).toLocaleString('ja-JP')}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>
-                      {diff !== null ? diff + '日' : '不明'}
-                    </div>
-                  </div>
-                );
-              })}
-              {staleRest > 0 && (
-                <div style={{ fontSize: 12, color: '#6b7280', padding: '6px 0 2px', textAlign: 'center' }}>他 {staleRest} 件</div>
               )}
-            </>
-          )}
-        </div>
-      );
-    }
-
-    // ============================================================
-    // フッター: 外注・Claude分担ガイド
-    // ============================================================
-    function GuideFooter() {
-      const [open, setOpen] = React.useState(false);
-
-      const STEPS = [
-        ['仕入れ判断', '自分'],
-        ['仕入れ', '自分'],
-        ['検品', '外注候補'],
-        ['撮影', '外注候補'],
-        ['採寸', '外注候補'],
-        ['出品文', 'Claude'],
-        ['出品', '自分'],
-        ['価格改定', '自分+Claude'],
-        ['交渉対応', '自分'],
-        ['梱包発送', '外注候補'],
-        ['記録', 'Claude'],
-        ['月次分析', 'Claude'],
-      ];
-
-      const stepStyle = (who) => {
-        if (who === 'Claude') return { background: '#ede9fe', color: '#6d28d9' };
-        if (who === '外注候補') return { background: '#ffedd5', color: '#c2410c' };
-        if (who === '自分+Claude') return { background: '#dbeafe', color: '#1d4ed8' };
-        return { background: '#dbeafe', color: '#1d4ed8' };
-      };
-
-      return (
-        <div style={{ margin: '12px 12px 16px', background: '#fff', borderRadius: 14, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1px solid #e5e7eb' }}>
-          <button
-            onClick={() => setOpen(o => !o)}
-            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: '#374151' }}
-          >
-            <span>📋 外注・Claude分担ガイド</span>
-            <span style={{ fontSize: 12, color: '#9ca3af' }}>{open ? '▲ 閉じる' : '▼ 開く'}</span>
-          </button>
-          {open && (
-            <div style={{ padding: '0 14px 14px', fontSize: 12, color: '#374151' }}>
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 800, color: '#374151', marginBottom: 4 }}>🧑 自分にしかできない</div>
-                <div style={{ color: '#6b7280' }}>仕入れ判断 / 出品ボタン / 顧客対応の最終判断</div>
-              </div>
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 800, color: '#6d28d9', marginBottom: 4 }}>🤖 Claudeに任せる</div>
-                <div style={{ color: '#6b7280' }}>出品文作成 / 売上記録 / 月次分析 / 外注マニュアル作り / 定型返答集</div>
-              </div>
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ fontWeight: 800, color: '#c2410c', marginBottom: 4 }}>📦 外注に向く</div>
-                <div style={{ color: '#6b7280' }}>検品 / 撮影 / 採寸 / 梱包・発送（週20件超えたら検討）</div>
-              </div>
-              <div style={{ background: '#f9fafb', borderRadius: 10, padding: '10px 12px' }}>
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>工程表</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 11 }}>
-                  {STEPS.map(([step, who], i) => {
-                    const isLast = i === STEPS.length - 1;
-                    return (
-                      <React.Fragment key={i}>
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                          <span style={{ padding: '2px 6px', borderRadius: 5, fontWeight: 700, ...stepStyle(who) }}>{step}</span>
-                          <span style={{ fontSize: 10, color: '#9ca3af' }}>【{who}】</span>
-                        </div>
-                        {!isLast && <span style={{ color: '#d1d5db', alignSelf: 'flex-start', paddingTop: 4 }}>→</span>}
-                      </React.Fragment>
-                    );
-                  })}
-                </div>
-              </div>
+              <button onClick={handleSave}
+                style={{ padding: '9px 20px', borderRadius: 10, background: 'linear-gradient(135deg,#f97316,#facc15)', color: '#fff', fontWeight: 800, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+                保存
+              </button>
             </div>
           )}
         </div>
       );
     }
 
-    // ============================================================
-    // カードスタイルヘルパー
-    // ============================================================
-    function cardStyle(borderColor) {
-      return {
-        margin: '12px 12px 0',
-        background: '#fff',
-        borderRadius: 14,
-        padding: '14px 14px 8px',
-        boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
-        border: '1px solid ' + borderColor,
-      };
+    function SettingsTab({ templates, setTemplates }) {
+      const [showAdd, setShowAdd] = React.useState(false);
+      const [newName, setNewName] = React.useState('');
+      const [newEmoji, setNewEmoji] = React.useState('');
+      const [newFreq, setNewFreq] = React.useState('daily');
+      const [newEstMin, setNewEstMin] = React.useState('');
+
+      function handleChange(updated) {
+        const next = templates.map(t => t.id === updated.id ? updated : t);
+        lsSet('nobushop_todo2_templates', next);
+        setTemplates(next);
+      }
+
+      function handleDelete(id) {
+        if (!window.confirm('このタスクを削除しますか？')) return;
+        const next = templates.filter(t => t.id !== id);
+        lsSet('nobushop_todo2_templates', next);
+        setTemplates(next);
+      }
+
+      function handleAdd() {
+        if (!newName.trim()) return;
+        const t = {
+          id: 'tmpl_' + Date.now(),
+          name: newName.trim(),
+          emoji: newEmoji.trim() || '📌',
+          freq: valueToFreq(newFreq),
+          estMin: parseInt(newEstMin, 10) || 0,
+          active: true,
+        };
+        const next = [...templates, t];
+        lsSet('nobushop_todo2_templates', next);
+        setTemplates(next);
+        setNewName('');
+        setNewEmoji('');
+        setNewFreq('daily');
+        setNewEstMin('');
+        setShowAdd(false);
+      }
+
+      return (
+        <div className="tab-content">
+          <div style={{
+            background: 'linear-gradient(135deg, #f97316 0%, #fb923c 40%, #facc15 100%)',
+            padding: '18px 16px 16px',
+          }}>
+            <div style={{ fontSize: 22, fontWeight: 900, color: '#fff' }}>⚙️ タスク設定</div>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 2 }}>タスクの追加・編集・有効無効</div>
+          </div>
+
+          <div style={{ padding: '12px 12px 0' }}>
+            {/* 追加ボタン */}
+            {showAdd ? (
+              <div style={{ background: '#fff', borderRadius: 14, padding: '14px', marginBottom: 10, border: '2px solid #fed7aa' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 8 }}>新しいタスクを追加</div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <input value={newEmoji} onChange={e => setNewEmoji(e.target.value)} placeholder="絵文字"
+                    style={{ width: 50, padding: '7px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 16, textAlign: 'center' }} />
+                  <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="タスク名" autoFocus
+                    style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }}
+                    onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }} />
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                  <select value={newFreq} onChange={e => setNewFreq(e.target.value)}
+                    style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14, background: '#fff' }}>
+                    {FREQ_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                  <input type="number" value={newEstMin} onChange={e => setNewEstMin(e.target.value)} placeholder="目安(分)"
+                    style={{ flex: 1, padding: '7px 10px', borderRadius: 10, border: '1px solid #d1d5db', fontSize: 14 }} />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={handleAdd}
+                    style={{ flex: 1, padding: '10px', borderRadius: 10, background: 'linear-gradient(135deg,#f97316,#facc15)', color: '#fff', fontWeight: 800, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+                    追加
+                  </button>
+                  <button onClick={() => setShowAdd(false)}
+                    style={{ padding: '10px 16px', borderRadius: 10, background: '#f3f4f6', color: '#374151', fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' }}>
+                    キャンセル
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => setShowAdd(true)}
+                style={{
+                  width: '100%', marginBottom: 10, padding: '12px', borderRadius: 12,
+                  border: '2px dashed #fed7aa', background: 'transparent',
+                  color: '#f97316', fontWeight: 700, fontSize: 14, cursor: 'pointer',
+                }}>
+                ＋ タスクを追加
+              </button>
+            )}
+
+            {templates.map(tmpl => (
+              <TemplateRow key={tmpl.id} tmpl={tmpl} onChange={handleChange} onDelete={handleDelete} />
+            ))}
+          </div>
+        </div>
+      );
     }
 
     // ============================================================
     // メインApp
     // ============================================================
     function App() {
-      const [status, setStatus] = React.useState('loading'); // loading | ok | error
-      const [inventory, setInventory] = React.useState([]);
-      const [sales, setSales] = React.useState([]);
-      const [errorMsg, setErrorMsg] = React.useState('');
-
-      const fetchData = React.useCallback(async () => {
-        setStatus('loading');
-        setErrorMsg('');
-
-        // 1st: /api/data
-        try {
-          const res = await fetch('/api/data');
-          if (res.ok) {
-            const json = await res.json();
-            if (json.ok) {
-              setInventory(Array.isArray(json.inventory) ? json.inventory : []);
-              setSales(Array.isArray(json.sales) ? json.sales : []);
-              setStatus('ok');
-              return;
-            }
-            throw new Error(json.error || 'APIエラー');
-          }
-          throw new Error('HTTP ' + res.status);
-        } catch (e1) {
-          // 2nd: localStorage フォールバック
-          try {
-            const raw = localStorage.getItem('nobushop_data');
-            if (raw) {
-              const cached = JSON.parse(raw);
-              if (cached && (Array.isArray(cached.inventory) || Array.isArray(cached.sales))) {
-                setInventory(Array.isArray(cached.inventory) ? cached.inventory : []);
-                setSales(Array.isArray(cached.sales) ? cached.sales : []);
-                setStatus('ok');
-                return;
-              }
-            }
-          } catch (_) {}
-
-          setErrorMsg('データを取得できませんでした: ' + e1.message);
-          setStatus('error');
-        }
-      }, []);
-
-      React.useEffect(() => { fetchData(); }, [fetchData]);
-
-      // サマリー計算
-      const shipCount = React.useMemo(() => {
-        return (sales || []).filter(s => {
-          if (!s || !s.saleDate) return false;
-          const diff = daysDiff(s.saleDate);
-          return diff !== null && diff >= 0 && diff <= 2;
-        }).length;
-      }, [sales]);
-
-      const unlistCount = React.useMemo(() => {
-        return (inventory || []).filter(i => i && i.status === 'unlisted').length;
-      }, [inventory]);
-
-      const staleCount = React.useMemo(() => {
-        const days = lsGet('nobushop_today_stale_days', 30);
-        return (inventory || []).filter(i => {
-          if (!i || i.status !== 'listed') return false;
-          const refDate = i.listDate || i.purchaseDate;
-          if (!refDate) return false;
-          const diff = daysDiff(refDate);
-          return diff !== null && diff >= days;
-        }).length;
-      }, [inventory]);
-
-      const chipStyle = (color, active) => ({
-        display: 'inline-flex', alignItems: 'center', gap: 4,
-        padding: '4px 10px', borderRadius: 99,
-        fontSize: 12, fontWeight: 700,
-        background: active ? color : '#f3f4f6',
-        color: active ? '#fff' : '#9ca3af',
-        marginRight: 6, marginBottom: 6,
+      // 初期化: App初回マウント時にデータ準備・旧キー削除
+      const [templates, setTemplates] = React.useState(() => {
+        const init = initData(); // 旧キー削除・ログクリーンアップ・初期テンプレ書き込みをここで実行
+        return init.templates;
       });
-
-      // 日付表示
-      const d = new Date();
-      const dateLabel = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日（' + ['日','月','火','水','木','金','土'][d.getDay()] + '）';
+      const [logs, setLogs] = React.useState(() => lsGet('nobushop_todo2_logs', {}));
+      const [manual, setManual] = React.useState(() => {
+        let m = lsGet('nobushop_todo2_manual', []);
+        if (!Array.isArray(m)) m = [];
+        return m;
+      });
+      const [batches, setBatches] = React.useState(() => {
+        let b = lsGet('nobushop_todo2_batches', []);
+        if (!Array.isArray(b)) b = [];
+        return b;
+      });
+      const [streakData, setStreakData] = React.useState(() => {
+        const raw = lsGet('nobushop_todo2_streak', {});
+        return cleanStreak(raw);
+      });
+      const [tab, setTab] = React.useState('today');
 
       return (
-        <div style={{ paddingBottom: 40 }}>
-          {/* ヘッダー */}
-          <div style={{ padding: '16px 16px 10px', background: '#fff', borderBottom: '2px solid #fed7aa', position: 'sticky', top: 0, zIndex: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-              <div style={{ fontSize: 20, fontWeight: 900, color: '#ea580c' }}>☀️ 今日やること</div>
-              <button
-                onClick={fetchData}
-                disabled={status === 'loading'}
-                style={{
-                  fontSize: 12, padding: '4px 10px', borderRadius: 8,
-                  border: '1px solid #fed7aa', background: '#fff7ed',
-                  color: '#ea580c', fontWeight: 700, cursor: 'pointer',
-                  opacity: status === 'loading' ? 0.5 : 1,
-                }}
-              >↻ 更新</button>
-            </div>
-            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>{dateLabel}</div>
-            {status === 'ok' && (
-              <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-                <span style={chipStyle('#ef4444', shipCount > 0)}>🔴発送 {shipCount}</span>
-                <span style={chipStyle('#f59e0b', unlistCount > 0)}>🟡出品残 {unlistCount}</span>
-                <span style={chipStyle('#22c55e', staleCount > 0)}>🟢値下げ候補 {staleCount}</span>
-              </div>
-            )}
+        <div>
+          {/* タブコンテンツ */}
+          <div style={{ display: tab === 'today' ? 'block' : 'none' }}>
+            <TodayTab
+              templates={templates}
+              logs={logs}
+              setLogs={setLogs}
+              manual={manual}
+              setManual={setManual}
+              streak={calcStreak(streakData)}
+              streakData={streakData}
+              setStreakData={setStreakData}
+              batches={batches}
+              onGoToBatches={() => setTab('batches')}
+            />
+          </div>
+          <div style={{ display: tab === 'batches' ? 'block' : 'none' }}>
+            <BatchesTab batches={batches} setBatches={setBatches} />
+          </div>
+          <div style={{ display: tab === 'settings' ? 'block' : 'none' }}>
+            <SettingsTab templates={templates} setTemplates={setTemplates} />
           </div>
 
-          {/* ローディング */}
-          {status === 'loading' && (
-            <div style={{ textAlign: 'center', paddingTop: 60 }}>
-              <div className="spinner"></div>
-              <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 12 }}>データを読み込み中...</div>
-            </div>
-          )}
-
-          {/* エラー */}
-          {status === 'error' && (
-            <div style={{ margin: '24px 16px', background: '#fef2f2', borderRadius: 14, padding: '20px 16px', border: '1px solid #fecaca', textAlign: 'center' }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>⚠️</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#dc2626', marginBottom: 6 }}>データを取得できませんでした</div>
-              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 14 }}>{errorMsg}</div>
+          {/* 下部ナビ */}
+          <nav className="bottom-nav">
+            {[
+              { key: 'today', icon: '☀️', label: '今日' },
+              { key: 'batches', icon: '📦', label: '外注' },
+              { key: 'settings', icon: '⚙️', label: '設定' },
+            ].map(t => (
               <button
-                onClick={fetchData}
-                style={{ fontSize: 14, padding: '8px 20px', borderRadius: 10, background: '#ef4444', color: '#fff', border: 'none', fontWeight: 700, cursor: 'pointer' }}
-              >再試行</button>
-            </div>
-          )}
-
-          {/* 本体コンテンツ */}
-          {status === 'ok' && (
-            <>
-              <ShipSection sales={sales} inventory={inventory} />
-              <RoutineSection />
-              <QuotaSection inventory={inventory} />
-              <StaleSection inventory={inventory} />
-              <GuideFooter />
-            </>
-          )}
+                key={t.key}
+                className={'nav-tab' + (tab === t.key ? ' active' : '')}
+                onClick={() => setTab(t.key)}
+              >
+                <span className="nav-tab-icon">{t.icon}</span>
+                {t.label}
+              </button>
+            ))}
+          </nav>
         </div>
       );
     }
