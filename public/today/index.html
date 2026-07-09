@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="今日やること" />
+  <meta name="theme-color" content="#f97316" />
+  <title>今日やること</title>
+  <link rel="manifest" href="/today/manifest.json" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="icon" href="/favicon.ico" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', sans-serif;
+      background: #fff7ed;
+      min-height: 100vh;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #root { max-width: 480px; margin: 0 auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 32px; height: 32px;
+      border: 3px solid #fed7aa;
+      border-top-color: #f97316;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 40px auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
+  <script src="/vendor/babel.min.js"></script>
+
+  <script type="text/babel">
+    // ============================================================
+    // ユーティリティ
+    // ============================================================
+
+    // ローカル時刻で YYYY-MM-DD を生成（UTC変換ズレ回避）
+    function localDateStr(d) {
+      if (!d) d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return y + '-' + m + '-' + dd;
+    }
+
+    const todayStr = localDateStr();
+
+    function daysDiff(dateStr) {
+      if (!dateStr) return null;
+      try {
+        const d = new Date(dateStr + 'T00:00:00');
+        const t = new Date(todayStr + 'T00:00:00');
+        return Math.floor((t - d) / 86400000);
+      } catch (_) { return null; }
+    }
+
+    // ============================================================
+    // localStorage ヘルパー
+    // ============================================================
+    function lsGet(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw === null) return fallback;
+        return JSON.parse(raw);
+      } catch (_) { return fallback; }
+    }
+    function lsSet(key, val) {
+      try { localStorage.setItem(key, JSON.stringify(val)); } catch (_) {}
+    }
+
+    // ============================================================
+    // デフォルトルーティン定義
+    // ============================================================
+    const DEFAULT_ROUTINES = [
+      { id: 'r1', text: 'コメント・取引メッセージの返信', tag: '自分' },
+      { id: 'r2', text: '新規仕入れ分の検品・撮影・採寸', tag: '外注候補' },
+      { id: 'r3', text: '出品文の作成（写真AI読み取り）', tag: 'Claude' },
+      { id: 'r4', text: '出品作業（1日5件）', tag: '自分' },
+      { id: 'r5', text: '値下げ・再出品の実行', tag: '自分' },
+      { id: 'r6', text: '仕入れリサーチ（30分）', tag: '自分' },
+      { id: 'r7', text: '売上・在庫の記録（アプリで自動）', tag: 'Claude' },
+    ];
+
+    const TAG_STYLE = {
+      '自分':   { background: '#dbeafe', color: '#1d4ed8' },
+      'Claude': { background: '#ede9fe', color: '#6d28d9' },
+      '外注候補': { background: '#ffedd5', color: '#c2410c' },
+    };
+
+    // ============================================================
+    // shipped ローダー（14日超を自動削除）
+    // ============================================================
+    function loadShipped() {
+      const raw = lsGet('nobushop_today_shipped', {});
+      const cutoff = new Date(todayStr + 'T00:00:00').getTime() - 14 * 86400000;
+      const cleaned = {};
+      Object.entries(raw).forEach(([k, v]) => {
+        if (new Date(v).getTime() >= cutoff) cleaned[k] = v;
+      });
+      return cleaned;
+    }
+
+    // ============================================================
+    // routine done ローダー（今日のみ保持）
+    // ============================================================
+    function loadRoutineDone() {
+      try {
+        const map = lsGet('nobushop_today_routine_done', {});
+        const todayIds = map[todayStr] || [];
+        lsSet('nobushop_today_routine_done', { [todayStr]: todayIds });
+        return todayIds;
+      } catch (_) { return []; }
+    }
+
+    // ============================================================
+    // Section1: 発送セクション
+    // ============================================================
+    function ShipSection({ sales, inventory }) {
+      const [shipped, setShipped] = React.useState(loadShipped);
+
+      const invMap = React.useMemo(() => {
+        const m = {};
+        (inventory || []).forEach(i => { if (i && i.id) m[i.id] = i; });
+        return m;
+      }, [inventory]);
+
+      const recentSales = React.useMemo(() => {
+        return (sales || []).filter(s => {
+          if (!s || !s.saleDate) return false;
+          const diff = daysDiff(s.saleDate);
+          return diff !== null && diff >= 0 && diff <= 2;
+        });
+      }, [sales]);
+
+      const toggleShipped = (saleId) => {
+        setShipped(prev => {
+          const next = { ...prev };
+          if (next[saleId]) {
+            delete next[saleId];
+          } else {
+            next[saleId] = new Date().toISOString();
+          }
+          lsSet('nobushop_today_shipped', next);
+          return next;
+        });
+      };
+
+      return (
+        <div style={cardStyle('#fee2e2')}>
+          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10, color: '#dc2626' }}>🔴 発送する</div>
+          {recentSales.length === 0 ? (
+            <div style={{ fontSize: 14, color: '#9ca3af', padding: '8px 0 6px' }}>発送待ちはありません 🎉</div>
+          ) : (
+            recentSales.map(s => {
+              if (!s || !s.id) return null;
+              const inv = s.inventoryId ? invMap[s.inventoryId] : null;
+              const name = (inv && (inv.productName || inv.brand))
+                ? (inv.productName || inv.brand)
+                : (s.productName || '（商品名未設定）');
+              const isDone = !!shipped[s.id];
+              return (
+                <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #fef2f2' }}>
+                  <input
+                    type="checkbox"
+                    checked={isDone}
+                    onChange={() => toggleShipped(s.id)}
+                    style={{ width: 20, height: 20, flexShrink: 0, accentColor: '#dc2626' }}
+                  />
+                  <div style={{ flex: 1, opacity: isDone ? 0.4 : 1, textDecoration: isDone ? 'line-through' : 'none' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{name}</div>
+                    <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                      {s.platform || '不明'} ・ ¥{((s.salePrice || 0)).toLocaleString('ja-JP')} ・ {s.saleDate || '日付不明'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // Section2: ルーティン
+    // ============================================================
+    function RoutineSection() {
+      const [routines, setRoutines] = React.useState(() => {
+        const saved = lsGet('nobushop_today_routines', null);
+        if (saved && Array.isArray(saved) && saved.length > 0) return saved;
+        lsSet('nobushop_today_routines', DEFAULT_ROUTINES);
+        return DEFAULT_ROUTINES;
+      });
+      const [routineDone, setRoutineDone] = React.useState(loadRoutineDone);
+      const [editMode, setEditMode] = React.useState(false);
+      const [editingId, setEditingId] = React.useState(null);
+      const [editText, setEditText] = React.useState('');
+      const [editTag, setEditTag] = React.useState('自分');
+      const [newText, setNewText] = React.useState('');
+      const [newTag, setNewTag] = React.useState('自分');
+
+      const saveRoutines = (next) => {
+        setRoutines(next);
+        lsSet('nobushop_today_routines', next);
+      };
+
+      const toggleDone = (id) => {
+        setRoutineDone(prev => {
+          const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+          lsSet('nobushop_today_routine_done', { [todayStr]: next });
+          return next;
+        });
+      };
+
+      return (
+        <div style={cardStyle('#e5e7eb')}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#ea580c' }}>🟠 毎日のルーティン</div>
+            <button
+              onClick={() => { setEditMode(e => !e); setEditingId(null); }}
+              style={{
+                fontSize: 12, padding: '3px 10px', borderRadius: 8,
+                border: '1px solid #d1d5db',
+                background: editMode ? '#f59e0b' : '#fff',
+                color: editMode ? '#fff' : '#374151',
+                fontWeight: 600, cursor: 'pointer'
+              }}
+            >
+              {editMode ? '完了' : '編集'}
+            </button>
+          </div>
+
+          {routines.map((r, idx) => {
+            if (!r || !r.id) return null;
+            const done = routineDone.includes(r.id);
+            const tagSt = TAG_STYLE[r.tag] || { background: '#f3f4f6', color: '#374151' };
+
+            if (editMode && editingId === r.id) {
+              return (
+                <div key={r.id} style={{ padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
+                  <input
+                    value={editText}
+                    onChange={e => setEditText(e.target.value)}
+                    style={{ width: '100%', padding: '6px 8px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, marginBottom: 6 }}
+                  />
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                    {['自分', 'Claude', '外注候補'].map(t => (
+                      <button key={t} onClick={() => setEditTag(t)}
+                        style={{
+                          fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #d1d5db',
+                          background: editTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].background : '#f3f4f6') : '#fff',
+                          color: editTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].color : '#374151') : '#374151',
+                          fontWeight: 600, cursor: 'pointer'
+                        }}>【{t}】</button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      onClick={() => {
+                        const next = routines.map(x => x.id === r.id ? { ...x, text: editText, tag: editTag } : x);
+                        saveRoutines(next);
+                        setEditingId(null);
+                      }}
+                      style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, background: '#2563eb', color: '#fff', border: 'none', fontWeight: 700, cursor: 'pointer' }}
+                    >保存</button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      style={{ fontSize: 12, padding: '4px 12px', borderRadius: 8, background: '#f3f4f6', color: '#374151', border: 'none', fontWeight: 600, cursor: 'pointer' }}
+                    >キャンセル</button>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #f3f4f6' }}>
+                {!editMode && (
+                  <input
+                    type="checkbox"
+                    checked={done}
+                    onChange={() => toggleDone(r.id)}
+                    style={{ width: 20, height: 20, flexShrink: 0, accentColor: '#ea580c' }}
+                  />
+                )}
+                <div style={{ flex: 1, opacity: done && !editMode ? 0.4 : 1, textDecoration: done && !editMode ? 'line-through' : 'none' }}>
+                  <span style={{ fontSize: 13, color: '#111827' }}>
+                    <span style={{ fontWeight: 600 }}>{idx + 1}. </span>{r.text}
+                  </span>
+                </div>
+                <span style={{ ...tagSt, fontSize: 10, padding: '2px 7px', borderRadius: 6, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>【{r.tag}】</span>
+                {editMode && (
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                    <button
+                      onClick={() => { setEditingId(r.id); setEditText(r.text); setEditTag(r.tag); }}
+                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff', color: '#374151', cursor: 'pointer' }}
+                    >✏️</button>
+                    <button
+                      onClick={() => saveRoutines(routines.filter(x => x.id !== r.id))}
+                      style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', cursor: 'pointer' }}
+                    >🗑</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {editMode && (
+            <div style={{ padding: '10px 0 2px', borderTop: '1px solid #f3f4f6' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', marginBottom: 6 }}>タスクを追加</div>
+              <input
+                value={newText}
+                onChange={e => setNewText(e.target.value)}
+                placeholder="タスク名を入力..."
+                style={{ width: '100%', padding: '6px 8px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, marginBottom: 6 }}
+              />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                {['自分', 'Claude', '外注候補'].map(t => (
+                  <button key={t} onClick={() => setNewTag(t)}
+                    style={{
+                      fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid #d1d5db',
+                      background: newTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].background : '#f3f4f6') : '#fff',
+                      color: newTag === t ? (TAG_STYLE[t] ? TAG_STYLE[t].color : '#374151') : '#374151',
+                      fontWeight: 600, cursor: 'pointer'
+                    }}>【{t}】</button>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  if (!newText.trim()) return;
+                  const item = { id: 'r' + Date.now(), text: newText.trim(), tag: newTag };
+                  saveRoutines([...routines, item]);
+                  setNewText('');
+                  setNewTag('自分');
+                }}
+                style={{ fontSize: 12, padding: '5px 14px', borderRadius: 8, background: '#22c55e', color: '#fff', border: 'none', fontWeight: 700, cursor: 'pointer' }}
+              >＋ 追加</button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // Section3: 出品ノルマ
+    // ============================================================
+    function QuotaSection({ inventory }) {
+      const [quota, setQuota] = React.useState(() => lsGet('nobushop_today_quota', 5));
+
+      const changeQuota = (n) => {
+        setQuota(n);
+        lsSet('nobushop_today_quota', n);
+      };
+
+      const unlistedItems = React.useMemo(() => {
+        return (inventory || [])
+          .filter(i => i && i.status === 'unlisted')
+          .sort((a, b) => {
+            const da = a.purchaseDate || '9999';
+            const db = b.purchaseDate || '9999';
+            return da < db ? -1 : da > db ? 1 : 0;
+          });
+      }, [inventory]);
+
+      const quotaItems = unlistedItems.slice(0, quota);
+
+      return (
+        <div style={cardStyle('#fef9c3')}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#b45309' }}>🟡 出品する（今日のノルマ）</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[3, 5, 10].map(n => (
+                <button key={n} onClick={() => changeQuota(n)}
+                  style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid #d1d5db',
+                    background: quota === n ? '#f59e0b' : '#fff',
+                    color: quota === n ? '#fff' : '#374151',
+                    fontWeight: 700, cursor: 'pointer'
+                  }}>{n}件</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10 }}>未出品 残り {unlistedItems.length} 件</div>
+
+          {quotaItems.length === 0 ? (
+            <div style={{ fontSize: 14, color: '#9ca3af', padding: '8px 0 6px' }}>未出品の在庫はありません 🎉</div>
+          ) : (
+            quotaItems.map(item => {
+              if (!item || !item.id) return null;
+              const diff = daysDiff(item.purchaseDate);
+              const thumb = (Array.isArray(item.photos) && item.photos[0] && item.photos[0].thumbDataUrl)
+                ? item.photos[0].thumbDataUrl : null;
+              return (
+                <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #fefce8' }}>
+                  {thumb ? (
+                    <img src={thumb} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} onError={e => { e.target.style.display = 'none'; }} />
+                  ) : (
+                    <div style={{ width: 44, height: 44, borderRadius: 8, background: '#f3f4f6', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, color: '#d1d5db' }}>👗</div>
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {item.brand && <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>{item.brand}</div>}
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.productName || '（商品名未設定）'}
+                    </div>
+                    <div style={{ fontSize: 11, color: diff !== null && diff > 30 ? '#dc2626' : '#9ca3af' }}>
+                      仕入れから {diff !== null ? diff + '日' : '不明'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // Section4: 値下げ候補
+    // ============================================================
+    function StaleSection({ inventory }) {
+      const [staleDays, setStaleDays] = React.useState(() => lsGet('nobushop_today_stale_days', 30));
+
+      const changeStaleDays = (n) => {
+        setStaleDays(n);
+        lsSet('nobushop_today_stale_days', n);
+      };
+
+      const staleItems = React.useMemo(() => {
+        return (inventory || [])
+          .filter(i => {
+            if (!i || i.status !== 'listed') return false;
+            const refDate = i.listDate || i.purchaseDate;
+            if (!refDate) return false;
+            const diff = daysDiff(refDate);
+            return diff !== null && diff >= staleDays;
+          })
+          .sort((a, b) => {
+            const da = daysDiff(a.listDate || a.purchaseDate || '9999') || 0;
+            const db = daysDiff(b.listDate || b.purchaseDate || '9999') || 0;
+            return db - da;
+          });
+      }, [inventory, staleDays]);
+
+      const staleShown = staleItems.slice(0, 10);
+      const staleRest = staleItems.length - staleShown.length;
+
+      return (
+        <div style={cardStyle('#dcfce7')}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: '#15803d' }}>🟢 値下げ候補</div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {[14, 30, 60].map(n => (
+                <button key={n} onClick={() => changeStaleDays(n)}
+                  style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 6, border: '1px solid #d1d5db',
+                    background: staleDays === n ? '#22c55e' : '#fff',
+                    color: staleDays === n ? '#fff' : '#374151',
+                    fontWeight: 700, cursor: 'pointer'
+                  }}>{n}日</button>
+              ))}
+            </div>
+          </div>
+
+          {staleShown.length === 0 ? (
+            <div style={{ fontSize: 14, color: '#9ca3af', padding: '8px 0 6px' }}>値下げ候補はありません 🎉</div>
+          ) : (
+            <>
+              {staleShown.map(item => {
+                if (!item || !item.id) return null;
+                const refDate = item.listDate || item.purchaseDate;
+                const diff = daysDiff(refDate);
+                return (
+                  <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid #f0fdf4' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {item.brand && <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600 }}>{item.brand}</div>}
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {item.productName || '（商品名未設定）'}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#6b7280' }}>
+                        ¥{((item.listPrice || 0)).toLocaleString('ja-JP')}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>
+                      {diff !== null ? diff + '日' : '不明'}
+                    </div>
+                  </div>
+                );
+              })}
+              {staleRest > 0 && (
+                <div style={{ fontSize: 12, color: '#6b7280', padding: '6px 0 2px', textAlign: 'center' }}>他 {staleRest} 件</div>
+              )}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // フッター: 外注・Claude分担ガイド
+    // ============================================================
+    function GuideFooter() {
+      const [open, setOpen] = React.useState(false);
+
+      const STEPS = [
+        ['仕入れ判断', '自分'],
+        ['仕入れ', '自分'],
+        ['検品', '外注候補'],
+        ['撮影', '外注候補'],
+        ['採寸', '外注候補'],
+        ['出品文', 'Claude'],
+        ['出品', '自分'],
+        ['価格改定', '自分+Claude'],
+        ['交渉対応', '自分'],
+        ['梱包発送', '外注候補'],
+        ['記録', 'Claude'],
+        ['月次分析', 'Claude'],
+      ];
+
+      const stepStyle = (who) => {
+        if (who === 'Claude') return { background: '#ede9fe', color: '#6d28d9' };
+        if (who === '外注候補') return { background: '#ffedd5', color: '#c2410c' };
+        if (who === '自分+Claude') return { background: '#dbeafe', color: '#1d4ed8' };
+        return { background: '#dbeafe', color: '#1d4ed8' };
+      };
+
+      return (
+        <div style={{ margin: '12px 12px 16px', background: '#fff', borderRadius: 14, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1px solid #e5e7eb' }}>
+          <button
+            onClick={() => setOpen(o => !o)}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 700, color: '#374151' }}
+          >
+            <span>📋 外注・Claude分担ガイド</span>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>{open ? '▲ 閉じる' : '▼ 開く'}</span>
+          </button>
+          {open && (
+            <div style={{ padding: '0 14px 14px', fontSize: 12, color: '#374151' }}>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 800, color: '#374151', marginBottom: 4 }}>🧑 自分にしかできない</div>
+                <div style={{ color: '#6b7280' }}>仕入れ判断 / 出品ボタン / 顧客対応の最終判断</div>
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 800, color: '#6d28d9', marginBottom: 4 }}>🤖 Claudeに任せる</div>
+                <div style={{ color: '#6b7280' }}>出品文作成 / 売上記録 / 月次分析 / 外注マニュアル作り / 定型返答集</div>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontWeight: 800, color: '#c2410c', marginBottom: 4 }}>📦 外注に向く</div>
+                <div style={{ color: '#6b7280' }}>検品 / 撮影 / 採寸 / 梱包・発送（週20件超えたら検討）</div>
+              </div>
+              <div style={{ background: '#f9fafb', borderRadius: 10, padding: '10px 12px' }}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>工程表</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: 11 }}>
+                  {STEPS.map(([step, who], i) => {
+                    const isLast = i === STEPS.length - 1;
+                    return (
+                      <React.Fragment key={i}>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                          <span style={{ padding: '2px 6px', borderRadius: 5, fontWeight: 700, ...stepStyle(who) }}>{step}</span>
+                          <span style={{ fontSize: 10, color: '#9ca3af' }}>【{who}】</span>
+                        </div>
+                        {!isLast && <span style={{ color: '#d1d5db', alignSelf: 'flex-start', paddingTop: 4 }}>→</span>}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // カードスタイルヘルパー
+    // ============================================================
+    function cardStyle(borderColor) {
+      return {
+        margin: '12px 12px 0',
+        background: '#fff',
+        borderRadius: 14,
+        padding: '14px 14px 8px',
+        boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+        border: '1px solid ' + borderColor,
+      };
+    }
+
+    // ============================================================
+    // メインApp
+    // ============================================================
+    function App() {
+      const [status, setStatus] = React.useState('loading'); // loading | ok | error
+      const [inventory, setInventory] = React.useState([]);
+      const [sales, setSales] = React.useState([]);
+      const [errorMsg, setErrorMsg] = React.useState('');
+
+      const fetchData = React.useCallback(async () => {
+        setStatus('loading');
+        setErrorMsg('');
+
+        // 1st: /api/data
+        try {
+          const res = await fetch('/api/data');
+          if (res.ok) {
+            const json = await res.json();
+            if (json.ok) {
+              setInventory(Array.isArray(json.inventory) ? json.inventory : []);
+              setSales(Array.isArray(json.sales) ? json.sales : []);
+              setStatus('ok');
+              return;
+            }
+            throw new Error(json.error || 'APIエラー');
+          }
+          throw new Error('HTTP ' + res.status);
+        } catch (e1) {
+          // 2nd: localStorage フォールバック
+          try {
+            const raw = localStorage.getItem('nobushop_data');
+            if (raw) {
+              const cached = JSON.parse(raw);
+              if (cached && (Array.isArray(cached.inventory) || Array.isArray(cached.sales))) {
+                setInventory(Array.isArray(cached.inventory) ? cached.inventory : []);
+                setSales(Array.isArray(cached.sales) ? cached.sales : []);
+                setStatus('ok');
+                return;
+              }
+            }
+          } catch (_) {}
+
+          setErrorMsg('データを取得できませんでした: ' + e1.message);
+          setStatus('error');
+        }
+      }, []);
+
+      React.useEffect(() => { fetchData(); }, [fetchData]);
+
+      // サマリー計算
+      const shipCount = React.useMemo(() => {
+        return (sales || []).filter(s => {
+          if (!s || !s.saleDate) return false;
+          const diff = daysDiff(s.saleDate);
+          return diff !== null && diff >= 0 && diff <= 2;
+        }).length;
+      }, [sales]);
+
+      const unlistCount = React.useMemo(() => {
+        return (inventory || []).filter(i => i && i.status === 'unlisted').length;
+      }, [inventory]);
+
+      const staleCount = React.useMemo(() => {
+        const days = lsGet('nobushop_today_stale_days', 30);
+        return (inventory || []).filter(i => {
+          if (!i || i.status !== 'listed') return false;
+          const refDate = i.listDate || i.purchaseDate;
+          if (!refDate) return false;
+          const diff = daysDiff(refDate);
+          return diff !== null && diff >= days;
+        }).length;
+      }, [inventory]);
+
+      const chipStyle = (color, active) => ({
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '4px 10px', borderRadius: 99,
+        fontSize: 12, fontWeight: 700,
+        background: active ? color : '#f3f4f6',
+        color: active ? '#fff' : '#9ca3af',
+        marginRight: 6, marginBottom: 6,
+      });
+
+      // 日付表示
+      const d = new Date();
+      const dateLabel = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日（' + ['日','月','火','水','木','金','土'][d.getDay()] + '）';
+
+      return (
+        <div style={{ paddingBottom: 40 }}>
+          {/* ヘッダー */}
+          <div style={{ padding: '16px 16px 10px', background: '#fff', borderBottom: '2px solid #fed7aa', position: 'sticky', top: 0, zIndex: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <div style={{ fontSize: 20, fontWeight: 900, color: '#ea580c' }}>☀️ 今日やること</div>
+              <button
+                onClick={fetchData}
+                disabled={status === 'loading'}
+                style={{
+                  fontSize: 12, padding: '4px 10px', borderRadius: 8,
+                  border: '1px solid #fed7aa', background: '#fff7ed',
+                  color: '#ea580c', fontWeight: 700, cursor: 'pointer',
+                  opacity: status === 'loading' ? 0.5 : 1,
+                }}
+              >↻ 更新</button>
+            </div>
+            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>{dateLabel}</div>
+            {status === 'ok' && (
+              <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                <span style={chipStyle('#ef4444', shipCount > 0)}>🔴発送 {shipCount}</span>
+                <span style={chipStyle('#f59e0b', unlistCount > 0)}>🟡出品残 {unlistCount}</span>
+                <span style={chipStyle('#22c55e', staleCount > 0)}>🟢値下げ候補 {staleCount}</span>
+              </div>
+            )}
+          </div>
+
+          {/* ローディング */}
+          {status === 'loading' && (
+            <div style={{ textAlign: 'center', paddingTop: 60 }}>
+              <div className="spinner"></div>
+              <div style={{ fontSize: 13, color: '#9ca3af', marginTop: 12 }}>データを読み込み中...</div>
+            </div>
+          )}
+
+          {/* エラー */}
+          {status === 'error' && (
+            <div style={{ margin: '24px 16px', background: '#fef2f2', borderRadius: 14, padding: '20px 16px', border: '1px solid #fecaca', textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>⚠️</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#dc2626', marginBottom: 6 }}>データを取得できませんでした</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 14 }}>{errorMsg}</div>
+              <button
+                onClick={fetchData}
+                style={{ fontSize: 14, padding: '8px 20px', borderRadius: 10, background: '#ef4444', color: '#fff', border: 'none', fontWeight: 700, cursor: 'pointer' }}
+              >再試行</button>
+            </div>
+          )}
+
+          {/* 本体コンテンツ */}
+          {status === 'ok' && (
+            <>
+              <ShipSection sales={sales} inventory={inventory} />
+              <RoutineSection />
+              <QuotaSection inventory={inventory} />
+              <StaleSection inventory={inventory} />
+              <GuideFooter />
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================================
+    // レンダリング
+    // ============================================================
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
