@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="作業マニュアル" />
+  <meta name="theme-color" content="#0d9488" />
+  <title>📖 作業マニュアル</title>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="icon" href="/favicon.ico" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', sans-serif;
+      background: #f0fdfa;
+      min-height: 100vh;
+      -webkit-tap-highlight-color: transparent;
+      font-size: 16px;
+    }
+    #root { max-width: 480px; margin: 0 auto; }
+
+    /* ========== アニメーション ========== */
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+    @keyframes completePop {
+      0%   { transform: scale(0.85); opacity: 0; }
+      60%  { transform: scale(1.04); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* ========== ヘッダー ========== */
+    .header {
+      background: linear-gradient(135deg, #0d9488 0%, #059669 100%);
+      color: #fff;
+      padding: 20px 20px 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(13,148,136,0.3);
+    }
+    .header-title {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .header-sub {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 2px;
+    }
+
+    /* ========== タブバー ========== */
+    .tab-bar {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 480px;
+      background: #fff;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      z-index: 200;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
+    }
+    .tab-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 0 8px;
+      cursor: pointer;
+      color: #94a3b8;
+      font-size: 11px;
+      font-weight: 600;
+      gap: 3px;
+      border: none;
+      background: none;
+      transition: color 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .tab-item.active {
+      color: #0d9488;
+    }
+    .tab-icon {
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    /* ========== コンテンツエリア ========== */
+    .content {
+      padding: 16px 16px calc(72px + env(safe-area-inset-bottom, 0px)) 16px;
+      animation: fadeSlide 0.2s ease;
+    }
+
+    /* ========== セクションタイトル ========== */
+    .section-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #134e4a;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #99f6e4;
+    }
+    .section-desc {
+      font-size: 14px;
+      color: #64748b;
+      margin-bottom: 16px;
+      line-height: 1.6;
+    }
+
+    /* ========== チェックリスト ========== */
+    .check-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .check-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: #fff;
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.15s, background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    .check-item.checked {
+      background: #f0fdf4;
+      border-color: #4ade80;
+    }
+    .check-box {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 2.5px solid #cbd5e1;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.15s, background 0.15s;
+      margin-top: 1px;
+    }
+    .check-item.checked .check-box {
+      background: #22c55e;
+      border-color: #22c55e;
+    }
+    .check-mark {
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      display: none;
+    }
+    .check-item.checked .check-mark {
+      display: block;
+    }
+    .check-text {
+      font-size: 16px;
+      line-height: 1.5;
+      color: #1e293b;
+    }
+    .check-item.checked .check-text {
+      color: #64748b;
+    }
+
+    /* ========== 全完了バナー ========== */
+    .complete-banner {
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      color: #fff;
+      border-radius: 14px;
+      padding: 18px 20px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      animation: completePop 0.3s ease;
+      box-shadow: 0 4px 16px rgba(34,197,94,0.35);
+    }
+
+    /* ========== リセットボタン ========== */
+    .reset-btn {
+      display: block;
+      width: 100%;
+      padding: 13px;
+      border-radius: 12px;
+      border: 2px solid #cbd5e1;
+      background: #fff;
+      color: #64748b;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 24px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .reset-btn:active {
+      background: #f1f5f9;
+    }
+
+    /* ========== ランクカード ========== */
+    .rank-section-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #134e4a;
+      margin-bottom: 10px;
+    }
+    .rank-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .rank-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      background: #fff;
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    }
+    .rank-badge {
+      font-size: 22px;
+      font-weight: 900;
+      min-width: 36px;
+      text-align: center;
+      line-height: 1;
+      padding-top: 2px;
+    }
+    .rank-s { color: #f59e0b; }
+    .rank-a { color: #3b82f6; }
+    .rank-b { color: #22c55e; }
+    .rank-c { color: #ef4444; }
+    .rank-desc {
+      font-size: 15px;
+      color: #334155;
+      line-height: 1.55;
+    }
+
+    /* ========== 注意書き ========== */
+    .caution-box {
+      background: #fffbeb;
+      border: 1.5px solid #fcd34d;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 15px;
+      color: #78350f;
+      line-height: 1.6;
+    }
+
+    /* ========== 撮影カード ========== */
+    .photo-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .photo-card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+    }
+    .photo-num {
+      background: linear-gradient(135deg, #0d9488, #059669);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      min-width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .photo-info { flex: 1; }
+    .photo-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 4px;
+    }
+    .photo-title.important::after {
+      content: " ★重要";
+      font-size: 12px;
+      color: #ef4444;
+      font-weight: 700;
+    }
+    .photo-desc {
+      font-size: 14px;
+      color: #64748b;
+      line-height: 1.5;
+    }
+    .photo-skip {
+      font-size: 12px;
+      color: #94a3b8;
+      margin-top: 3px;
+    }
+
+    /* ========== 撮影コツ ========== */
+    .tips-card {
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      margin-bottom: 16px;
+    }
+    .tips-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #134e4a;
+      margin-bottom: 10px;
+    }
+    .tips-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tip-item {
+      font-size: 15px;
+      color: #334155;
+      line-height: 1.5;
+    }
+
+    /* ========== AI説明 ========== */
+    .ai-box {
+      background: #eff6ff;
+      border: 1.5px solid #93c5fd;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 14px;
+      color: #1e3a8a;
+      line-height: 1.7;
+    }
+
+    /* ========== 採寸カテゴリーチップ ========== */
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .chip {
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 2px solid #cbd5e1;
+      background: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      color: #64748b;
+      cursor: pointer;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .chip.active {
+      background: #0d9488;
+      border-color: #0d9488;
+      color: #fff;
+    }
+
+    /* ========== 採寸リスト ========== */
+    .measure-list {
+      background: #fff;
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      margin-bottom: 14px;
+    }
+    .measure-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid #f1f5f9;
+      font-size: 16px;
+      color: #1e293b;
+      line-height: 1.5;
+    }
+    .measure-item:last-child { border-bottom: none; }
+    .measure-dot {
+      width: 8px;
+      height: 8px;
+      background: #0d9488;
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 7px;
+    }
+
+    /* ========== 採寸コツ ========== */
+    .measure-tip {
+      background: #f0fdfa;
+      border-left: 4px solid #0d9488;
+      border-radius: 0 10px 10px 0;
+      padding: 12px 16px;
+      font-size: 14px;
+      color: #134e4a;
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    /* ========== コピーボタン ========== */
+    .copy-btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      border: none;
+      background: linear-gradient(135deg, #0d9488, #059669);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      margin-bottom: 14px;
+      letter-spacing: 0.02em;
+      transition: opacity 0.15s;
+    }
+    .copy-btn:active { opacity: 0.85; }
+
+    /* ========== テンプレ表示エリア ========== */
+    .template-box {
+      background: #fff;
+      border: 1.5px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 14px;
+      color: #334155;
+      line-height: 1.9;
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin-bottom: 24px;
+      user-select: all;
+    }
+    .template-hint {
+      font-size: 12px;
+      color: #94a3b8;
+      text-align: center;
+      margin-top: -18px;
+      margin-bottom: 24px;
+    }
+
+    /* ========== トースト ========== */
+    .toast {
+      position: fixed;
+      bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e293b;
+      color: #fff;
+      padding: 12px 22px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      z-index: 9999;
+      animation: toastIn 0.2s ease;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      pointer-events: none;
+    }
+    .toast.hiding {
+      animation: toastOut 0.3s ease forwards;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
+  <script src="/vendor/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    /* ==================== データ定義 ==================== */
+
+    const CHECK_ITEMS = [
+      { id: 1, emoji: '👔', text: '全体の汚れ・シミ（襟・袖口・脇・裾を重点的に）' },
+      { id: 2, emoji: '🔘', text: 'ボタン・ファスナー・ホックの動作確認' },
+      { id: 3, emoji: '🕳', text: '穴・ほつれ・破れ' },
+      { id: 4, emoji: '🧶', text: '毛玉・色あせ' },
+      { id: 5, emoji: '👃', text: '臭い（タバコ・香水・カビ・防虫剤）' },
+      { id: 6, emoji: '👝', text: 'ポケットの中身' },
+      { id: 7, emoji: '🏷', text: 'ブランドタグ・品質表示タグがあるか確認' },
+    ];
+
+    const RANK_DATA = [
+      { rank: 'S', cls: 'rank-s', desc: '新品同様・タグ付き未使用' },
+      { rank: 'A', cls: 'rank-a', desc: '目立つ傷・汚れなし、数回着用程度' },
+      { rank: 'B', cls: 'rank-b', desc: 'やや使用感あり、小さな傷・汚れ・毛玉あり' },
+      { rank: 'C', cls: 'rank-c', desc: '傷・汚れがはっきりある（場所をメモして写真も撮る）' },
+    ];
+
+    const PHOTO_STEPS = [
+      { num: 1, title: '商品全体（正面）', important: false, desc: 'しわを伸ばして平置きにしてから撮る', skip: null },
+      { num: 2, title: 'ブランドタグの接写', important: true, desc: 'ピントを合わせて文字がはっきり読めるように', skip: null },
+      { num: 3, title: '品質表示タグ', important: false, desc: '内側の洗濯表示・サイズ・素材が書いてあるタグ', skip: null },
+      { num: 4, title: 'ダメージ箇所', important: false, desc: '傷・汚れ・毛玉があれば近づいて撮影', skip: 'なければスキップしてOK' },
+      { num: 5, title: '商品全体（背面）', important: false, desc: '正面と同じく平置きで', skip: null },
+      { num: 6, title: 'ディテール', important: false, desc: '金具・刻印・柄・ポケットなど特徴的な部分', skip: null },
+    ];
+
+    const SHOOT_TIPS = [
+      { icon: '☀️', text: '明るい場所で撮る（自然光がベスト）' },
+      { icon: '⬜', text: '背景は白か無地にする' },
+      { icon: '📵', text: 'フラッシュは使わない' },
+      { icon: '🔍', text: 'タグ撮影はピント最優先（タップしてピントを合わせる）' },
+    ];
+
+    const MEASURE_CATEGORIES = [
+      {
+        id: 'tops',
+        label: '👕 トップス',
+        items: ['着丈（襟の付け根〜裾）', '身幅（両脇の下を直線で）', '肩幅（肩の縫い目〜縫い目）', '袖丈（肩の縫い目〜袖の先）'],
+        template: `【採寸メモ】\n着丈: cm\n身幅: cm\n肩幅: cm\n袖丈: cm\n状態ランク: \nダメージメモ: `,
+      },
+      {
+        id: 'pants',
+        label: '👖 パンツ',
+        items: ['ウエスト（平置きで測って2倍）', '股上', '股下', 'わたり幅（股の付け根の幅）', '裾幅'],
+        template: `【採寸メモ】\nウエスト: cm\n股上: cm\n股下: cm\nわたり幅: cm\n裾幅: cm\n状態ランク: \nダメージメモ: `,
+      },
+      {
+        id: 'dress',
+        label: '👗 ワンピース',
+        items: ['着丈', '身幅', '肩幅', '袖丈'],
+        template: `【採寸メモ】\n着丈: cm\n身幅: cm\n肩幅: cm\n袖丈: cm\n状態ランク: \nダメージメモ: `,
+      },
+      {
+        id: 'skirt',
+        label: '🩳 スカート',
+        items: ['ウエスト（平置きで測って2倍）', '総丈'],
+        template: `【採寸メモ】\nウエスト: cm\n総丈: cm\n状態ランク: \nダメージメモ: `,
+      },
+      {
+        id: 'bag',
+        label: '👜 バッグ',
+        items: ['縦', '横', 'マチ（奥行き）', '持ち手の長さ（ショルダーは最長で）'],
+        template: `【採寸メモ】\n縦: cm\n横: cm\nマチ: cm\n持ち手の長さ: cm\n状態ランク: \nダメージメモ: `,
+      },
+      {
+        id: 'shoes',
+        label: '👟 シューズ',
+        items: ['表記サイズ', 'アウトソール全長', 'ヒールの高さ'],
+        template: `【採寸メモ】\n表記サイズ: \nアウトソール全長: cm\nヒールの高さ: cm\n状態ランク: \nダメージメモ: `,
+      },
+    ];
+
+    const LS_KEY = 'nobushop_manual_checks';
+
+    /* ==================== コンポーネント ==================== */
+
+    // ---------- トースト ----------
+    function Toast({ msg, onDone }) {
+      const [hiding, setHiding] = useState(false);
+      useEffect(() => {
+        const t1 = setTimeout(() => setHiding(true), 1800);
+        const t2 = setTimeout(() => onDone(), 2100);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
+      }, []);
+      return <div className={`toast${hiding ? ' hiding' : ''}`}>{msg}</div>;
+    }
+
+    // ---------- 検品タブ ----------
+    function InspectTab({ toast }) {
+      const [checks, setChecks] = useState(() => {
+        try {
+          const saved = localStorage.getItem(LS_KEY);
+          return saved ? JSON.parse(saved) : {};
+        } catch { return {}; }
+      });
+
+      const allDone = CHECK_ITEMS.every(i => checks[i.id]);
+
+      const toggle = (id) => {
+        setChecks(prev => {
+          const next = { ...prev, [id]: !prev[id] };
+          try { localStorage.setItem(LS_KEY, JSON.stringify(next)); } catch {}
+          return next;
+        });
+      };
+
+      const reset = () => {
+        setChecks({});
+        try { localStorage.removeItem(LS_KEY); } catch {}
+      };
+
+      return (
+        <div className="content">
+          <div className="section-title">🔍 検品チェックリスト</div>
+          <div className="section-desc">1着ごとにこのリストを確認してください。タップでチェックできます。</div>
+
+          {allDone && (
+            <div className="complete-banner">✅ 検品完了！お疲れさまです！</div>
+          )}
+
+          <div className="check-list">
+            {CHECK_ITEMS.map(item => (
+              <div
+                key={item.id}
+                className={`check-item${checks[item.id] ? ' checked' : ''}`}
+                onClick={() => toggle(item.id)}
+              >
+                <div className="check-box">
+                  <span className="check-mark">✓</span>
+                </div>
+                <div className="check-text">{item.emoji} {item.text}</div>
+              </div>
+            ))}
+          </div>
+
+          <button className="reset-btn" onClick={reset}>🔄 リセット（次の1着へ）</button>
+
+          <div className="rank-section-title">📊 状態ランクの判定基準</div>
+          <div className="rank-cards">
+            {RANK_DATA.map(r => (
+              <div key={r.rank} className="rank-card">
+                <div className={`rank-badge ${r.cls}`}>{r.rank}</div>
+                <div className="rank-desc">{r.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="caution-box">
+            ⚠️ ダメージを見つけたら隠さずメモ＆写真！正確に伝えるほうが喜ばれます。
+          </div>
+        </div>
+      );
+    }
+
+    // ---------- 撮影タブ ----------
+    function PhotoTab() {
+      return (
+        <div className="content">
+          <div className="section-title">📷 この順番で撮ってください</div>
+          <div className="section-desc">全部で最大6枚。順番通りに撮ると登録がスムーズです。</div>
+
+          <div className="photo-cards">
+            {PHOTO_STEPS.map(step => (
+              <div key={step.num} className="photo-card">
+                <div className="photo-num">{step.num}</div>
+                <div className="photo-info">
+                  <div className={`photo-title${step.important ? ' important' : ''}`}>{step.title}</div>
+                  <div className="photo-desc">{step.desc}</div>
+                  {step.skip && <div className="photo-skip">▷ {step.skip}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="tips-card">
+            <div className="tips-title">📌 撮影のコツ</div>
+            <div className="tips-list">
+              {SHOOT_TIPS.map((t, i) => (
+                <div key={i} className="tip-item">{t.icon} {t.text}</div>
+              ))}
+            </div>
+          </div>
+
+          <div className="ai-box">
+            💡 最初の4枚はAIが自動で商品情報を読み取ります。特に2枚目のタグがはっきり写っていると、正確に登録できます。
+          </div>
+        </div>
+      );
+    }
+
+    // ---------- 採寸タブ ----------
+    function MeasureTab({ toast }) {
+      const [cat, setCat] = useState(MEASURE_CATEGORIES[0]);
+
+      const handleCopy = async () => {
+        try {
+          await navigator.clipboard.writeText(cat.template);
+          toast('コピーしました！LINEに貼って数字を入れてください');
+        } catch {
+          toast('長押しでコピーしてください');
+        }
+      };
+
+      return (
+        <div className="content">
+          <div className="section-title">📏 採寸ガイド</div>
+          <div className="section-desc">カテゴリーを選ぶと測る場所が変わります。</div>
+
+          <div className="chip-row">
+            {MEASURE_CATEGORIES.map(c => (
+              <button
+                key={c.id}
+                className={`chip${cat.id === c.id ? ' active' : ''}`}
+                onClick={() => setCat(c)}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="measure-list">
+            {cat.items.map((item, i) => (
+              <div key={i} className="measure-item">
+                <div className="measure-dot" />
+                <div>{item}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="measure-tip">
+            📐 平置きでメジャーをまっすぐ当てる。cm単位・小数点なしでOK
+          </div>
+
+          <button className="copy-btn" onClick={handleCopy}>
+            📋 採寸メモをコピー
+          </button>
+
+          <div className="template-box">{cat.template}</div>
+          <div className="template-hint">↑ 長押しでもコピーできます</div>
+        </div>
+      );
+    }
+
+    // ---------- アプリ本体 ----------
+    function App() {
+      const [tab, setTab] = useState('inspect');
+      const [toastMsg, setToastMsg] = useState(null);
+      const [toastKey, setToastKey] = useState(0);
+
+      const showToast = useCallback((msg) => {
+        setToastMsg(msg);
+        setToastKey(k => k + 1);
+      }, []);
+
+      const tabs = [
+        { id: 'inspect', icon: '🔍', label: '検品' },
+        { id: 'photo',   icon: '📷', label: '撮影' },
+        { id: 'measure', icon: '📏', label: '採寸' },
+      ];
+
+      return (
+        <>
+          <div className="header">
+            <div className="header-title">📖 作業マニュアル</div>
+            <div className="header-sub">検品・撮影・採寸ガイド</div>
+          </div>
+
+          {tab === 'inspect' && <InspectTab toast={showToast} />}
+          {tab === 'photo'   && <PhotoTab />}
+          {tab === 'measure' && <MeasureTab toast={showToast} />}
+
+          <nav className="tab-bar">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                className={`tab-item${tab === t.id ? ' active' : ''}`}
+                onClick={() => setTab(t.id)}
+              >
+                <span className="tab-icon">{t.icon}</span>
+                {t.label}
+              </button>
+            ))}
+          </nav>
+
+          {toastMsg && (
+            <Toast key={toastKey} msg={toastMsg} onDone={() => setToastMsg(null)} />
+          )}
+        </>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
