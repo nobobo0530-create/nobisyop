@@ -3,7 +3,7 @@
 // ============================================================
 const CONFIG = {
   ANTHROPIC_API_URL: 'https://api.anthropic.com/v1/messages',
-  MODEL: 'claude-haiku-4-5-20251001',   // 速度優先（Claude Haiku 4.5）
+  MODEL: 'claude-sonnet-4-6',           // 精度優先（Claude Sonnet 4.6・写真のタグ読み取り精度向上のため）
   MODEL_HEAVY: 'claude-opus-4-6',       // 高精度が必要な場合用（現在未使用）
   PRICE_SPLIT_DIVISOR: 100,
   PLATFORM_FEES: {
@@ -650,6 +650,13 @@ const authHeaders = (extra = {}) => {
 
 // ★ AIモデル名（設定画面から上書き可能 — モデル廃止時にコード編集なしで変更できる）
 const AI_MODEL_KEY = 'nobushop_ai_model';
+// 旧デフォルト(claude-haiku-4-5-20251001)が保存されたままだと新デフォルトが効かないためマイグレーション
+const _OLD_DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+try {
+  if (localStorage.getItem(AI_MODEL_KEY) === _OLD_DEFAULT_MODEL) {
+    localStorage.removeItem(AI_MODEL_KEY);
+  }
+} catch(_) {}
 const getAiModel = () => {
   try { return (localStorage.getItem(AI_MODEL_KEY) || '').trim() || CONFIG.MODEL; }
   catch { return CONFIG.MODEL; }
@@ -1005,11 +1012,28 @@ const PRODUCT_ANALYSIS_PROMPT = `商品の写真を分析して以下のJSON形�
 - 柄・素材・形状・色だけからブランドを推測すること
   （例：モノグラム柄 → Louis Vuittonと決めつけるのは禁止。タグで確認すること）
 - タグが写っていないのにブランドを断言すること
+- タグの文字が部分的にしか読めない場合に、読めた文字列に矛盾するブランドを答えること
+  （例：「CHAN…」が読めたのにBURBERRYと答えるのは禁止。読めた文字列に矛盾しないブランドのみ候補にすること）
 
 ✅ 正しい例：
 - タグに「COACH」と書いてある → brand: "Coach"
 - ロゴに「Burberry」が見える → brand: "Burberry"
 - タグが見えず柄だけ → brand: "Unknown Brand"（または "Coach / Louis Vuitton?" など候補）
+- 「CHAN…」まで読めた → brand: "Chanel"（CHANELの可能性が高い）または "Unknown Brand"
+
+【画像の読み取り方針】
+画像は高解像度で送信しています。タグ・ラベル・刻印の小さい文字を拡大して注意深く読み取ってください。
+複数枚ある場合は、タグや品質表示ラベルが写っている写真を最優先で確認し、ブランド・型番・素材を読み取ること。
+
+【カテゴリー判定ルール】
+category は「バッグ/衣類/小物/シューズ/毛皮/その他」から必ず1つ選ぶ。判定基準：
+- バッグ：トートバッグ・ショルダーバッグ・ハンドバッグ・リュック・クラッチ等
+- 衣類：コート・ジャケット・ブルゾン・シャツ・パンツ・スカート・ワンピース・ニット・スウェット等
+- 小物：財布・長財布・カードケース・ベルト・マフラー・スカーフ・手袋・帽子・キャップ・アクセサリー・ネクタイ等
+- シューズ：スニーカー・ブーツ・パンプス・サンダル・ローファー・ドレスシューズ等
+- 毛皮：ファーコート・ムートンコート・リアルファー使用アイテム等
+- その他：上記いずれにも当てはまらない場合
+迷った場合は商品の主用途・使われ方で判断すること（例：財布はバッグではなく小物）。
 
 【最重要①：Louis Vuitton バッグの形状による正確なモデル特定】
 Louis Vuitton のモデルは形状で必ず区別してください。よく混同されるモデルを以下に示します：
@@ -2296,7 +2320,7 @@ const PurchaseTab = () => {
     if (photos.length === 0) { toast('写真を追加してください'); return; }
     setAnalyzing(true);
     try {
-      // 全枚を400px/0.6で送信（4枚×400px ≈ 1枚×800px と同サイズ。タグ・サイズ写真も読める）
+      // タグの小さい文字を読むため高解像度で送信（最初の4枚は1200px/0.85、5枚目以降は700px/0.7）
       const imageDataList = [];
       for (const photo of photos) {
         try {
@@ -2316,7 +2340,14 @@ const PurchaseTab = () => {
           }
 
           if (!blob) continue;
-          const compressed = await compressImage(new File([blob], 'photo.jpg', {type: blob.type || 'image/jpeg'}), 400, 0.6);
+          // 最初の4枚はタグ読み取り精度優先で1200px/0.85、5枚目以降は700px/0.7
+          // ※compressImageはwidthが元サイズ以下なら縮小のみ（拡大なし）なのでthumbDataUrl代替時も安全
+          const isHighRes = imageDataList.length < 4;
+          const compressed = await compressImage(
+            new File([blob], 'photo.jpg', {type: blob.type || 'image/jpeg'}),
+            isHighRes ? 1200 : 700,
+            isHighRes ? 0.85 : 0.7
+          );
           const b64 = await blobToBase64(compressed);
           imageDataList.push({ mimeType: 'image/jpeg', data: b64 });
         } catch (imgErr) {
