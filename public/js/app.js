@@ -1854,6 +1854,7 @@ const PurchaseTab = () => {
     productName: '', brand: '', category: '', color: '',
     brandReading: '', categoryKeywords: '', colorDisplay: '',
     modelNumber: '',  // 型番・品番
+    modelName: '',    // モデル名
     gender: 'メンズ', // メンズ/レディース/ユニセックス
     seoCategories: [],  // SEOカテゴリタグ（複数）
     condition: 'A', conditionDetail: '',
@@ -1876,9 +1877,12 @@ const PurchaseTab = () => {
     showOptionalFee: false, // 手数料欄表示
     couponTaxIn: '',        // クーポン値引き額（税込・マイナス扱い）
     couponNote: '',         // クーポンメモ（例：1000円OFFクーポン）
+    accessories: '無し(画像に写っているもののみ)',
+    damageNote: '',
+    damageLevels: { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' },
   });
   const [generatedDesc, setGeneratedDesc] = React.useState('');
-  const [descFormat, setDescFormat] = React.useState('self'); // 'self' | 'riko'
+  const [descFormat, setDescFormat] = React.useState('nobi'); // 'nobi' | 'self' | 'riko'
   const [showDesc, setShowDesc] = React.useState(false);
   const [purchaseType, setPurchaseType] = React.useState('store'); // 'store' | 'online'
   const [storeCustomText, setStoreCustomText] = React.useState(null); // null=選択モード, string=手入力モード
@@ -2117,7 +2121,21 @@ const PurchaseTab = () => {
       brandReading:       editingItem.brandReading       || '',
       categoryKeywords:   editingItem.categoryKeywords   || '',
       colorDisplay:       editingItem.colorDisplay       || '',
-      modelNumber:        editingItem.modelNumber        || '',
+      modelNumber: (() => {
+        const raw = editingItem.modelNumber || '';
+        if (!editingItem.modelName && raw.indexOf(' / ') !== -1) {
+          return raw.slice(0, raw.indexOf(' / '));
+        }
+        return raw;
+      })(),
+      modelName: (() => {
+        if (editingItem.modelName) return editingItem.modelName;
+        const raw = editingItem.modelNumber || '';
+        if (raw.indexOf(' / ') !== -1) {
+          return raw.slice(raw.indexOf(' / ') + 3);
+        }
+        return '';
+      })(),
       gender:             editingItem.gender             || 'メンズ',
       seoCategories:      Array.isArray(editingItem.seoCategories)
         ? editingItem.seoCategories
@@ -2154,6 +2172,11 @@ const PurchaseTab = () => {
       showOptionalFee:   (editingItem.purchaseCost?.optionalFeeTaxIn > 0) || false,
       couponTaxIn:  editingItem.purchaseCost?.couponTaxIn ? String(editingItem.purchaseCost.couponTaxIn) : '',
       couponNote:   editingItem.purchaseCost?.couponNote  || '',
+      accessories:  editingItem.accessories != null ? editingItem.accessories : '無し(画像に写っているもののみ)',
+      damageNote:   editingItem.damageNote   || '',
+      damageLevels: (editingItem.damageLevels && typeof editingItem.damageLevels === 'object')
+        ? { ...editingItem.damageLevels }
+        : { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' },
     });
     setPurchaseType(editingItem.purchaseType || 'store');
     setRegistrationMode(editingItem.status === 'listed' ? 'listed' : 'unlisted');
@@ -2244,6 +2267,12 @@ const PurchaseTab = () => {
       const draftTime = new Date(draft.savedAt || 0).getTime();
       const itemTime  = new Date(editingItem.updatedAt || editingItem.createdAt || 0).getTime();
       if (draftTime > itemTime + 3000 && draft.form) {
+        // damageLevels が古い下書きにない/不正な場合のガード
+        if (!draft.form.damageLevels || typeof draft.form.damageLevels !== 'object') {
+          draft.form.damageLevels = { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' };
+        } else {
+          draft.form.damageLevels = { ...draft.form.damageLevels };
+        }
         // 下書きのフォーム値で上書き（前のuseEffectで読み込まれたeditingItemの値を差し替え）
         setForm(prev => ({ ...prev, ...draft.form }));
         if (draft.purchaseType)    setPurchaseType(draft.purchaseType);
@@ -2396,12 +2425,8 @@ const PurchaseTab = () => {
           ? result.category_keywords.split(/[\s　]+/).filter(Boolean).slice(0, 10)
           : [],
         colorDisplay: result.color_display || '',
-        modelNumber: (() => {
-          const num = result.model_number || '';
-          const name = result.model_name || '';
-          if (num && name) return `${num} / ${name}`;
-          return num || name || prev.modelNumber || '';
-        })(),
+        modelNumber: result.model_number || prev.modelNumber || '',
+        modelName: result.model_name || prev.modelName || '',
         gender: result.gender || prev.gender,
         condition: result.condition || 'A',
         conditionDetail: result.condition_detail || '',
@@ -2639,6 +2664,96 @@ const PurchaseTab = () => {
     // 状態詳細
     const conditionText = form.conditionDetail || '（状態詳細未入力）';
 
+    // ---- のびSHOP用フォーマット ----
+    if (descFormat === 'nobi') {
+      const hashtag = getHashtag(form.category, form.gender);
+      const nobiProductName = form.productName || '（商品名未入力）';
+      const nobiBrandParts = [];
+      if (form.brand) nobiBrandParts.push(form.brand);
+      if (form.brandReading && form.brandReading !== form.brand) nobiBrandParts.push(form.brandReading);
+      const nobiBrandLine = nobiBrandParts.length > 0 ? nobiBrandParts.join('/') : '（ブランド未入力）';
+      const nobiModelName = form.modelName || '';
+      const nobiModelNumber = form.modelNumber || '型番なし';
+      const nobiMaterial = form.material || '（素材未入力）';
+      const nobiAccessories = form.accessories != null ? form.accessories : '無し(画像に写っているもののみ)';
+      const nobiCondition = form.condition || '（未選択）';
+      const DEFAULT_DAMAGE_LEVELS = { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' };
+      const dl = (form.damageLevels && typeof form.damageLevels === 'object') ? form.damageLevels : DEFAULT_DAMAGE_LEVELS;
+      const nobiDamageNote = form.damageNote || '特になし';
+
+      // 実寸ブロック
+      const nobiMeasureLines = mLabels
+        .filter(([key]) => form[key] && form[key] !== '')
+        .map(([key, label]) => `${label}：${form[key]}cm`);
+      let nobiSizeBlock;
+      if (form.sizeTag && nobiMeasureLines.length === 0) {
+        nobiSizeBlock = `表記サイズ：${form.sizeTag}\nあとで実寸記載`;
+      } else if (form.sizeTag) {
+        nobiSizeBlock = [`表記サイズ：${form.sizeTag}`, ...nobiMeasureLines].join('\n');
+      } else if (nobiMeasureLines.length > 0) {
+        nobiSizeBlock = nobiMeasureLines.join('\n');
+      } else {
+        nobiSizeBlock = 'あとで実寸記載';
+      }
+
+      const nobiLines = [
+        'We offer immediate purchase approval. Our store deals exclusively in authentic products, so please feel confident in making your purchase.',
+        '',
+        '※他サイトでも出品中のため、売り切れた場合は急な出品停止もあります。ご了承下さい。',
+        '',
+        hashtag,
+        '',
+        '■商品名',
+        nobiProductName,
+        '',
+        '■ブランド / モデル',
+        nobiBrandLine,
+        ...(nobiModelName ? [nobiModelName] : []),
+        '',
+        '■カテゴリー',
+        categoryText,
+        '',
+        '■シリアル番号(型番など)',
+        nobiModelNumber,
+        '',
+        '■実寸サイズ（約）',
+        nobiSizeBlock,
+        '',
+        '※素人採寸のため若干の誤差はご容赦ください',
+        '',
+        '■素材',
+        nobiMaterial,
+        '',
+        '■カラー',
+        colorText,
+        '',
+        '■付属品',
+        nobiAccessories,
+        '',
+        `■コンディションレベル：${nobiCondition}`,
+        `汚れ：${dl['汚れ'] || '無'}`,
+        `擦れ：${dl['擦れ'] || '無'}`,
+        `傷：${dl['傷'] || '無'}`,
+        `角擦れ：${dl['角擦れ'] || '無'}`,
+        `匂い：${dl['匂い'] || '無'}`,
+        `型崩れ：${dl['型崩れ'] || '無'}`,
+        '',
+        `その他気になる点：${nobiDamageNote}`,
+        '',
+        '※照明や撮影環境により、写真と実際の色味や傷が若干異なる場合がございますのでご了承をお願いします。',
+        '',
+        '■発送について',
+        '・なるべくコンパクトにして発送致します。',
+        '・らくらくメルカリ便とゆうゆうメルカリ便についてサイズ次第で配送時に変更する可能性ございます。',
+        '',
+        `管理番号：${mgmtNo || ''}`,
+      ];
+      const nobiDesc = nobiLines.join('\n').replace(/\n{3,}/g, '\n\n');
+      setGeneratedDesc(nobiDesc);
+      setShowDesc(true);
+      return;
+    }
+
     // ---- りこぴ用フォーマット ----
     if (descFormat === 'riko') {
       // カテゴリー行：seoCategories を1つずつ改行、なければ categoryKeywords を単語ごと改行
@@ -2712,7 +2827,7 @@ const PurchaseTab = () => {
       '【ブランド】',
       ...brandLines,
       '',
-      ...(form.modelNumber ? ['【型番・モデル】', form.modelNumber, ''] : []),
+      ...(() => { const mn = [form.modelNumber, form.modelName].filter(Boolean).join(' / '); return mn ? ['【型番・モデル】', mn, ''] : []; })(),
       '【カテゴリー】',
       categoryText,
       '',
@@ -2789,7 +2904,7 @@ const PurchaseTab = () => {
     setForm({
       productName: '', brand: '', category: '', color: '',
       brandReading: '', categoryKeywords: '', colorDisplay: '',
-      modelNumber: '', gender: 'メンズ',
+      modelNumber: '', modelName: '', gender: 'メンズ',
       condition: 'A', conditionDetail: '',
       sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '', sizeConfidence: 'medium', material: '',
       purchaseDate: today(), purchaseStore: '', sellerLicense: '', sellerCompanyName: '',
@@ -2802,6 +2917,9 @@ const PurchaseTab = () => {
       optionalFeeTaxIn: '', optionalTaxRate: 10,
       showOptionalFee: false,
       couponTaxIn: '', couponNote: '',
+      accessories: '無し(画像に写っているもののみ)',
+      damageNote: '',
+      damageLevels: { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' },
     });
   };
 
@@ -3286,7 +3404,13 @@ const PurchaseTab = () => {
             </div>
             <div style={{display:'flex',gap:8}}>
               <button onClick={() => {
-                setForm(draftBanner.form);
+                const restoredForm = draftBanner.form;
+                if (restoredForm && (!restoredForm.damageLevels || typeof restoredForm.damageLevels !== 'object')) {
+                  restoredForm.damageLevels = { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' };
+                } else if (restoredForm && restoredForm.damageLevels) {
+                  restoredForm.damageLevels = { ...restoredForm.damageLevels };
+                }
+                setForm(restoredForm);
                 setPurchaseType(draftBanner.purchaseType || 'store');
                 setGeneratedDesc(draftBanner.generatedDesc || '');
                 setRegistrationMode(draftBanner.registrationMode || 'unlisted');
@@ -3566,10 +3690,10 @@ const PurchaseTab = () => {
               </div>
             </div>
 
-            {/* 型番・モデル名 */}
+            {/* 型番 */}
             <div style={{marginBottom:12}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:5}}>
-                <label className="field-label" style={{margin:0}}>型番・モデル名</label>
+                <label className="field-label" style={{margin:0}}>型番</label>
                 {form.modelNumber && (
                   <button onClick={() => copyToClipboard(form.modelNumber).then(ok => toast(ok ? '📋 コピーしました' : 'コピー失敗'))}
                     style={{fontSize:11,color:'#E84040',background:'#fff0f0',border:'1px solid #fca5a5',borderRadius:6,padding:'2px 8px',cursor:'pointer',fontWeight:600}}>
@@ -3580,12 +3704,21 @@ const PurchaseTab = () => {
               <input className="input-field"
                 value={form.modelNumber}
                 onChange={e => setF('modelNumber', e.target.value)}
-                placeholder="AI解析で自動入力（例: M51258 / Musette Salsa）"/>
+                placeholder="AI解析で自動入力（例: M51258）"/>
               {form.modelNumber ? (
-                <div style={{fontSize:11,color:'#16a34a',marginTop:3}}>✅ 型番・モデル名取得済み</div>
+                <div style={{fontSize:11,color:'#16a34a',marginTop:3}}>✅ 型番取得済み</div>
               ) : (
                 <div style={{fontSize:11,color:'#888',marginTop:3}}>💡 内側ラベル・タグ・刻印の写真も追加すると型番の精度が上がります</div>
               )}
+            </div>
+
+            {/* モデル名 */}
+            <div style={{marginBottom:12}}>
+              <label className="field-label">モデル名</label>
+              <input className="input-field"
+                value={form.modelName}
+                onChange={e => setF('modelName', e.target.value)}
+                placeholder="例：バンブー、Neverfull MM"/>
             </div>
 
             {/* カテゴリー */}
@@ -3693,6 +3826,14 @@ const PurchaseTab = () => {
               </div>
             </div>
 
+            {/* 素材 */}
+            <div style={{marginBottom:12}}>
+              <label className="field-label">素材</label>
+              <input className="input-field" value={form.material}
+                onChange={e => setF('material', e.target.value)}
+                placeholder="例：レザー(本革)、ウール100%"/>
+            </div>
+
             {/* サイズ */}
             <div style={{marginBottom:12}}>
               <label className="field-label">
@@ -3740,6 +3881,44 @@ const PurchaseTab = () => {
               <textarea className="input-field" value={form.conditionDetail}
                 onChange={e => setF('conditionDetail', e.target.value)}
                 placeholder="状態の詳細説明" style={{minHeight:80}}/>
+            </div>
+
+            {/* ダメージ状態 */}
+            <div style={{marginBottom:12}}>
+              <label className="field-label">ダメージ状態</label>
+              {['汚れ','擦れ','傷','角擦れ','匂い','型崩れ'].map(item => (
+                <div key={item} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:13,fontWeight:600,minWidth:48,color:'#374151'}}>{item}</span>
+                  {['無','小','中','大'].map(lv => {
+                    const selected = (form.damageLevels && form.damageLevels[item]) === lv;
+                    return (
+                      <button key={lv} onClick={() => setForm(prev => ({ ...prev, damageLevels: { ...(prev.damageLevels || {}), [item]: lv } }))}
+                        style={{flex:1,minHeight:44,borderRadius:8,border:'none',cursor:'pointer',
+                          fontSize:14,fontWeight:700,WebkitTapHighlightColor:'transparent',touchAction:'manipulation',
+                          background: selected ? '#1e293b' : '#f1f5f9',
+                          color: selected ? 'white' : '#64748b'}}>
+                        {lv}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            {/* その他気になる点 */}
+            <div style={{marginBottom:12}}>
+              <label className="field-label">その他気になる点</label>
+              <textarea className="input-field" value={form.damageNote}
+                onChange={e => setF('damageNote', e.target.value)}
+                placeholder="例：ファスナーのメッキ剥がれあり" style={{minHeight:60}}/>
+            </div>
+
+            {/* 付属品 */}
+            <div style={{marginBottom:12}}>
+              <label className="field-label">付属品</label>
+              <input className="input-field" value={form.accessories}
+                onChange={e => setF('accessories', e.target.value)}
+                placeholder="無し(画像に写っているもののみ)"/>
             </div>
 
             <hr style={{borderColor:'#f0f0f0',margin:'12px 0'}}/>
@@ -4400,7 +4579,7 @@ const PurchaseTab = () => {
             {/* 商品説明生成 */}
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
               {/* フォーマット切替 */}
-              {[['self','自分用'],['riko','りこぴ用']].map(([v,l]) => (
+              {[['nobi','のびSHOP用'],['self','自分用'],['riko','りこぴ用']].map(([v,l]) => (
                 <button key={v} onClick={() => setDescFormat(v)}
                   style={{flex:1,padding:'7px 0',borderRadius:10,border:'none',cursor:'pointer',
                     fontSize:13,fontWeight:700,WebkitTapHighlightColor:'transparent',
@@ -4411,7 +4590,7 @@ const PurchaseTab = () => {
               ))}
             </div>
             <button className="btn-secondary" style={{width:'100%',marginBottom:8}}
-              onClick={generateDescription}>📝 商品説明文を生成（{descFormat==='riko'?'りこぴ用':'自分用'}）</button>
+              onClick={generateDescription}>📝 商品説明文を生成（{descFormat==='nobi'?'のびSHOP用':descFormat==='riko'?'りこぴ用':'自分用'}）</button>
 
             {showDesc && (
               <div style={{marginBottom:12}}>
@@ -4588,7 +4767,8 @@ const PurchaseTab = () => {
                                       !usedIds.has(inv.id) &&
                                       ((inv.brand||'').toLowerCase().includes(q) ||
                                        (inv.productName||'').toLowerCase().includes(q) ||
-                                       (inv.modelNumber||'').toLowerCase().includes(q))
+                                       (inv.modelNumber||'').toLowerCase().includes(q) ||
+                                       (inv.modelName||'').toLowerCase().includes(q))
                                     ).slice(0, 8);
                                     return (
                                       <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,
