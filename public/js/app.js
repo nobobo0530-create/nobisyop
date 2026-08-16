@@ -5644,11 +5644,15 @@ const InventoryTab = () => {
                     </div>
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
+                    {/* 売却済・未売却で並び順を統一：仕入 → 売価 → 利益 */}
+                    <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
+                    <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
+                      ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
+                    </div>
                     {isSold ? (
-                      /* 売却済：実績データを表示 */
+                      /* 売却済：実績の売上・利益 */
                       <>
-                        <div style={{fontSize:11,color:'#9ca3af',marginBottom:2}}>売上</div>
-                        <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
+                        <div style={{fontSize:14,fontWeight:800,color:'#111827',marginTop:2}}>
                           {saleRecord ? `¥${formatMoney(saleRecord.salePrice)}` : '−'}
                         </div>
                         {soldProfit !== null && (
@@ -5661,17 +5665,10 @@ const InventoryTab = () => {
                             {isProfitable?'+':''}¥{formatMoney(soldProfit)}
                           </div>
                         )}
-                        {soldPP > 0 && (
-                          <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,marginTop:3}}>
-                            仕入 ¥{formatMoney(soldPP)}
-                          </div>
-                        )}
                       </>
                     ) : (
-                      /* 未出品・出品中：仕入れ＋出品価格＋推定利益 */
+                      /* 未出品・出品中：出品価格＋推定利益 */
                       <>
-                        <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
-                        <div style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(item.purchasePrice)}</div>
                         {item.listPrice > 0 && (
                           <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
                         )}
@@ -5779,14 +5776,23 @@ const InventoryTab = () => {
                 <div style={{fontSize:12,color:'#999'}}>カテゴリー</div>
                 <div>{selected.category || '-'}</div>
               </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>仕入れ値</div>
-                <div style={{fontWeight:600}}>¥{formatMoney(selected.purchasePrice)}</div>
-              </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>見込み売上</div>
-                <div style={{fontWeight:600}}>¥{formatMoney(selected.listPrice)}</div>
-              </div>
+              {(() => {
+                /* 売却済みは売上レコードの仕入れ値・実売価を優先（一覧カードと同じルール）*/
+                const selSale = selected.status === 'sold' ? (data.sales||[]).find(s => s.inventoryId === selected.id) : null;
+                const selPP = (selSale?.purchasePrice||0) > 0 ? selSale.purchasePrice : (selected.purchasePrice||0);
+                return (
+                  <>
+                    <div>
+                      <div style={{fontSize:12,color:'#999'}}>仕入れ値</div>
+                      <div style={{fontWeight:600}}>¥{formatMoney(selPP)}</div>
+                    </div>
+                    <div>
+                      <div style={{fontSize:12,color:'#999'}}>{selSale ? '売却価格' : '見込み売上'}</div>
+                      <div style={{fontWeight:600}}>¥{formatMoney(selSale ? selSale.salePrice : selected.listPrice)}</div>
+                    </div>
+                  </>
+                );
+              })()}
               <div>
                 <div style={{fontSize:12,color:'#999'}}>仕入れ日</div>
                 <div>{selected.purchaseDate}</div>
@@ -8666,7 +8672,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       inv.productName||'',
       inv.brand||'',
       inv.category||'',
-      inv.purchasePrice||0,
+      (s.purchasePrice||0) > 0 ? s.purchasePrice : (inv.purchasePrice||0),
       inv.listPrice||'',
       inv.purchaseStore||inv.storeName||'',
       s.saleDate||'',
@@ -9287,7 +9293,8 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const fee  = Math.round(sp*(s.feeRate||0));
                   const ship = s.shipping||0;
                   const sProfit = sp - fee - ship;
-                  const nProfit = sProfit - (item.purchasePrice||s.purchasePrice||0);
+                  const effPP = (s.purchasePrice||0) > 0 ? s.purchasePrice : (item.purchasePrice||0);
+                  const nProfit = s.profit != null ? s.profit : (sProfit - effPP);
                   const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
                   const brand = item.brand || s.brand || '';
                   const productName = item.productName || s.productName || s.memo || '−';
@@ -9312,7 +9319,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                           ? <span style={{color:'#555',fontSize:10}}>{store}</span>
                           : <span style={{color:'#dc2626',fontWeight:700,fontSize:9}}>⚠️</span>}
                       </td>
-                      <td style={td({fontWeight:600})}>¥{formatMoney(item.purchasePrice||s.purchasePrice||0)}</td>
+                      <td style={td({fontWeight:600})}>¥{formatMoney(effPP)}</td>
                       <td style={td({color:'#555',fontSize:10})}>{s.saleDate}</td>
                       <td style={td({fontSize:10})}>{s.platform}</td>
                       <td style={td({fontWeight:700})}>¥{formatMoney(sp)}</td>
@@ -9451,13 +9458,17 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           ['状態ランク', ({item}) => item.condition||'−'],
           ['仕入れ日', ({item}) => item.purchaseDate||'⚠️未入力'],
           ['仕入れ先', ({item}) => item.purchaseStore||'⚠️未入力'],
-          ['仕入れ価格', ({item}) => item.purchasePrice ? `¥${formatMoney(item.purchasePrice)}` : '−'],
+          ['仕入れ価格', ({item,sale}) => {
+            const pp = (sale?.purchasePrice||0) > 0 ? sale.purchasePrice : (item.purchasePrice||0);
+            return pp ? `¥${formatMoney(pp)}` : '−';
+          }],
           ['出品価格（定価）', ({item}) => item.listPrice ? `¥${formatMoney(item.listPrice)}` : '−'],
           ['売却日', ({sale}) => sale?.saleDate||'未売却'],
           ['販売価格', ({sale}) => sale?.salePrice ? `¥${formatMoney(sale.salePrice)}` : '−'],
           ['純利益', ({sale,item}) => {
             if (!sale) return '−';
-            const profit = sale.profit ?? Math.round(sale.salePrice*(1-(sale.feeRate||0.1)) - (sale.shipping||0) - (item.purchasePrice||0));
+            const pp = (sale.purchasePrice||0) > 0 ? sale.purchasePrice : (item.purchasePrice||0);
+            const profit = sale.profit ?? Math.round(sale.salePrice*(1-(sale.feeRate||0.1)) - (sale.shipping||0) - pp);
             return `¥${formatMoney(profit)}`;
           }],
           ['販路', ({sale}) => sale?.platform||'−'],
