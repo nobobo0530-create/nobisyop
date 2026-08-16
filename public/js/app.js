@@ -5551,6 +5551,7 @@ const InventoryTab = () => {
               const isSold = item.status === 'sold';
               const saleRecord = isSold ? (data.sales||[]).find(s => s.inventoryId === item.id) : null;
               const soldProfit = saleRecord?.profit ?? null;
+              const soldPP = (saleRecord?.purchasePrice||0) > 0 ? saleRecord.purchasePrice : (item.purchasePrice||0);
               const isProfitable = soldProfit !== null ? soldProfit >= 0 : null;
               return (
                 <div key={item.id} className="card"
@@ -5658,6 +5659,11 @@ const InventoryTab = () => {
                             borderRadius:6,padding:'2px 6px',display:'inline-block',
                           }}>
                             {isProfitable?'+':''}¥{formatMoney(soldProfit)}
+                          </div>
+                        )}
+                        {soldPP > 0 && (
+                          <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,marginTop:3}}>
+                            仕入 ¥{formatMoney(soldPP)}
                           </div>
                         )}
                       </>
