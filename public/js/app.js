@@ -1433,17 +1433,18 @@ const ProfitChart = ({ summarySales, now }) => {
             {selected.key.slice(0,4)}年{parseInt(selected.key.slice(5),10)}月
           </div>
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8}}>
+            {/* 売上タブの月次カードと並び順を統一：売上 → 純利益 → 件数 */}
+            <div>
+              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600, letterSpacing:'0.05em', marginBottom:4}}>売上</div>
+              <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px', color:'#1d4ed8', lineHeight:1}}>
+                ¥{formatMoney(selected.revenue)}
+              </div>
+            </div>
             <div>
               <div style={{fontSize:9, color:'#9ca3af', fontWeight:600, letterSpacing:'0.05em', marginBottom:4}}>純利益</div>
               <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px',
                 color: selected.profit >= 0 ? '#16a34a' : '#dc2626', lineHeight:1}}>
                 {selected.profit >= 0 ? '' : '−'}¥{formatMoney(Math.abs(selected.profit))}
-              </div>
-            </div>
-            <div>
-              <div style={{fontSize:9, color:'#9ca3af', fontWeight:600, letterSpacing:'0.05em', marginBottom:4}}>売上</div>
-              <div style={{fontSize:20, fontWeight:900, letterSpacing:'-0.5px', color:'#1d4ed8', lineHeight:1}}>
-                ¥{formatMoney(selected.revenue)}
               </div>
             </div>
             <div>
@@ -1456,7 +1457,7 @@ const ProfitChart = ({ summarySales, now }) => {
           {selected.count > 0 && selected.revenue > 0 && (
             <div style={{marginTop:10, paddingTop:10, borderTop:'1px solid #e5e7eb',
               display:'flex', gap:16, fontSize:11, color:'#9ca3af'}}>
-              <span>仕入コスト ¥{formatMoney(selected.cost)}</span>
+              <span>仕入れ合計 ¥{formatMoney(selected.cost)}</span>
               <span>利益率 {Math.round(selected.profit / selected.revenue * 100)}%</span>
             </div>
           )}
@@ -5547,7 +5548,10 @@ const InventoryTab = () => {
             {sorted.map(item => {
               const isChecked = checkedIds.has(item.id);
               const alert = alertLevel(item);
-              const estProfit = (item.listPrice||0) - (item.purchasePrice||0);
+              /* 見込み利益は手数料・送料を引いた実額（利益順ソートと同じ計算）*/
+              const estFees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+              const estProfit = calcProfit(item.listPrice||0, item.purchasePrice||0,
+                estFees[item.platform] ?? estFees['メルカリ'] ?? 0.10, CONFIG.ESTIMATED_SHIPPING);
               const isSold = item.status === 'sold';
               const saleRecord = isSold ? (data.sales||[]).find(s => s.inventoryId === item.id) : null;
               const soldProfit = saleRecord?.profit ?? null;
@@ -5645,7 +5649,7 @@ const InventoryTab = () => {
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
                     {/* 売却済・未売却で並び順を統一：仕入 → 売価 → 利益 */}
-                    <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入</div>
+                    <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入れ値</div>
                     <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
                       ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
                     </div>
@@ -7270,7 +7274,7 @@ const SalesTab = () => {
                     </div>
                     {(item?.purchaseDate || item?.purchaseStore || item?.storeName || item?.category) && (
                       <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginTop:3}}>
-                        {item.purchaseDate && <span style={{fontSize:10,color:'#9ca3af'}}>仕入: {item.purchaseDate}</span>}
+                        {item.purchaseDate && <span style={{fontSize:10,color:'#9ca3af'}}>仕入れ日 {item.purchaseDate}</span>}
                         {(item.purchaseStore || item.storeName) && <span style={{fontSize:10,color:'#9ca3af'}}>・{item.purchaseStore||item.storeName}</span>}
                         {item.category && <span style={{fontSize:10,color:'#9ca3af'}}>・{item.category}</span>}
                       </div>
@@ -9458,7 +9462,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           ['状態ランク', ({item}) => item.condition||'−'],
           ['仕入れ日', ({item}) => item.purchaseDate||'⚠️未入力'],
           ['仕入れ先', ({item}) => item.purchaseStore||'⚠️未入力'],
-          ['仕入れ価格', ({item,sale}) => {
+          ['仕入れ値', ({item,sale}) => {
             const pp = (sale?.purchasePrice||0) > 0 ? sale.purchasePrice : (item.purchasePrice||0);
             return pp ? `¥${formatMoney(pp)}` : '−';
           }],
@@ -10054,7 +10058,7 @@ const SellerBookImporter = ({ data, setData, toast, currentUser }) => {
                 <div key={i} style={{background:'#fafafa',borderRadius:8,padding:'9px 12px',marginBottom:6,fontSize:11,border:'1px solid #f0f0f0'}}>
                   <div style={{fontWeight:700,marginBottom:3,color:'#1a1a1a'}}>{get('productName')}</div>
                   <div style={{color:'#666',display:'flex',flexWrap:'wrap',gap:10}}>
-                    <span>仕入 ¥{get('purchasePrice')}</span>
+                    <span>仕入れ値 ¥{get('purchasePrice')}</span>
                     <span>販売 ¥{salePriceVal}</span>
                     {get('profit') !== '−' && <span>利益 ¥{get('profit')}</span>}
                     {get('platform') !== '−' && <span>{get('platform')}</span>}
