@@ -10677,8 +10677,12 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
 const OtherTab = () => {
   const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, pendingReturnSection, setPendingReturnSection } = React.useContext(AppContext);
   const toast = useToast();
-  const [activeSection, setActiveSection] = React.useState(pendingReturnSection || 'receipts');
+  const SECTION_ALIAS = { export: 'data', import: 'data', qr: 'settings', db: 'settings' };
+  const initialSection = SECTION_ALIAS[pendingReturnSection] || pendingReturnSection || 'receipts';
+  const [activeSection, setActiveSection] = React.useState(initialSection);
   React.useEffect(() => { if (pendingReturnSection) setPendingReturnSection(null); }, []);
+  const [openGroups, setOpenGroups] = React.useState({});
+  const toggleGroup = (id) => setOpenGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
   const [receiptModal, setReceiptModal] = React.useState(null);
   const [receiptEdit, setReceiptEdit] = React.useState(null);
@@ -10701,7 +10705,10 @@ const OtherTab = () => {
     if (activeSection === 'settings') {
       getAllPhotoIds().then(ids => setPhotoCount(ids.length)).catch(() => {});
     }
-    if (activeSection === 'qr') {
+  }, [activeSection]);
+
+  React.useEffect(() => {
+    if (activeSection === 'settings' && openGroups.connect) {
       // QRコードにセットするURLを決定してQRを生成する共通関数
       const generateQR = (url) => {
         setAppUrl(url);
@@ -10737,7 +10744,7 @@ const OtherTab = () => {
           .catch(() => generateQR(`http://${h}:3333`));
       }
     }
-  }, [activeSection]);
+  }, [activeSection, openGroups.connect]);
 
   const saveSettings = () => {
     const newData = { ...data, settings };
@@ -11054,14 +11061,11 @@ const OtherTab = () => {
   };
 
   const sections = [
-    { id: 'batch', label: '一括仕入', icon: '📦' },
-    { id: 'qr', label: 'QR', icon: '📱' },
+    { id: 'batch',    label: '一括仕入', icon: '📦' },
     { id: 'receipts', label: 'レシート', icon: '🧾' },
-    { id: 'removebg', label: '白抜き', icon: '✂️' },
-    { id: 'export', label: 'エクスポート', icon: '📊' },
-    { id: 'import', label: 'インポート', icon: '📥' },
-    { id: 'settings', label: '設定', icon: '⚙️' },
-    { id: 'db', label: 'DB', icon: '🗄️' },
+    { id: 'removebg', label: '白抜き',   icon: '✂️' },
+    { id: 'data',     label: 'データ',   icon: '📊' },
+    { id: 'settings', label: '設定',     icon: '⚙️' },
   ];
 
   return (
@@ -11071,18 +11075,18 @@ const OtherTab = () => {
       </div>
 
       {/* サブナビ */}
-      <div style={{display:'flex',gap:8,padding:'10px 14px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+      <div style={{display:'flex',gap:6,padding:'8px 10px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
         {sections.map(s => {
           const active = activeSection === s.id;
           return (
             <button key={s.id} onClick={() => setActiveSection(s.id)}
-              style={{flexShrink:0,padding:'8px 14px',border:'none',cursor:'pointer',borderRadius:12,
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
+              style={{flexShrink:0,padding:'8px 12px',border:'none',cursor:'pointer',borderRadius:12,
+                fontWeight:700,fontSize:12,display:'flex',alignItems:'center',gap:4,
                 background: active ? 'var(--color-primary)' : '#f3f4f6',
                 color: active ? 'white' : '#777',
                 boxShadow: active ? '0 2px 8px rgba(232,64,64,0.25)' : 'none',
                 transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              <span style={{fontSize:15}}>{s.icon}</span>
+              <span style={{fontSize:14}}>{s.icon}</span>
               <span>{s.label}</span>
             </button>
           );
@@ -11094,32 +11098,6 @@ const OtherTab = () => {
         {/* 一括仕入れ */}
         {activeSection === 'batch' && (
           <BatchPurchasePanel data={data} setData={setData} toast={toast} />
-        )}
-
-        {/* QRコード */}
-        {activeSection === 'qr' && (
-          <div>
-            <div className="card" style={{padding:24,textAlign:'center',marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>📱 iPhoneで開く</div>
-              <div style={{fontSize:13,color:'#666',marginBottom:20}}>
-                カメラでスキャンするだけ！<br/>同じWi-Fiに繋がっていること
-              </div>
-              <div ref={qrCanvasRef} style={{display:'inline-block',padding:16,background:'white',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,0.12)'}}/>
-              <div style={{marginTop:16,fontSize:13,color:'#999',wordBreak:'break-all'}}>
-                {appUrl || '読み込み中...'}
-              </div>
-            </div>
-            <div className="card" style={{padding:16,fontSize:13,color:'#555',lineHeight:1.7}}>
-              <div style={{fontWeight:700,marginBottom:8}}>📲 ホーム画面に追加する方法</div>
-              <div>① iPhoneのSafariでスキャン</div>
-              <div>② 下の「共有ボタン」をタップ</div>
-              <div>③「ホーム画面に追加」を選択</div>
-              <div>④ アプリとして起動できます🎉</div>
-              <div style={{marginTop:12,padding:10,background:'#fff7ed',borderRadius:8,color:'#92400e',fontSize:12}}>
-                ⚠️ Macがスリープするとアクセスできなくなります
-              </div>
-            </div>
-          </div>
         )}
 
         {/* レシート管理 */}
@@ -11390,26 +11368,32 @@ const OtherTab = () => {
           );
         })()}
 
-        {activeSection === 'import' && (
-          <SellerBookImporter data={data} setData={setData} toast={toast} currentUser={currentUser} />
-        )}
-
-        {/* エクスポート */}
-        {activeSection === 'export' && (
-          <ExportPanel
-            data={data}
-            settings={settings}
-            setSetting={setSetting}
-            toast={toast}
-            exportAll={exportAll}
-            exportCSV={exportCSV}
-            exportKobotsuCSV={exportKobotsuCSV}
-            setTab={setTab}
-            setPendingEditSaleId={setPendingEditSaleId}
-            setEditingItem={setEditingItem}
-            setPendingReturnTab={setPendingReturnTab}
-            setPendingReturnSection={setPendingReturnSection}
-          />
+        {/* データ（エクスポート・インポート） */}
+        {activeSection === 'data' && (
+          <div>
+            <div style={{fontWeight:700,fontSize:14,color:'#555',marginBottom:8,paddingBottom:6,borderBottom:'1px solid #e5e7eb'}}>
+              📊 エクスポート
+            </div>
+            <ExportPanel
+              data={data}
+              settings={settings}
+              setSetting={setSetting}
+              toast={toast}
+              exportAll={exportAll}
+              exportCSV={exportCSV}
+              exportKobotsuCSV={exportKobotsuCSV}
+              setTab={setTab}
+              setPendingEditSaleId={setPendingEditSaleId}
+              setEditingItem={setEditingItem}
+              setPendingReturnTab={setPendingReturnTab}
+              setPendingReturnSection={setPendingReturnSection}
+            />
+            <div style={{fontWeight:700,fontSize:14,color:'#555',marginTop:16,marginBottom:4,paddingBottom:6,borderBottom:'1px solid #e5e7eb'}}>
+              📥 インポート
+            </div>
+            <div style={{fontSize:12,color:'#888',marginBottom:10}}>他のアプリからCSVで移行するとき用</div>
+            <SellerBookImporter data={data} setData={setData} toast={toast} currentUser={currentUser} />
+          </div>
         )}
 
 
@@ -11434,7 +11418,7 @@ const OtherTab = () => {
           };
 
           const startProcessing = async () => {
-            if (!removeBgKey) { toast('⚠️ Remove.bg APIキーを設定タブで入力してください'); return; }
+            if (!removeBgKey) { toast('⚠️ Remove.bg APIキーを設定 → 🔑 APIキー・接続 で入力してください'); return; }
             if (!bgItems.length) return;
             setBgProcessing(true);
             // pending→queuedにリセット
@@ -11493,11 +11477,11 @@ const OtherTab = () => {
               {!removeBgKey && (
                 <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,padding:14,marginBottom:14,fontSize:13}}>
                   <div style={{fontWeight:700,marginBottom:4,color:'#c2410c'}}>⚠️ Remove.bg APIキーが未設定</div>
-                  <div style={{color:'#78350f',marginBottom:6}}>「設定」タブの「Remove.bg APIキー」に入力してください</div>
+                  <div style={{color:'#78350f',marginBottom:6}}>「設定」→「🔑 APIキー・接続」の「Remove.bg APIキー」に入力してください</div>
                   <div style={{color:'#92400e',fontSize:12}}>
                     <a href="https://www.remove.bg/api" target="_blank" rel="noreferrer"
                       style={{color:'#2563eb',fontWeight:600}}>remove.bg</a>
-                    {' '}で無料取得（月50枚無料）→ 「設定」タブへ
+                    {' '}で無料取得（月50枚無料）→ 「設定」→「🔑 APIキー・接続」へ
                   </div>
                 </div>
               )}
@@ -11707,6 +11691,146 @@ const OtherTab = () => {
         {/* 設定 */}
         {activeSection === 'settings' && (
           <div>
+
+            {/* アコーディオンヘルパー */}
+            {/* グループ1: 🎯 目標・ご褒美 */}
+            <div style={{border:'1px solid #e5e7eb',borderRadius:12,marginBottom:10,background:'white',overflow:'hidden'}}>
+              <button onClick={() => toggleGroup('goal')}
+                style={{width:'100%',padding:'14px 16px',border:'none',background:'none',cursor:'pointer',
+                  display:'flex',justifyContent:'space-between',alignItems:'center',
+                  WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:14,fontWeight:800,color:'#333'}}>🎯 目標・ご褒美</span>
+                <span style={{fontSize:14,color:'#999'}}>{openGroups.goal ? '▾' : '▸'}</span>
+              </button>
+              {openGroups.goal && (
+                <div style={{padding:'0 16px 16px 16px'}}>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>🎯 目標・ご褒美設定</div>
+              <div style={{marginBottom:10}}>
+                <label className="field-label">目標月利 (円)</label>
+                <input type="number" className="input-field"
+                  value={userProfile?.monthlyGoal || 100000}
+                  onChange={e => setUserProfile({ monthlyGoal: Number(e.target.value) })}
+                  placeholder="100000"/>
+              </div>
+              <div style={{marginBottom:10}}>
+                <label className="field-label">ご褒美予算（月利の何%）</label>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <input type="number" className="input-field" style={{flex:1}}
+                    value={userProfile?.rewardPercent || 10}
+                    onChange={e => setUserProfile({ rewardPercent: Number(e.target.value) })}
+                    min="1" max="100"/>
+                  <span style={{fontSize:14}}>%</span>
+                </div>
+              </div>
+              <div style={{fontWeight:600,fontSize:13,marginBottom:8,marginTop:4}}>🏆 達成ご褒美</div>
+              {(userProfile?.milestones || []).map((m, i) => (
+                <div key={m.id} style={{display:'flex',gap:8,marginBottom:6,alignItems:'center'}}>
+                  <input className="input-field" style={{flex:2,fontSize:12}} value={m.label}
+                    onChange={e => {
+                      const ms = [...(userProfile?.milestones || [])];
+                      ms[i] = { ...ms[i], label: e.target.value };
+                      setUserProfile({ milestones: ms });
+                    }} placeholder="ご褒美の内容"/>
+                  <input type="number" className="input-field" style={{flex:1,fontSize:12}} value={m.targetAmount}
+                    onChange={e => {
+                      const ms = [...(userProfile?.milestones || [])];
+                      ms[i] = { ...ms[i], targetAmount: Number(e.target.value) };
+                      setUserProfile({ milestones: ms });
+                    }} placeholder="達成額"/>
+                  <input type="number" className="input-field" style={{width:48,fontSize:12}} value={m.targetCount||1}
+                    onChange={e => {
+                      const ms = [...(userProfile?.milestones || [])];
+                      ms[i] = { ...ms[i], targetCount: Number(e.target.value) };
+                      setUserProfile({ milestones: ms });
+                    }} placeholder="回数"/>
+                  <span style={{fontSize:11,color:'#888'}}>回</span>
+                  <button onClick={() => {
+                    const ms = (userProfile?.milestones || []).filter((_,j)=>j!==i);
+                    setUserProfile({ milestones: ms });
+                  }} style={{background:'none',border:'none',color:'#dc2626',fontSize:18,cursor:'pointer',padding:'0 4px'}}>×</button>
+                </div>
+              ))}
+              <button className="btn-secondary" style={{width:'100%',marginTop:4,fontSize:13}}
+                onClick={() => {
+                  const ms = [...(userProfile?.milestones || []), { id: Date.now().toString(), label: '', targetAmount: 1000000, targetCount: 5 }];
+                  setUserProfile({ milestones: ms });
+                }}>＋ ご褒美を追加</button>
+            </div>
+
+                </div>
+              )}
+            </div>
+
+            {/* グループ2: 💴 販売設定 */}
+            <div style={{border:'1px solid #e5e7eb',borderRadius:12,marginBottom:10,background:'white',overflow:'hidden'}}>
+              <button onClick={() => toggleGroup('sales')}
+                style={{width:'100%',padding:'14px 16px',border:'none',background:'none',cursor:'pointer',
+                  display:'flex',justifyContent:'space-between',alignItems:'center',
+                  WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:14,fontWeight:800,color:'#333'}}>💴 販売設定</span>
+                <span style={{fontSize:14,color:'#999'}}>{openGroups.sales ? '▾' : '▸'}</span>
+              </button>
+              {openGroups.sales && (
+                <div style={{padding:'0 16px 16px 16px'}}>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>💴 プラットフォーム手数料</div>
+              {Object.entries(settings.platformFees || CONFIG.PLATFORM_FEES).map(([p, r]) => (
+                <div key={p} style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+                  <label style={{flex:1,fontSize:14,fontWeight:600}}>{p}</label>
+                  <div style={{display:'flex',alignItems:'center',gap:4}}>
+                    <input type="number" step="0.1" style={{width:70,padding:'8px 10px',border:'1.5px solid #e0e0e0',borderRadius:8,fontSize:14}}
+                      value={(r * 100).toFixed(1)} onChange={e => setPlatformFee(p, e.target.value)}/>
+                    <span style={{fontSize:14}}>%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>📝 商品説明テンプレート</div>
+              <textarea className="input-field" value={settings.descriptionTemplate || CONFIG.DESCRIPTION_TEMPLATE}
+                onChange={e => setSetting('descriptionTemplate', e.target.value)}
+                style={{minHeight:200,fontSize:12,fontFamily:'monospace'}}/>
+              <div style={{fontSize:11,color:'#999',marginTop:6}}>変数: {'{brand}, {category}, {color}, {condition_detail}, {size}, {management_number}'}</div>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>#️⃣ ハッシュタグ</div>
+              <textarea className="input-field" value={settings.hashtags || ''}
+                onChange={e => setSetting('hashtags', e.target.value)}
+                style={{minHeight:80}} placeholder="#のびSHOP"/>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>📋 管理番号フォーマット</div>
+              <div style={{marginBottom:12}}>
+                <label className="field-label">PRICE_SPLIT_DIVISOR（デフォルト: 100）</label>
+                <input type="number" className="input-field" value={settings.priceSplitDivisor}
+                  onChange={e => setSetting('priceSplitDivisor', Number(e.target.value))}/>
+              </div>
+              <div style={{background:'#f8f8f8',borderRadius:8,padding:10,fontSize:12,fontFamily:'monospace'}}>
+                プレビュー: {generateMgmtNo('2026-03-26','2026-03-29',10296,settings.priceSplitDivisor)}
+              </div>
+            </div>
+
+                </div>
+              )}
+            </div>
+
+            {/* グループ3: 🏪 仕入先管理 */}
+            <div style={{border:'1px solid #e5e7eb',borderRadius:12,marginBottom:10,background:'white',overflow:'hidden'}}>
+              <button onClick={() => toggleGroup('stores')}
+                style={{width:'100%',padding:'14px 16px',border:'none',background:'none',cursor:'pointer',
+                  display:'flex',justifyContent:'space-between',alignItems:'center',
+                  WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:14,fontWeight:800,color:'#333'}}>🏪 仕入先管理</span>
+                <span style={{fontSize:14,color:'#999'}}>{openGroups.stores ? '▾' : '▸'}</span>
+              </button>
+              {openGroups.stores && (
+                <div style={{padding:'0 16px 16px 16px'}}>
 
             {/* ── 仕入先 古物商許可証番号管理（通常店舗） ── */}
             <div className="card" style={{padding:16,marginBottom:12}}>
@@ -12038,59 +12162,21 @@ const OtherTab = () => {
               })()}
             </div>
 
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>🎯 目標・ご褒美設定</div>
-              <div style={{marginBottom:10}}>
-                <label className="field-label">目標月利 (円)</label>
-                <input type="number" className="input-field"
-                  value={userProfile?.monthlyGoal || 100000}
-                  onChange={e => setUserProfile({ monthlyGoal: Number(e.target.value) })}
-                  placeholder="100000"/>
-              </div>
-              <div style={{marginBottom:10}}>
-                <label className="field-label">ご褒美予算（月利の何%）</label>
-                <div style={{display:'flex',alignItems:'center',gap:6}}>
-                  <input type="number" className="input-field" style={{flex:1}}
-                    value={userProfile?.rewardPercent || 10}
-                    onChange={e => setUserProfile({ rewardPercent: Number(e.target.value) })}
-                    min="1" max="100"/>
-                  <span style={{fontSize:14}}>%</span>
                 </div>
-              </div>
-              <div style={{fontWeight:600,fontSize:13,marginBottom:8,marginTop:4}}>🏆 達成ご褒美</div>
-              {(userProfile?.milestones || []).map((m, i) => (
-                <div key={m.id} style={{display:'flex',gap:8,marginBottom:6,alignItems:'center'}}>
-                  <input className="input-field" style={{flex:2,fontSize:12}} value={m.label}
-                    onChange={e => {
-                      const ms = [...(userProfile?.milestones || [])];
-                      ms[i] = { ...ms[i], label: e.target.value };
-                      setUserProfile({ milestones: ms });
-                    }} placeholder="ご褒美の内容"/>
-                  <input type="number" className="input-field" style={{flex:1,fontSize:12}} value={m.targetAmount}
-                    onChange={e => {
-                      const ms = [...(userProfile?.milestones || [])];
-                      ms[i] = { ...ms[i], targetAmount: Number(e.target.value) };
-                      setUserProfile({ milestones: ms });
-                    }} placeholder="達成額"/>
-                  <input type="number" className="input-field" style={{width:48,fontSize:12}} value={m.targetCount||1}
-                    onChange={e => {
-                      const ms = [...(userProfile?.milestones || [])];
-                      ms[i] = { ...ms[i], targetCount: Number(e.target.value) };
-                      setUserProfile({ milestones: ms });
-                    }} placeholder="回数"/>
-                  <span style={{fontSize:11,color:'#888'}}>回</span>
-                  <button onClick={() => {
-                    const ms = (userProfile?.milestones || []).filter((_,j)=>j!==i);
-                    setUserProfile({ milestones: ms });
-                  }} style={{background:'none',border:'none',color:'#dc2626',fontSize:18,cursor:'pointer',padding:'0 4px'}}>×</button>
-                </div>
-              ))}
-              <button className="btn-secondary" style={{width:'100%',marginTop:4,fontSize:13}}
-                onClick={() => {
-                  const ms = [...(userProfile?.milestones || []), { id: Date.now().toString(), label: '', targetAmount: 1000000, targetCount: 5 }];
-                  setUserProfile({ milestones: ms });
-                }}>＋ ご褒美を追加</button>
+              )}
             </div>
+
+            {/* グループ4: 🔑 APIキー・接続 */}
+            <div style={{border:'1px solid #e5e7eb',borderRadius:12,marginBottom:10,background:'white',overflow:'hidden'}}>
+              <button onClick={() => toggleGroup('connect')}
+                style={{width:'100%',padding:'14px 16px',border:'none',background:'none',cursor:'pointer',
+                  display:'flex',justifyContent:'space-between',alignItems:'center',
+                  WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:14,fontWeight:800,color:'#333'}}>🔑 APIキー・接続</span>
+                <span style={{fontSize:14,color:'#999'}}>{openGroups.connect ? '▾' : '▸'}</span>
+              </button>
+              {openGroups.connect && (
+                <div style={{padding:'0 16px 16px 16px'}}>
 
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>🔑 Anthropic APIキー</div>
@@ -12121,6 +12207,146 @@ const OtherTab = () => {
                 placeholder="同期トークン（SYNC_TOKENと同じ値）"/>
               <div style={{fontSize:11,color:'#999',marginTop:6}}>この端末のみに保存されます（クラウドには送信されません）</div>
             </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>✂️ Remove.bg APIキー</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                白抜きツールに使用。
+                <a href="https://www.remove.bg/api" target="_blank" rel="noreferrer"
+                  style={{color:'#2563eb'}}>remove.bg</a>
+                で無料取得（月50枚）
+              </div>
+              <input className="input-field" type="password" value={settings.removeBgApiKey||''}
+                onChange={e => setSetting('removeBgApiKey', e.target.value)}
+                placeholder="xxxxxxxxxx（remove.bg API Key）"/>
+              <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
+            </div>
+
+            {/* QRコード（移動） */}
+            <div className="card" style={{padding:24,textAlign:'center',marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>📱 iPhoneで開く</div>
+              <div style={{fontSize:13,color:'#666',marginBottom:20}}>
+                カメラでスキャンするだけ！<br/>同じWi-Fiに繋がっていること
+              </div>
+              <div ref={qrCanvasRef} style={{display:'inline-block',padding:16,background:'white',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,0.12)'}}/>
+              <div style={{marginTop:16,fontSize:13,color:'#999',wordBreak:'break-all'}}>
+                {appUrl || '読み込み中...'}
+              </div>
+              <div style={{marginTop:16,fontSize:13,color:'#555',lineHeight:1.7,textAlign:'left'}}>
+                <div style={{fontWeight:700,marginBottom:8}}>📲 ホーム画面に追加する方法</div>
+                <div>① iPhoneのSafariでスキャン</div>
+                <div>② 下の「共有ボタン」をタップ</div>
+                <div>③「ホーム画面に追加」を選択</div>
+                <div>④ アプリとして起動できます🎉</div>
+                <div style={{marginTop:12,padding:10,background:'#fff7ed',borderRadius:8,color:'#92400e',fontSize:12}}>
+                  ⚠️ Macがスリープするとアクセスできなくなります
+                </div>
+              </div>
+            </div>
+
+            {/* DB設定（移動） */}
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>☁️ DB接続状態</div>
+              <div style={{fontSize:13,padding:'8px 12px',borderRadius:8,
+                background: dbStatus==='ok'||dbStatus==='migrated' ? '#d1fae5' : dbStatus==='setup' ? '#ede9fe' : dbStatus==='error' ? '#fee2e2' : '#f3f4f6',
+                color: dbStatus==='ok'||dbStatus==='migrated' ? '#065f46' : dbStatus==='setup' ? '#5b21b6' : dbStatus==='error' ? '#991b1b' : '#6b7280',
+                fontWeight:600}}>
+                {dbStatus==='ok' ? '✅ Supabase接続済み' :
+                 dbStatus==='migrated' ? '✅ クラウド移行完了' :
+                 dbStatus==='setup' ? '🔧 テーブル未作成' :
+                 dbStatus==='error' ? '❌ 接続エラー' :
+                 dbStatus==='offline' ? '📴 オフライン（env未設定）' : '⏳ 初期化中'}
+              </div>
+              {dbError ? (
+                <div style={{marginTop:8,fontSize:11,background:'#1e1e1e',color:'#fca5a5',borderRadius:8,padding:'8px 10px',fontFamily:'monospace',wordBreak:'break-all'}}>
+                  {dbError}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🗄️ Supabaseテーブル作成SQL</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                Supabase → SQL Editor で以下を実行してください
+              </div>
+              <div style={{background:'#1e1e1e',color:'#e2e8f0',borderRadius:10,padding:12,fontSize:11,fontFamily:'monospace',lineHeight:1.6,overflowX:'auto',whiteSpace:'pre'}}>
+{`-- テーブル作成
+CREATE TABLE IF NOT EXISTS inventory (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS sales (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL
+);
+
+-- RLS有効化
+ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+
+-- ポリシー（既存なら無視）
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='inventory' AND policyname='allow_all_inventory') THEN
+    CREATE POLICY "allow_all_inventory" ON inventory FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sales' AND policyname='allow_all_sales') THEN
+    CREATE POLICY "allow_all_sales" ON sales FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_settings' AND policyname='allow_all_settings') THEN
+    CREATE POLICY "allow_all_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+END $$;
+
+-- anon ロールへの権限付与（重要）
+GRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON sales TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON sales TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`}
+              </div>
+              <button className="btn-secondary" style={{width:'100%',marginTop:10}}
+                onClick={() => {
+                  const sql = `-- テーブル作成\nCREATE TABLE IF NOT EXISTS inventory (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE TABLE IF NOT EXISTS sales (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE TABLE IF NOT EXISTS app_settings (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL\n);\n\n-- RLS有効化\nALTER TABLE inventory ENABLE ROW LEVEL SECURITY;\nALTER TABLE sales ENABLE ROW LEVEL SECURITY;\nALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;\n\n-- ポリシー\nDO $$ BEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='inventory' AND policyname='allow_all_inventory') THEN\n    CREATE POLICY "allow_all_inventory" ON inventory FOR ALL USING (true) WITH CHECK (true);\n  END IF;\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sales' AND policyname='allow_all_sales') THEN\n    CREATE POLICY "allow_all_sales" ON sales FOR ALL USING (true) WITH CHECK (true);\n  END IF;\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_settings' AND policyname='allow_all_settings') THEN\n    CREATE POLICY "allow_all_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);\n  END IF;\nEND $$;\n\n-- anon ロールへの権限付与（重要）\nGRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON sales TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON sales TO authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`;
+                  navigator.clipboard.writeText(sql).then(() => alert('✅ SQLをコピーしました！\nSupabase → SQL Editor に貼り付けて実行してください'));
+                }}>
+                📋 SQLをコピー（既存テーブルに適用可）
+              </button>
+            </div>
+
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>🔄 DB再接続</div>
+              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                SQLを実行後、再接続ボタンを押してください
+              </div>
+              <button className="btn-primary" style={{width:'100%'}}
+                onClick={() => window.location.reload()}>
+                🔄 アプリを再読み込み
+              </button>
+            </div>
+
+                </div>
+              )}
+            </div>
+
+            {/* グループ5: 💾 バックアップとデータ整理 */}
+            <div style={{border:'1px solid #e5e7eb',borderRadius:12,marginBottom:10,background:'white',overflow:'hidden'}}>
+              <button onClick={() => toggleGroup('backup')}
+                style={{width:'100%',padding:'14px 16px',border:'none',background:'none',cursor:'pointer',
+                  display:'flex',justifyContent:'space-between',alignItems:'center',
+                  WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:14,fontWeight:800,color:'#333'}}>💾 バックアップとデータ整理</span>
+                <span style={{fontSize:14,color:'#999'}}>{openGroups.backup ? '▾' : '▸'}</span>
+              </button>
+              {openGroups.backup && (
+                <div style={{padding:'0 16px 16px 16px'}}>
 
             {/* ★ localStorage使用量メーター（大事なデータの iOS Safari 上限≈5MB に対する使用状況） */}
             {(() => {
@@ -12153,65 +12379,6 @@ const OtherTab = () => {
                 </div>
               );
             })()}
-
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>✂️ Remove.bg APIキー</div>
-              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
-                白抜きツールに使用。
-                <a href="https://www.remove.bg/api" target="_blank" rel="noreferrer"
-                  style={{color:'#2563eb'}}>remove.bg</a>
-                で無料取得（月50枚）
-              </div>
-              <input className="input-field" type="password" value={settings.removeBgApiKey||''}
-                onChange={e => setSetting('removeBgApiKey', e.target.value)}
-                placeholder="xxxxxxxxxx（remove.bg API Key）"/>
-              <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
-            </div>
-
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>📋 管理番号フォーマット</div>
-              <div style={{marginBottom:12}}>
-                <label className="field-label">PRICE_SPLIT_DIVISOR（デフォルト: 100）</label>
-                <input type="number" className="input-field" value={settings.priceSplitDivisor}
-                  onChange={e => setSetting('priceSplitDivisor', Number(e.target.value))}/>
-              </div>
-              <div style={{background:'#f8f8f8',borderRadius:8,padding:10,fontSize:12,fontFamily:'monospace'}}>
-                プレビュー: {generateMgmtNo('2026-03-26','2026-03-29',10296,settings.priceSplitDivisor)}
-              </div>
-            </div>
-
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>💴 プラットフォーム手数料</div>
-              {Object.entries(settings.platformFees || CONFIG.PLATFORM_FEES).map(([p, r]) => (
-                <div key={p} style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
-                  <label style={{flex:1,fontSize:14,fontWeight:600}}>{p}</label>
-                  <div style={{display:'flex',alignItems:'center',gap:4}}>
-                    <input type="number" step="0.1" style={{width:70,padding:'8px 10px',border:'1.5px solid #e0e0e0',borderRadius:8,fontSize:14}}
-                      value={(r * 100).toFixed(1)} onChange={e => setPlatformFee(p, e.target.value)}/>
-                    <span style={{fontSize:14}}>%</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>📝 商品説明テンプレート</div>
-              <textarea className="input-field" value={settings.descriptionTemplate || CONFIG.DESCRIPTION_TEMPLATE}
-                onChange={e => setSetting('descriptionTemplate', e.target.value)}
-                style={{minHeight:200,fontSize:12,fontFamily:'monospace'}}/>
-              <div style={{fontSize:11,color:'#999',marginTop:6}}>変数: {'{brand}, {category}, {color}, {condition_detail}, {size}, {management_number}'}</div>
-            </div>
-
-            <div className="card" style={{padding:16,marginBottom:16}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>#️⃣ ハッシュタグ</div>
-              <textarea className="input-field" value={settings.hashtags || ''}
-                onChange={e => setSetting('hashtags', e.target.value)}
-                style={{minHeight:80}} placeholder="#のびSHOP"/>
-            </div>
-
-            <button className="btn-primary" style={{width:'100%',marginBottom:12}} onClick={saveSettings}>
-              💾 設定を保存
-            </button>
 
             {/* バックアップ */}
             <div className="card" style={{padding:16,marginBottom:12}}>
@@ -12376,98 +12543,16 @@ const OtherTab = () => {
             }} style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #fecaca',background:'#fef2f2',color:'#dc2626',fontWeight:600,cursor:'pointer',minHeight:44}}>
               ⚠️ 全データをリセット
             </button>
-          </div>
-        )}
 
-        {/* DB設定 */}
-        {activeSection === 'db' && (
-          <div>
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>☁️ DB接続状態</div>
-              <div style={{fontSize:13,padding:'8px 12px',borderRadius:8,
-                background: dbStatus==='ok'||dbStatus==='migrated' ? '#d1fae5' : dbStatus==='setup' ? '#ede9fe' : dbStatus==='error' ? '#fee2e2' : '#f3f4f6',
-                color: dbStatus==='ok'||dbStatus==='migrated' ? '#065f46' : dbStatus==='setup' ? '#5b21b6' : dbStatus==='error' ? '#991b1b' : '#6b7280',
-                fontWeight:600}}>
-                {dbStatus==='ok' ? '✅ Supabase接続済み' :
-                 dbStatus==='migrated' ? '✅ クラウド移行完了' :
-                 dbStatus==='setup' ? '🔧 テーブル未作成' :
-                 dbStatus==='error' ? '❌ 接続エラー' :
-                 dbStatus==='offline' ? '📴 オフライン（env未設定）' : '⏳ 初期化中'}
-              </div>
-              {dbError ? (
-                <div style={{marginTop:8,fontSize:11,background:'#1e1e1e',color:'#fca5a5',borderRadius:8,padding:'8px 10px',fontFamily:'monospace',wordBreak:'break-all'}}>
-                  {dbError}
                 </div>
-              ) : null}
+              )}
             </div>
 
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🗄️ Supabaseテーブル作成SQL</div>
-              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
-                Supabase → SQL Editor で以下を実行してください
-              </div>
-              <div style={{background:'#1e1e1e',color:'#e2e8f0',borderRadius:10,padding:12,fontSize:11,fontFamily:'monospace',lineHeight:1.6,overflowX:'auto',whiteSpace:'pre'}}>
-{`-- テーブル作成
-CREATE TABLE IF NOT EXISTS inventory (
-  id TEXT PRIMARY KEY,
-  data JSONB NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS sales (
-  id TEXT PRIMARY KEY,
-  data JSONB NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS app_settings (
-  id TEXT PRIMARY KEY,
-  data JSONB NOT NULL
-);
+            {/* 💾 設定を保存ボタン（アコーディオン外・常に表示） */}
+            <button className="btn-primary" style={{width:'100%',marginBottom:12,marginTop:4}} onClick={saveSettings}>
+              💾 設定を保存
+            </button>
 
--- RLS有効化
-ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
-ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
-ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
-
--- ポリシー（既存なら無視）
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='inventory' AND policyname='allow_all_inventory') THEN
-    CREATE POLICY "allow_all_inventory" ON inventory FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sales' AND policyname='allow_all_sales') THEN
-    CREATE POLICY "allow_all_sales" ON sales FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_settings' AND policyname='allow_all_settings') THEN
-    CREATE POLICY "allow_all_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-END $$;
-
--- anon ロールへの権限付与（重要）
-GRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON sales TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON sales TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`}
-              </div>
-              <button className="btn-secondary" style={{width:'100%',marginTop:10}}
-                onClick={() => {
-                  const sql = `-- テーブル作成\nCREATE TABLE IF NOT EXISTS inventory (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE TABLE IF NOT EXISTS sales (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL,\n  created_at TIMESTAMPTZ DEFAULT NOW()\n);\nCREATE TABLE IF NOT EXISTS app_settings (\n  id TEXT PRIMARY KEY,\n  data JSONB NOT NULL\n);\n\n-- RLS有効化\nALTER TABLE inventory ENABLE ROW LEVEL SECURITY;\nALTER TABLE sales ENABLE ROW LEVEL SECURITY;\nALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;\n\n-- ポリシー\nDO $$ BEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='inventory' AND policyname='allow_all_inventory') THEN\n    CREATE POLICY "allow_all_inventory" ON inventory FOR ALL USING (true) WITH CHECK (true);\n  END IF;\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='sales' AND policyname='allow_all_sales') THEN\n    CREATE POLICY "allow_all_sales" ON sales FOR ALL USING (true) WITH CHECK (true);\n  END IF;\n  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_settings' AND policyname='allow_all_settings') THEN\n    CREATE POLICY "allow_all_settings" ON app_settings FOR ALL USING (true) WITH CHECK (true);\n  END IF;\nEND $$;\n\n-- anon ロールへの権限付与（重要）\nGRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON sales TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO anon;\nGRANT SELECT, INSERT, UPDATE, DELETE ON inventory TO authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON sales TO authenticated;\nGRANT SELECT, INSERT, UPDATE, DELETE ON app_settings TO authenticated;`;
-                  navigator.clipboard.writeText(sql).then(() => alert('✅ SQLをコピーしました！\nSupabase → SQL Editor に貼り付けて実行してください'));
-                }}>
-                📋 SQLをコピー（既存テーブルに適用可）
-              </button>
-            </div>
-
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>🔄 DB再接続</div>
-              <div style={{fontSize:12,color:'#666',marginBottom:10}}>
-                SQLを実行後、再接続ボタンを押してください
-              </div>
-              <button className="btn-primary" style={{width:'100%'}}
-                onClick={() => window.location.reload()}>
-                🔄 アプリを再読み込み
-              </button>
-            </div>
           </div>
         )}
       </div>
@@ -13239,15 +13324,15 @@ const App = () => {
           {dbStatus === 'error' && (
             <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#dc2626',color:'white',
                          textAlign:'center',padding:'6px 16px',fontSize:11,cursor:'pointer'}}
-                 onClick={() => setTab('other')}>
-              ⚠️ DB接続エラー（ローカル保存中）{dbError ? ` → ${dbError.slice(0,60)}` : ''} → DBタブを確認
+                 onClick={() => { setPendingReturnSection('settings'); setTab('other'); }}>
+              ⚠️ DB接続エラー（ローカル保存中）{dbError ? ` → ${dbError.slice(0,60)}` : ''} → 設定タブを確認
             </div>
           )}
           {dbStatus === 'setup' && (
             <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9999,background:'#7c3aed',color:'white',
                          textAlign:'center',padding:'6px 16px',fontSize:12,cursor:'pointer'}}
-                 onClick={() => { setTab('other'); }}>
-              🔧 テーブル未作成 → その他 → DBタブでSQLを実行してください
+                 onClick={() => { setPendingReturnSection('settings'); setTab('other'); }}>
+              🔧 テーブル未作成 → その他 → 設定 →「APIキー・接続」でSQLを実行してください
             </div>
           )}
           {dbStatus === 'offline' && (

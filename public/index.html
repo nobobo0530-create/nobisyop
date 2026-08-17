@@ -56,6 +56,20 @@
       font-feature-settings: "tnum";
     }
     #root { min-height: 100vh; min-height: -webkit-fill-available; }
+
+    /* ── PC/Mac: 画面が広いときは中央寄せ（iPhoneの見た目のまま） ── */
+    @media (min-width: 700px) {
+      body { background: #e5e5ea; }
+      #root {
+        max-width: 600px; margin: 0 auto;
+        background: var(--bg);
+        box-shadow: 0 0 0 1px rgba(0,0,0,0.05), 0 0 32px rgba(0,0,0,0.08);
+      }
+      body .bottom-nav {
+        left: 50%; right: auto; width: 600px;
+        transform: translateX(-50%);
+      }
+    }
     .safe-top { padding-top: env(safe-area-inset-top); }
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
     .tap-highlight-none { -webkit-tap-highlight-color: transparent; }
