@@ -663,6 +663,37 @@ const getAiModel = () => {
 };
 const setAiModel = (v) => { try { localStorage.setItem(AI_MODEL_KEY, (v || '').trim()); } catch(_) {} };
 
+// ★ Googleアクセストークン永続化（ページを閉じても再ログイン不要にする）
+const GTOKEN_KEY = 'nobushop_gtoken';
+// 有効なトークンがあればトークン文字列を返す。期限切れ・不正な場合は null
+const getStoredGToken = () => {
+  try {
+    const raw = localStorage.getItem(GTOKEN_KEY);
+    if (!raw) return null;
+    const { token, expiresAt } = JSON.parse(raw);
+    // 残り1分超なら有効
+    if (token && expiresAt && expiresAt - Date.now() > 60000) return token;
+    localStorage.removeItem(GTOKEN_KEY);
+    return null;
+  } catch(_) {
+    try { localStorage.removeItem(GTOKEN_KEY); } catch(__) {}
+    return null;
+  }
+};
+// トークンと有効期限を保存（expiresInSec 未指定時は 3600 秒）
+const setStoredGToken = (token, expiresInSec) => {
+  try {
+    localStorage.setItem(GTOKEN_KEY, JSON.stringify({
+      token,
+      expiresAt: Date.now() + (expiresInSec || 3600) * 1000,
+    }));
+  } catch(_) {}
+};
+// トークンを削除（401 発生時など）
+const clearStoredGToken = () => {
+  try { localStorage.removeItem(GTOKEN_KEY); } catch(_) {}
+};
+
 // 初期化確認のみ（実際の通信はサーバー側 api/data.js が行う）
 const initSupabase = (url, key) => {
   if (!url || !key) throw new Error('Cloud config is empty on server');
@@ -8532,10 +8563,478 @@ const SalesTab = () => {
 };
 
 // ============================================================
+// Googleスプレッドシート同期 — モジュールスコープのユーティリティ
+// （ExportPanel と自動同期（App）の両方から呼べるように外出し）
+// ============================================================
+const _GSHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
+const _SYNC_LOG = (...a) => console.log('[SYNC]', ...a);
+
+// 汎用リクエスト — エラー時は必ず throw
+const _sheetsReq = async (token, url, opts = {}) => {
+  _SYNC_LOG('REQ', opts.method || 'GET', url.replace(_GSHEETS, ''));
+  const r = await fetch(url, {
+    ...opts,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+  });
+  const j = await r.json();
+  if (!r.ok) {
+    const msg = j.error?.message || `HTTP ${r.status}`;
+    _SYNC_LOG('ERROR', msg, JSON.stringify(j).slice(0, 200));
+    throw new Error(msg);
+  }
+  _SYNC_LOG('OK', opts.method || 'GET', JSON.stringify(j).slice(0, 120));
+  return j;
+};
+
+// GET values — 「範囲が見つからない＝シートが空」は空配列で返す
+const _sheetsGet = async (token, sid, range) => {
+  const r = await fetch(`${_GSHEETS}/${sid}/values/${encodeURIComponent(range)}`,
+    { headers: { Authorization: `Bearer ${token}` } });
+  const j = await r.json();
+  if (!r.ok) {
+    const msg = j.error?.message || `HTTP ${r.status}`;
+    if (r.status === 400 && msg.toLowerCase().includes('parse range')) {
+      _SYNC_LOG('sheetsGet: empty range (no data rows)', range);
+      return { values: [] };
+    }
+    _SYNC_LOG('sheetsGet ERROR', msg);
+    throw new Error(msg);
+  }
+  return j;
+};
+
+// batchUpdate (値書き込み)
+const _sheetsBatchUpdate = (token, sid, rangeData) =>
+  _sheetsReq(token, `${_GSHEETS}/${sid}/values:batchUpdate`, {
+    method: 'POST',
+    body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: rangeData })
+  });
+
+// append (行追加)
+const _sheetsAppend = (token, sid, sheetName, rows) =>
+  _sheetsReq(token,
+    `${_GSHEETS}/${sid}/values/${encodeURIComponent(sheetName + '!A1')}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    { method: 'POST', body: JSON.stringify({ values: rows }) }
+  );
+
+// clear (データ行削除)
+const _sheetsClearRange = (token, sid, range) =>
+  _sheetsReq(token,
+    `${_GSHEETS}/${sid}/values/${encodeURIComponent(range)}:clear`,
+    { method: 'POST' }
+  );
+
+// タブが存在しなければ作成
+const _ensureSheetTab = async (token, sid, title) => {
+  _SYNC_LOG('ensureSheetTab:', title);
+  const meta = await _sheetsReq(token, `${_GSHEETS}/${sid}`);
+  const exists = meta.sheets?.some(s => s.properties?.title === title);
+  _SYNC_LOG('tab exists?', title, exists);
+  if (!exists) {
+    await _sheetsReq(token, `${_GSHEETS}/${sid}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
+    });
+    _SYNC_LOG('tab created:', title);
+  }
+};
+
+// ── ヘッダー・列幅定数 ───────────────────────────────────────
+const _INV_HEADERS = [
+  '商品名','ステータス','ブランド','カテゴリー',
+  '仕入れ日','仕入れ金額(税込)','出品価格',
+  '仕入先','プラットフォーム','管理番号','メモ','ID'
+];
+const _INV_COL_W    = [220,70,110,110, 90,105,90, 150,105,100,150, 220];
+const _INV_DATE_COLS = [4];
+const _INV_ID_COL   = 11;
+
+const _SALE_HEADERS = [
+  'No.','仕入れ日','商品名','ブランド','カテゴリー',
+  '仕入れ金額','出品価格','仕入先',
+  '売上日','売上金額','純利益','利益率%',
+  'プラットフォーム','手数料','配送料','ID'
+];
+const _SALE_COL_W    = [40,90,220,110,110, 95,85,150, 90,90,90,60, 105,70,70, 220];
+const _SALE_DATE_COLS = [1, 8];
+const _SALE_ID_COL   = 15;
+
+const _KOBOTSU_HEADERS = [
+  '取得日','品名','ブランド','カテゴリー','数量',
+  '取得価格','取得先名称','会社名','許可証番号',
+  '売却日','売却価格','売却先（プラットフォーム）','管理番号'
+];
+const _KOBOTSU_COL_W    = [90,220,110,110,50, 90,160,160,130, 90,90,130, 100];
+const _KOBOTSU_DATE_COLS = [0, 9];
+
+// ── 行ビルダー ───────────────────────────────────────────────
+const _statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
+
+const _invRow = item => [
+  item.productName||'', _statusLabel(item.status), item.brand||'', item.category||'',
+  item.purchaseDate||'', item.purchasePrice||0, item.listPrice||'',
+  item.purchaseStore||item.storeName||'', item.platform||'', item.mgmtNo||'', item.memo||'',
+  item.id||''
+];
+
+const _saleRow = (s, invMap, rowNum) => {
+  const inv = invMap[s.inventoryId] || {};
+  const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
+  return [
+    rowNum,
+    inv.purchaseDate||'',
+    inv.productName||'',
+    inv.brand||'',
+    inv.category||'',
+    (s.purchasePrice||0) > 0 ? s.purchasePrice : (inv.purchasePrice||0),
+    inv.listPrice||'',
+    inv.purchaseStore||inv.storeName||'',
+    s.saleDate||'',
+    s.salePrice||0,
+    s.profit||0,
+    rate,
+    s.platform||inv.platform||'',
+    Math.round((s.salePrice||0)*(s.feeRate||0)),
+    s.shipping||0,
+    s.id||''
+  ];
+};
+
+// 許可証番号の解決（settings を引数で受け取る）
+const _resolveLicense = (item, settings) => {
+  if (item.sellerLicense) return item.sellerLicense;
+  const found = (settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+  if (found?.license) return found.license;
+  return (settings?.storeLicenses||{})[item.purchaseStore] || '';
+};
+const _resolveCompanyName = (item, settings) => {
+  if (item.sellerCompanyName) return item.sellerCompanyName;
+  const found = (settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+  return found?.companyName || '';
+};
+
+const _kobotsuRow = (item, sale, settings) => {
+  const lic = _resolveLicense(item, settings);
+  const co  = _resolveCompanyName(item, settings);
+  return [
+    item.purchaseDate||'',
+    item.productName||'',
+    item.brand||'',
+    item.category||'',
+    1,
+    item.purchasePrice||0,
+    item.purchaseStore||item.storeName||'',
+    co, lic,
+    sale?.saleDate||'',
+    sale?.salePrice||'',
+    sale ? (sale.platform||'') : '',
+    item.mgmtNo||''
+  ];
+};
+
+// シート書式設定（白ベース・グレーヘッダー・列幅・フィルター・日付書式）
+const _formatSheet = async (token, sid, sheetTitle, colWidths, dateColIdxs) => {
+  try {
+    _SYNC_LOG('formatSheet:', sheetTitle);
+    const meta = await _sheetsReq(token, `${_GSHEETS}/${sid}`);
+    const sheet = meta.sheets?.find(s => s.properties?.title === sheetTitle);
+    if (!sheet) { _SYNC_LOG('formatSheet: not found', sheetTitle); return; }
+    const sheetId = sheet.properties.sheetId;
+
+    const requests = [
+      { updateSheetProperties: {
+          properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
+          fields: 'gridProperties.frozenRowCount'
+      } },
+      { repeatCell: {
+          range: { sheetId, startRowIndex:0, endRowIndex:1 },
+          cell: { userEnteredFormat: {
+            backgroundColor: { red:0.91, green:0.91, blue:0.91 },
+            textFormat: { bold:true, foregroundColor:{red:0.07,green:0.07,blue:0.07}, fontSize:10 },
+            verticalAlignment: 'MIDDLE',
+            horizontalAlignment: 'CENTER',
+            wrapStrategy: 'CLIP'
+          }},
+          fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)'
+      } },
+      { repeatCell: {
+          range: { sheetId, startRowIndex:1 },
+          cell: { userEnteredFormat: {
+            backgroundColor: { red:1, green:1, blue:1 },
+            verticalAlignment: 'MIDDLE',
+            wrapStrategy: 'CLIP'
+          }},
+          fields: 'userEnteredFormat(backgroundColor,verticalAlignment,wrapStrategy)'
+      } },
+      ...colWidths.map((w, i) => ({
+        updateDimensionProperties: {
+          range: { sheetId, dimension:'COLUMNS', startIndex:i, endIndex:i+1 },
+          properties: { pixelSize: w },
+          fields: 'pixelSize'
+        }
+      })),
+      { setBasicFilter: { filter: { range: { sheetId, startRowIndex:0, startColumnIndex:0 } } } },
+      ...(dateColIdxs||[]).map(ci => ({
+        repeatCell: {
+          range: { sheetId, startRowIndex:1, startColumnIndex:ci, endColumnIndex:ci+1 },
+          cell: { userEnteredFormat: { numberFormat: { type:'DATE', pattern:'yyyy/mm/dd' } } },
+          fields: 'userEnteredFormat.numberFormat'
+        }
+      })),
+    ];
+
+    await _sheetsReq(token, `${_GSHEETS}/${sid}:batchUpdate`, {
+      method:'POST', body: JSON.stringify({ requests })
+    });
+    _SYNC_LOG('formatSheet done:', sheetTitle);
+  } catch(e) {
+    _SYNC_LOG('formatSheet warning (non-fatal):', e.message);
+  }
+};
+
+// upsert（差分同期）
+const _upsertSheet = async (token, sid, sheetName, headers, localRows, idCol) => {
+  _SYNC_LOG(`upsertSheet [${sheetName}] rows=${localRows.length} idCol=${idCol}`);
+  const colLetter = String.fromCharCode(65 + idCol);
+  const existing = (await _sheetsGet(token, sid, `${sheetName}!${colLetter}:${colLetter}`)).values || [];
+  _SYNC_LOG(`existing rows (incl header): ${existing.length}`);
+
+  if (existing.length === 0) {
+    _SYNC_LOG('writing headers to A1');
+    await _sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
+  }
+
+  const idToRow = {};
+  existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
+
+  const toUpdate = [], toAppend = [];
+  localRows.forEach(row => {
+    const id = String(row[idCol] || '');
+    if (id && idToRow[id]) toUpdate.push({ range: `${sheetName}!A${idToRow[id]}`, values: [row] });
+    else toAppend.push(row);
+  });
+  _SYNC_LOG(`toUpdate=${toUpdate.length} toAppend=${toAppend.length}`);
+
+  for (let i = 0; i < toUpdate.length; i += 100) {
+    _SYNC_LOG(`batchUpdate chunk ${i}`);
+    await _sheetsBatchUpdate(token, sid, toUpdate.slice(i, i + 100));
+  }
+  for (let i = 0; i < toAppend.length; i += 500) {
+    _SYNC_LOG(`append chunk ${i}`);
+    await _sheetsAppend(token, sid, sheetName, toAppend.slice(i, i + 500));
+  }
+  _SYNC_LOG(`upsertSheet [${sheetName}] done`);
+  return { updated: toUpdate.length, added: toAppend.length };
+};
+
+// 全件再同期（クリア→書き直し）
+const _fullResyncSheet = async (token, sid, sheetName, headers, localRows) => {
+  _SYNC_LOG(`fullResyncSheet [${sheetName}] rows=${localRows.length}`);
+  await _sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
+  _SYNC_LOG('clearing A2:Z10000');
+  await _sheetsClearRange(token, sid, `${sheetName}!A2:Z10000`);
+  for (let i = 0; i < localRows.length; i += 500) {
+    _SYNC_LOG(`append chunk ${i}`);
+    await _sheetsAppend(token, sid, sheetName, localRows.slice(i, i + 500));
+  }
+  _SYNC_LOG(`fullResyncSheet [${sheetName}] done`);
+  return { updated: 0, added: localRows.length };
+};
+
+/**
+ * スプレッドシート同期の中核処理（純粋な async 関数）
+ * @param {string} token - Googleアクセストークン
+ * @param {object} activeData - { inventory: [], sales: [] }
+ * @param {object} settings - アプリ設定オブジェクト
+ * @param {string} mode - 'normal' | 'full'
+ * @param {object} opts - { spreadsheetInput?: string, onCreatedSheet?: (sid) => void }
+ * @returns {{ spreadsheetId: string, invRes, saleRes, kobotsuRes, now: string }}
+ */
+async function runSheetsSync(token, activeData, settings, mode, opts) {
+  opts = opts || {};
+  _SYNC_LOG('=== runSheetsSync start ===', 'mode:', mode);
+  _SYNC_LOG('inventory:', activeData.inventory.length, 'sales:', activeData.sales.length);
+
+  const TAB_NAMES = ['在庫データ','売上データ','古物台帳'];
+
+  // spreadsheetId を確定
+  let sid = (settings.googleSpreadsheetId || '').trim()
+         || (opts.spreadsheetInput || '').replace(/.*\/d\/([\w-]+).*/,'$1').trim();
+  _SYNC_LOG('spreadsheetId (resolved):', sid || '(none → will create)');
+
+  if (!sid) {
+    _SYNC_LOG('creating new spreadsheet...');
+    const cr = await _sheetsReq(token, _GSHEETS, {
+      method: 'POST',
+      body: JSON.stringify({
+        properties: { title: 'SalesLog データ' },
+        sheets: TAB_NAMES.map(title => ({ properties: { title } }))
+      })
+    });
+    sid = cr.spreadsheetId;
+    _SYNC_LOG('created spreadsheetId:', sid);
+    if (opts.onCreatedSheet) opts.onCreatedSheet(sid);
+  } else {
+    for (const t of TAB_NAMES) await _ensureSheetTab(token, sid, t);
+  }
+
+  // 行データ構築
+  const invMap = {};
+  activeData.inventory.forEach(i => { invMap[i.id] = i; });
+  const invRows = activeData.inventory.map(_invRow);
+  const sortedSales = [...activeData.sales].sort((a, b) => {
+    const da = (invMap[a.inventoryId]||{}).purchaseDate||'';
+    const db = (invMap[b.inventoryId]||{}).purchaseDate||'';
+    return da < db ? -1 : da > db ? 1 : 0;
+  });
+  const saleRows = sortedSales.map((s, i) => _saleRow(s, invMap, i + 1));
+  const kobotsuRows = activeData.inventory.map(item =>
+    _kobotsuRow(item, activeData.sales.find(s => s.inventoryId === item.id), settings)
+  );
+  _SYNC_LOG(`invRows=${invRows.length} saleRows=${saleRows.length} kobotsuRows=${kobotsuRows.length}`);
+
+  // 直列同期（API競合を避ける）
+  _SYNC_LOG('--- syncing 在庫データ ---');
+  const invRes = mode === 'full'
+    ? await _fullResyncSheet(token, sid, '在庫データ', _INV_HEADERS, invRows)
+    : await _upsertSheet(token, sid, '在庫データ', _INV_HEADERS, invRows, _INV_ID_COL);
+
+  _SYNC_LOG('--- syncing 売上データ ---');
+  const saleRes = mode === 'full'
+    ? await _fullResyncSheet(token, sid, '売上データ', _SALE_HEADERS, saleRows)
+    : await _upsertSheet(token, sid, '売上データ', _SALE_HEADERS, saleRows, _SALE_ID_COL);
+
+  _SYNC_LOG('--- syncing 古物台帳 ---');
+  const kobotsuRes = await _fullResyncSheet(token, sid, '古物台帳', _KOBOTSU_HEADERS, kobotsuRows);
+
+  // 書式設定（失敗してもデータには影響しない）
+  _SYNC_LOG('--- formatting sheets ---');
+  await _formatSheet(token, sid, '在庫データ', _INV_COL_W,     _INV_DATE_COLS);
+  await _formatSheet(token, sid, '売上データ', _SALE_COL_W,    _SALE_DATE_COLS);
+  await _formatSheet(token, sid, '古物台帳',   _KOBOTSU_COL_W, _KOBOTSU_DATE_COLS);
+
+  const now = new Date().toISOString();
+  _SYNC_LOG('=== runSheetsSync complete ===', { invRes, saleRes, kobotsuRes, sid });
+  return { spreadsheetId: sid, invRes, saleRes, kobotsuRes, now };
+}
+
+/**
+ * クラウドデータをローカルデータにマージ（起動時・visibilitychange 共用）
+ * ロジックは App コンポーネント内の起動時マージと同一。変更なし。
+ * @returns {object} マージ後のフルデータ
+ */
+// キーの並び順の違いだけで「変化あり」と誤判定しないための安定JSON化
+const stableJson = (v) => JSON.stringify(v, (k, val) =>
+  (val && typeof val === 'object' && !Array.isArray(val))
+    ? Object.keys(val).sort().reduce((o, kk) => { o[kk] = val[kk]; return o; }, {})
+    : val
+);
+
+function mergeCloudIntoLocal(localFull, cloudFull) {
+  // 孤立売上クリーンアップ
+  const cleanOrphans = (d) => {
+    const invIds = new Set((d.inventory||[]).map(i => i.id));
+    const cleaned = (d.sales||[]).filter(s => !s.inventoryId || invIds.has(s.inventoryId));
+    return cleaned.length !== (d.sales||[]).length ? { ...d, sales: cleaned } : d;
+  };
+
+  // last-write-wins マージ（アイテム単位で updatedAt/createdAt を比較）
+  const mergeByLastWrite = (localArr, cloudArr, deletedIds) => {
+    const deleted  = deletedIds || {};
+    const localMap = new Map((localArr  || []).map(i => [i.id, i]));
+    const cloudMap = new Map((cloudArr  || []).map(i => [i.id, i]));
+    const allIds   = new Set([...localMap.keys(), ...cloudMap.keys()]);
+    const result   = [];
+    for (const id of allIds) {
+      if (deleted[id]) continue;
+      const l = localMap.get(id);
+      const c = cloudMap.get(id);
+      if (!l) { result.push(c); continue; }
+      if (!c) { result.push(l); continue; }
+      const lt = new Date(l.updatedAt || l.createdAt || 0).getTime();
+      const ct = new Date(c.updatedAt || c.createdAt || 0).getTime();
+      const winner = lt >= ct ? l : c;
+      const loser  = lt >= ct ? c : l;
+      const loserPhotoMap = new Map((loser.photos || []).map(p => [p.id, p]));
+      const mergedPhotos = (winner.photos || []).map(p => ({
+        ...p,
+        thumbDataUrl: p.thumbDataUrl || loserPhotoMap.get(p.id)?.thumbDataUrl || null,
+        medDataUrl:   p.medDataUrl   || loserPhotoMap.get(p.id)?.medDataUrl   || null,
+      }));
+      result.push({ ...winner, photos: mergedPhotos });
+    }
+    return result;
+  };
+
+  // 削除トゥームストーンのマージ + 90日パージ
+  const rawMergedDeletedIds = {
+    ...(localFull.settings?._deletedIds || {}),
+    ...(cloudFull.settings?._deletedIds || {}),
+  };
+  const PURGE_MS = 90 * 24 * 60 * 60 * 1000;
+  const purgeThreshold = Date.now() - PURGE_MS;
+  const mergedDeletedIds = Object.fromEntries(
+    Object.entries(rawMergedDeletedIds).filter(([, ts]) => {
+      const t = new Date(ts).getTime();
+      return !isNaN(t) && t >= purgeThreshold;
+    })
+  );
+
+  // 設定マージ（フィールド単位・空欄よりも入力済み優先）
+  const mergeSettings = (local, cloud) => {
+    const base = { ...(cloud || {}), ...(local || {}) };
+    for (const [k, v] of Object.entries(cloud || {})) {
+      if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
+    }
+    base._deletedIds = mergedDeletedIds;
+    if (!base.storeLicenses) base.storeLicenses = {};
+    if (!base.storeLicenses['セカンドストリート']) {
+      base.storeLicenses = { ...base.storeLicenses, 'セカンドストリート': '古物商許愛知県公安委員会  第541162001000号' };
+    }
+    if (!Array.isArray(base.yahooStores)) base.yahooStores = [];
+    for (const [storeName, license] of Object.entries(KNOWN_YAHOO_STORE_LICENSES)) {
+      const idx = base.yahooStores.findIndex(s => s.storeName === storeName);
+      if (idx >= 0) {
+        if (!base.yahooStores[idx].license) {
+          base.yahooStores[idx] = { ...base.yahooStores[idx], license };
+        }
+      } else {
+        base.yahooStores.push({ id: storeName, storeName, license, companyName: '' });
+      }
+    }
+    return base;
+  };
+
+  // レシートマージ
+  const mergeReceipts = (local, cloud) => {
+    const m = new Map();
+    (cloud || []).forEach(r => { if (r?.id) m.set(r.id, r); });
+    (local || []).forEach(r => {
+      if (!r?.id) return;
+      const ex = m.get(r.id);
+      if (!ex) { m.set(r.id, r); return; }
+      const lt = new Date(r.updatedAt || r.createdAt || 0).getTime();
+      const ct = new Date(ex.updatedAt || ex.createdAt || 0).getTime();
+      if (lt > ct) m.set(r.id, r);
+    });
+    return Array.from(m.values());
+  };
+
+  const mergedData = {
+    ...cloudFull,
+    inventory: mergeByLastWrite(localFull.inventory, cloudFull.inventory, mergedDeletedIds),
+    sales:     mergeByLastWrite(localFull.sales,     cloudFull.sales,     mergedDeletedIds),
+    settings:  mergeSettings(localFull.settings, cloudFull.settings),
+    receipts:  mergeReceipts(localFull.receipts, cloudFull.receipts),
+  };
+  return normalizeStores(cleanOrphans(mergedData));
+}
+
+// ============================================================
 // エクスポートパネル（独立コンポーネント）
 // ============================================================
 const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, setPendingReturnSection }) => {
-  const [gToken, setGToken]                   = React.useState(null);
+  const [gToken, setGToken]                   = React.useState(() => getStoredGToken());
   const [gSyncing, setGSyncing]               = React.useState(false);
   const [showAllKobotsu, setShowAllKobotsu]       = React.useState(false); // 古物台帳全件表示モーダル
   const [showAllSales, setShowAllSales]           = React.useState(false); // 売上管理表全件表示
@@ -8543,6 +9042,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const [kobotsuSelected, setKobotsuSelected] = React.useState(null); // 古物台帳 商品詳細モーダル
   const [syncMode, setSyncMode]               = React.useState('normal'); // 'normal' | 'full'
   const [syncResult, setSyncResult]           = React.useState(null);
+  const [showDetailOptions, setShowDetailOptions] = React.useState(false); // 詳細オプション折りたたみ
   const [spreadsheetInput, setSpreadsheetInput] = React.useState(settings.googleSpreadsheetId || '');
   const tcRef = React.useRef(null);
   // Client IDはgoogle-config.jsで一元管理 — ユーザー入力不要
@@ -8550,285 +9050,6 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
 
   const spreadsheetId = settings.googleSpreadsheetId || '';
 
-  // ── Sheets API helpers ──────────────────────────────────────
-  const GSHEETS = 'https://sheets.googleapis.com/v4/spreadsheets';
-  const LOG = (...a) => console.log('[SYNC]', ...a);
-
-  // 汎用リクエスト — エラー時は必ず throw
-  const sheetsReq = async (token, url, opts = {}) => {
-    LOG('REQ', opts.method || 'GET', url.replace(GSHEETS, ''));
-    const r = await fetch(url, {
-      ...opts,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) }
-    });
-    const j = await r.json();
-    if (!r.ok) {
-      const msg = j.error?.message || `HTTP ${r.status}`;
-      LOG('ERROR', msg, JSON.stringify(j).slice(0, 200));
-      throw new Error(msg);
-    }
-    LOG('OK', opts.method || 'GET', JSON.stringify(j).slice(0, 120));
-    return j;
-  };
-
-  // GET values — 「範囲が見つからない＝シートが空」は空配列で返す、それ以外は throw
-  const sheetsGet = async (token, sid, range) => {
-    const r = await fetch(`${GSHEETS}/${sid}/values/${encodeURIComponent(range)}`,
-      { headers: { Authorization: `Bearer ${token}` } });
-    const j = await r.json();
-    if (!r.ok) {
-      const msg = j.error?.message || `HTTP ${r.status}`;
-      // "Unable to parse range" = タブは存在するが行データが0件 → 空扱い
-      if (r.status === 400 && msg.toLowerCase().includes('parse range')) {
-        LOG('sheetsGet: empty range (no data rows)', range);
-        return { values: [] };
-      }
-      LOG('sheetsGet ERROR', msg);
-      throw new Error(msg);
-    }
-    return j;
-  };
-
-  // batchUpdate (値書き込み)
-  const sheetsBatchUpdate = (token, sid, rangeData) =>
-    sheetsReq(token, `${GSHEETS}/${sid}/values:batchUpdate`, {
-      method: 'POST',
-      body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: rangeData })
-    });
-
-  // append (行追加)
-  const sheetsAppend = (token, sid, sheetName, rows) =>
-    sheetsReq(token,
-      `${GSHEETS}/${sid}/values/${encodeURIComponent(sheetName + '!A1')}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-      { method: 'POST', body: JSON.stringify({ values: rows }) }
-    );
-
-  // clear (データ行削除)
-  const sheetsClearRange = (token, sid, range) =>
-    sheetsReq(token,
-      `${GSHEETS}/${sid}/values/${encodeURIComponent(range)}:clear`,
-      { method: 'POST' }
-    );
-
-  // タブが存在しなければ作成
-  const ensureSheetTab = async (token, sid, title) => {
-    LOG('ensureSheetTab:', title);
-    const meta = await sheetsReq(token, `${GSHEETS}/${sid}`);
-    const exists = meta.sheets?.some(s => s.properties?.title === title);
-    LOG('tab exists?', title, exists);
-    if (!exists) {
-      await sheetsReq(token, `${GSHEETS}/${sid}:batchUpdate`, {
-        method: 'POST',
-        body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] })
-      });
-      LOG('tab created:', title);
-    }
-  };
-
-  // ── 行ビルダー ───────────────────────────────────────────────
-  // 在庫データ
-  const INV_HEADERS = [
-    '商品名','ステータス','ブランド','カテゴリー',
-    '仕入れ日','仕入れ金額(税込)','出品価格',
-    '仕入先','プラットフォーム','管理番号','メモ','ID'
-  ];
-  const INV_COL_W    = [220,70,110,110, 90,105,90, 150,105,100,150, 220];
-  const INV_DATE_COLS = [4];
-  const INV_ID_COL   = 11;
-
-  // 売上データ（仕入れ情報 + 売上情報の統合ビュー、仕入れ日順）
-  const SALE_HEADERS = [
-    'No.','仕入れ日','商品名','ブランド','カテゴリー',
-    '仕入れ金額','出品価格','仕入先',
-    '売上日','売上金額','純利益','利益率%',
-    'プラットフォーム','手数料','配送料','ID'
-  ];
-  const SALE_COL_W    = [40,90,220,110,110, 95,85,150, 90,90,90,60, 105,70,70, 220];
-  const SALE_DATE_COLS = [1, 8];
-  const SALE_ID_COL   = 15;
-
-  // 古物台帳（管理番号を末尾に、在庫ID不要）
-  const KOBOTSU_HEADERS = [
-    '取得日','品名','ブランド','カテゴリー','数量',
-    '取得価格','取得先名称','会社名','許可証番号',
-    '売却日','売却価格','売却先（プラットフォーム）','管理番号'
-  ];
-  const KOBOTSU_COL_W    = [90,220,110,110,50, 90,160,160,130, 90,90,130, 100];
-  const KOBOTSU_DATE_COLS = [0, 9];
-
-  const statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
-  const fmtDt = s => s ? String(s).slice(0,19).replace('T',' ') : '';
-
-  const invRow = item => [
-    item.productName||'', statusLabel(item.status), item.brand||'', item.category||'',
-    item.purchaseDate||'', item.purchasePrice||0, item.listPrice||'',
-    item.purchaseStore||item.storeName||'', item.platform||'', item.mgmtNo||'', item.memo||'',
-    item.id||''
-  ];
-
-  // 売上行：仕入れ情報（在庫から）+ 売上情報、先頭に連番
-  const saleRow = (s, invMap, rowNum) => {
-    const inv = invMap[s.inventoryId] || {};
-    const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
-    return [
-      rowNum,
-      inv.purchaseDate||'',
-      inv.productName||'',
-      inv.brand||'',
-      inv.category||'',
-      (s.purchasePrice||0) > 0 ? s.purchasePrice : (inv.purchasePrice||0),
-      inv.listPrice||'',
-      inv.purchaseStore||inv.storeName||'',
-      s.saleDate||'',
-      s.salePrice||0,
-      s.profit||0,
-      rate,
-      s.platform||inv.platform||'',
-      Math.round((s.salePrice||0)*(s.feeRate||0)),
-      s.shipping||0,
-      s.id||''
-    ];
-  };
-
-  // 古物台帳行（在庫ID列なし）
-  const kobotsuRow = (item, sale) => {
-    const lic = resolveLicense(item);
-    const co  = resolveCompanyName(item);
-    return [
-      item.purchaseDate||'',
-      item.productName||'',
-      item.brand||'',
-      item.category||'',
-      1,
-      item.purchasePrice||0,
-      item.purchaseStore||item.storeName||'',
-      co, lic,
-      sale?.saleDate||'',
-      sale?.salePrice||'',
-      sale ? (sale.platform||'') : '',
-      item.mgmtNo||''
-    ];
-  };
-
-  // ── シート書式設定（白ベース・グレーヘッダー・列幅・フィルター・日付書式）──
-  const formatSheet = async (token, sid, sheetTitle, colWidths, dateColIdxs) => {
-    try {
-      LOG('formatSheet:', sheetTitle);
-      const meta = await sheetsReq(token, `${GSHEETS}/${sid}`);
-      const sheet = meta.sheets?.find(s => s.properties?.title === sheetTitle);
-      if (!sheet) { LOG('formatSheet: not found', sheetTitle); return; }
-      const sheetId = sheet.properties.sheetId;
-
-      const requests = [
-        // 1行目固定
-        { updateSheetProperties: {
-            properties: { sheetId, gridProperties: { frozenRowCount: 1 } },
-            fields: 'gridProperties.frozenRowCount'
-        } },
-        // ヘッダー行：薄グレー背景・黒太字（白ベースの見やすいデザイン）
-        { repeatCell: {
-            range: { sheetId, startRowIndex:0, endRowIndex:1 },
-            cell: { userEnteredFormat: {
-              backgroundColor: { red:0.91, green:0.91, blue:0.91 },
-              textFormat: { bold:true, foregroundColor:{red:0.07,green:0.07,blue:0.07}, fontSize:10 },
-              verticalAlignment: 'MIDDLE',
-              horizontalAlignment: 'CENTER',
-              wrapStrategy: 'CLIP'
-            }},
-            fields: 'userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,wrapStrategy)'
-        } },
-        // データ行：白背景・折り返しなし・縦中央
-        { repeatCell: {
-            range: { sheetId, startRowIndex:1 },
-            cell: { userEnteredFormat: {
-              backgroundColor: { red:1, green:1, blue:1 },
-              verticalAlignment: 'MIDDLE',
-              wrapStrategy: 'CLIP'
-            }},
-            fields: 'userEnteredFormat(backgroundColor,verticalAlignment,wrapStrategy)'
-        } },
-        // 列幅
-        ...colWidths.map((w, i) => ({
-          updateDimensionProperties: {
-            range: { sheetId, dimension:'COLUMNS', startIndex:i, endIndex:i+1 },
-            properties: { pixelSize: w },
-            fields: 'pixelSize'
-          }
-        })),
-        // フィルター
-        { setBasicFilter: { filter: { range: { sheetId, startRowIndex:0, startColumnIndex:0 } } } },
-        // 日付列を yyyy/mm/dd 形式に
-        ...(dateColIdxs||[]).map(ci => ({
-          repeatCell: {
-            range: { sheetId, startRowIndex:1, startColumnIndex:ci, endColumnIndex:ci+1 },
-            cell: { userEnteredFormat: { numberFormat: { type:'DATE', pattern:'yyyy/mm/dd' } } },
-            fields: 'userEnteredFormat.numberFormat'
-          }
-        })),
-      ];
-
-      await sheetsReq(token, `${GSHEETS}/${sid}:batchUpdate`, {
-        method:'POST', body: JSON.stringify({ requests })
-      });
-      LOG('formatSheet done:', sheetTitle);
-    } catch(e) {
-      LOG('formatSheet warning (non-fatal):', e.message);
-    }
-  };
-
-  // ── upsert（差分同期）idCol = ID列のインデックス ─────────────
-  const upsertSheet = async (token, sid, sheetName, headers, localRows, idCol) => {
-    LOG(`upsertSheet [${sheetName}] rows=${localRows.length} idCol=${idCol}`);
-    // ID列のみ取得（列番号をA1記法に変換）
-    const colLetter = String.fromCharCode(65 + idCol); // 0→A, 11→L etc.
-    const existing = (await sheetsGet(token, sid, `${sheetName}!${colLetter}:${colLetter}`)).values || [];
-    LOG(`existing rows (incl header): ${existing.length}`);
-
-    // ヘッダーがなければ書く
-    if (existing.length === 0) {
-      LOG('writing headers to A1');
-      await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
-    }
-
-    // ID → 行番号マップ（ヘッダー行スキップ）
-    const idToRow = {};
-    existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
-
-    const toUpdate = [], toAppend = [];
-    localRows.forEach(row => {
-      const id = String(row[idCol] || '');
-      if (id && idToRow[id]) toUpdate.push({ range: `${sheetName}!A${idToRow[id]}`, values: [row] });
-      else toAppend.push(row);
-    });
-    LOG(`toUpdate=${toUpdate.length} toAppend=${toAppend.length}`);
-
-    for (let i = 0; i < toUpdate.length; i += 100) {
-      LOG(`batchUpdate chunk ${i}`);
-      await sheetsBatchUpdate(token, sid, toUpdate.slice(i, i + 100));
-    }
-    for (let i = 0; i < toAppend.length; i += 500) {
-      LOG(`append chunk ${i}`);
-      await sheetsAppend(token, sid, sheetName, toAppend.slice(i, i + 500));
-    }
-    LOG(`upsertSheet [${sheetName}] done`);
-    return { updated: toUpdate.length, added: toAppend.length };
-  };
-
-  // ── 全件再同期（クリア→書き直し）───────────────────────────
-  const fullResyncSheet = async (token, sid, sheetName, headers, localRows) => {
-    LOG(`fullResyncSheet [${sheetName}] rows=${localRows.length}`);
-    await sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
-    LOG('clearing A2:Z10000');
-    await sheetsClearRange(token, sid, `${sheetName}!A2:Z10000`);
-    for (let i = 0; i < localRows.length; i += 500) {
-      LOG(`append chunk ${i}`);
-      await sheetsAppend(token, sid, sheetName, localRows.slice(i, i + 500));
-    }
-    LOG(`fullResyncSheet [${sheetName}] done`);
-    return { updated: 0, added: localRows.length };
-  };
-
-  // ── メイン同期処理 ───────────────────────────────────────────
   // ── スプレッドシートからインポート ──────────────────────────────
   const doSheetsImport = async (token) => {
     setGSyncing(true);
@@ -8838,7 +9059,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
       if (!sid) { toast('⚠️ スプレッドシートURLを入力してください'); return; }
 
-      LOG('=== doSheetsImport start ===', sid);
+      _SYNC_LOG('=== doSheetsImport start ===', sid);
 
       // ── ヘルパー ──
       const parseNum = v => { const n = Number(String(v||'').replace(/[¥,￥\s]/g,'')); return isNaN(n) ? 0 : n; };
@@ -8848,18 +9069,18 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       // ── 在庫データ取得 ──
       let invRows = [];
       try {
-        const r = await sheetsGet(token, sid, '在庫データ!A2:L10000');
+        const r = await _sheetsGet(token, sid, '在庫データ!A2:L10000');
         invRows = (r.values || []).filter(row => row[0]);
-      } catch(e) { LOG('在庫データ read error:', e.message); }
+      } catch(e) { _SYNC_LOG('在庫データ read error:', e.message); }
 
       // ── 売上データ取得 ──
       let saleRows = [];
       try {
-        const r = await sheetsGet(token, sid, '売上データ!A2:P10000');
+        const r = await _sheetsGet(token, sid, '売上データ!A2:P10000');
         saleRows = (r.values || []).filter(row => row[2]);
-      } catch(e) { LOG('売上データ read error:', e.message); }
+      } catch(e) { _SYNC_LOG('売上データ read error:', e.message); }
 
-      LOG('invRows:', invRows.length, 'saleRows:', saleRows.length);
+      _SYNC_LOG('invRows:', invRows.length, 'saleRows:', saleRows.length);
 
       // ── 在庫アイテム変換 ──
       // 列: 商品名(0) ステータス(1) ブランド(2) カテゴリー(3) 仕入れ日(4) 仕入れ金額(5)
@@ -8946,85 +9167,28 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       setData({ ...data, inventory: mergedInv, sales: mergedSales });
       setSyncResult({ time: Date.now(), invCount: importedInv.length, saleCount: importedSales.length, isImport: true });
       toast(`✅ インポート完了：在庫${importedInv.length}件・売上${importedSales.length}件`);
-      LOG('=== doSheetsImport done ===');
+      _SYNC_LOG('=== doSheetsImport done ===');
     } catch(e) {
-      LOG('import error:', e.message);
+      _SYNC_LOG('import error:', e.message);
       toast(`❌ インポートエラー：${e.message}`);
     } finally {
       setGSyncing(false);
     }
   };
 
+  // ★ runSheetsSync のラッパー（toast・ローディング・設定保存を担当）
   const doSheetsSync = async (token, mode) => {
     setGSyncing(true);
     setSyncResult(null);
     try {
-      LOG('=== doSheetsSync start ===', 'mode:', mode);
-      LOG('inventory:', data.inventory.length, 'sales:', data.sales.length);
-
-      // spreadsheetId を確定
-      let sid = (settings.googleSpreadsheetId || '').trim()
-             || spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim();
-      LOG('spreadsheetId (resolved):', sid || '(none → will create)');
-
-      const TAB_NAMES = ['在庫データ','売上データ','古物台帳'];
-
-      if (!sid) {
-        LOG('creating new spreadsheet...');
-        const cr = await sheetsReq(token, GSHEETS, {
-          method: 'POST',
-          body: JSON.stringify({
-            properties: { title: 'SalesLog データ' },
-            sheets: TAB_NAMES.map(title => ({ properties: { title } }))
-          })
-        });
-        sid = cr.spreadsheetId;
-        LOG('created spreadsheetId:', sid);
-        setSetting('googleSpreadsheetId', sid);
-        setSpreadsheetInput(`https://docs.google.com/spreadsheets/d/${sid}`);
-      } else {
-        for (const t of TAB_NAMES) await ensureSheetTab(token, sid, t);
-      }
-
-      // 行データ構築
-      const invMap = {};
-      data.inventory.forEach(i => { invMap[i.id] = i; });
-      const invRows      = data.inventory.map(invRow);
-      // 売上：仕入れ日昇順でソートしてから連番付与
-      const sortedSales  = [...data.sales].sort((a, b) => {
-        const da = (invMap[a.inventoryId]||{}).purchaseDate||'';
-        const db = (invMap[b.inventoryId]||{}).purchaseDate||'';
-        return da < db ? -1 : da > db ? 1 : 0;
+      const syncResult = await runSheetsSync(token, data, settings, mode, {
+        spreadsheetInput,
+        onCreatedSheet: (sid) => {
+          setSetting('googleSpreadsheetId', sid);
+          setSpreadsheetInput(`https://docs.google.com/spreadsheets/d/${sid}`);
+        },
       });
-      const saleRows     = sortedSales.map((s, i) => saleRow(s, invMap, i + 1));
-      // 古物台帳：全在庫を対象
-      const kobotsuRows  = data.inventory.map(item =>
-        kobotsuRow(item, data.sales.find(s => s.inventoryId === item.id))
-      );
-      LOG(`invRows=${invRows.length} saleRows=${saleRows.length} kobotsuRows=${kobotsuRows.length}`);
-
-      // 直列同期（API競合を避ける）
-      LOG('--- syncing 在庫データ ---');
-      const invRes = mode === 'full'
-        ? await fullResyncSheet(token, sid, '在庫データ', INV_HEADERS, invRows)
-        : await upsertSheet(token, sid, '在庫データ', INV_HEADERS, invRows, INV_ID_COL);
-
-      LOG('--- syncing 売上データ ---');
-      const saleRes = mode === 'full'
-        ? await fullResyncSheet(token, sid, '売上データ', SALE_HEADERS, saleRows)
-        : await upsertSheet(token, sid, '売上データ', SALE_HEADERS, saleRows, SALE_ID_COL);
-
-      LOG('--- syncing 古物台帳 ---');
-      // 古物台帳はIDなし → 常にフルリセット
-      const kobotsuRes = await fullResyncSheet(token, sid, '古物台帳', KOBOTSU_HEADERS, kobotsuRows);
-
-      // 書式設定（同期後に適用 — 失敗してもデータには影響しない）
-      LOG('--- formatting sheets ---');
-      await formatSheet(token, sid, '在庫データ',  INV_COL_W,     INV_DATE_COLS);
-      await formatSheet(token, sid, '売上データ',  SALE_COL_W,    SALE_DATE_COLS);
-      await formatSheet(token, sid, '古物台帳',    KOBOTSU_COL_W, KOBOTSU_DATE_COLS);
-
-      const now = new Date().toISOString();
+      const { invRes, saleRes, kobotsuRes, now, spreadsheetId: sid } = syncResult;
       setSetting('googleLastSyncTime', now);
       const result = {
         invAdded: invRes.added, invUpdated: invRes.updated,
@@ -9033,14 +9197,13 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
         time: now, sid
       };
       setSyncResult(result);
-      LOG('=== doSheetsSync complete ===', result);
       toast(`✅ 同期完了 — 在庫 +${invRes.added}/更新${invRes.updated} · 売上 +${saleRes.added}/更新${saleRes.updated} · 古物台帳 ${kobotsuRes.added}件`);
-
     } catch(err) {
-      LOG('=== doSheetsSync FAILED ===', err.message, err.stack);
+      _SYNC_LOG('=== doSheetsSync FAILED ===', err.message, err.stack);
       const msg = err.message || String(err);
       if (msg.includes('401') || msg.includes('invalid_token')) {
         setGToken(null);
+        clearStoredGToken();
         toast('⚠️ 認証が切れました。再度ログインしてください');
       } else {
         alert('❌ 同期失敗\n\n' + msg);
@@ -9070,6 +9233,8 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
     tcRef.current.callback = (res) => {
       if (res.error) { toast('❌ ログイン失敗: ' + res.error); return; }
       setGToken(res.access_token);
+      // トークンを localStorage に永続化（次回起動時のログイン省略）
+      setStoredGToken(res.access_token, res.expires_in);
       doSheetsSync(res.access_token, mode || syncMode);
     };
     tcRef.current.requestAccessToken({ prompt: gToken ? '' : 'consent' });
@@ -9124,6 +9289,21 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
     return found?.companyName || '';
   };
 
+  // 相対時刻表示ヘルパー
+  const relativeTime = (isoStr) => {
+    if (!isoStr) return 'まだ同期していません';
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const min  = Math.floor(diff / 60000);
+    const hr   = Math.floor(diff / 3600000);
+    const day  = Math.floor(diff / 86400000);
+    const mo   = Math.floor(day / 30);
+    if (diff < 60000)     return 'たった今';
+    if (min < 60)         return `${min}分前`;
+    if (hr < 24)          return `${hr}時間前`;
+    if (day < 30)         return `${day}日前`;
+    return `${mo}か月前`;
+  };
+
   return (
     <div>
       {/* ── Google Sheets連携カード ── */}
@@ -9152,48 +9332,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           </div>
         )}
 
-        {/* 連携先スプレッドシート指定（オプション） */}
-        <div style={{marginBottom:12}}>
-          <div style={{fontSize:11,color:'#6b7280',fontWeight:600,marginBottom:4}}>
-            連携先スプレッドシート
-            <span style={{fontWeight:400,color:'#9ca3af',marginLeft:4}}>（空欄 = 自動新規作成）</span>
-          </div>
-          <div style={{display:'flex',gap:6}}>
-            <input className="input-field" style={{flex:1,fontSize:12,padding:'8px 10px'}}
-              value={spreadsheetInput}
-              onChange={e => setSpreadsheetInput(e.target.value)}
-              placeholder="既存シートのURL または ID を貼り付け"/>
-            {spreadsheetInput.trim() && (
-              <button
-                style={{flexShrink:0,background:'#16a34a',color:'#fff',border:'none',borderRadius:8,padding:'0 12px',fontSize:12,cursor:'pointer',fontWeight:600}}
-                onClick={() => {
-                  const sid = spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim() || spreadsheetInput.trim();
-                  if (sid) { setSetting('googleSpreadsheetId', sid); toast('✅ スプレッドシートを設定しました'); }
-                }}>保存</button>
-            )}
-          </div>
-          {spreadsheetId && (
-            <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
-              style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,color:'#2563eb',marginTop:5,textDecoration:'none'}}>
-              📊 <span style={{textDecoration:'underline'}}>連携中のシートを開く ↗</span>
-            </a>
-          )}
-        </div>
-
-        {/* 同期モード選択 */}
-        <div style={{display:'flex',gap:6,marginBottom:12}}>
-          {[['normal','通常同期','新規追加＋更新のみ'],['full','全件再同期','シート全体を上書き']].map(([m,label,desc]) => (
-            <button key={m} onClick={() => setSyncMode(m)}
-              style={{flex:1,padding:'8px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',transition:'all 0.15s',
-                border:`1.5px solid ${syncMode===m?'#16a34a':'#e5e7eb'}`,
-                background: syncMode===m ? '#f0fdf4' : '#ffffff'}}>
-              <div style={{fontSize:12,fontWeight:700,color: syncMode===m?'#16a34a':'#374151'}}>{label}</div>
-              <div style={{fontSize:9,color:'#9ca3af',marginTop:2,lineHeight:1.3}}>{desc}</div>
-            </button>
-          ))}
-        </div>
-
-        {/* ── メイン同期ボタン ── */}
+        {/* ── メイン同期ボタン（ログイン済み: 「今すぐ同期」1つ / 未ログイン: Google ログインボタン）── */}
         <button
           style={{width:'100%',padding:'14px',borderRadius:12,border:'none',cursor: gSyncing ? 'not-allowed' : 'pointer',
             fontSize:15,fontWeight:700,color:'#fff',marginBottom:8,transition:'background 0.2s',
@@ -9203,7 +9342,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           {gSyncing ? (
             <><span className="spinner"/> 同期中...</>
           ) : gToken ? (
-            `🔄 ${syncMode === 'full' ? '全件再同期' : '同期する'}　在庫 ${data.inventory.length}件・売上 ${data.sales.length}件`
+            '📊 今すぐ同期'
           ) : (
             <span style={{display:'flex',alignItems:'center',justifyContent:'center',gap:10}}>
               <svg width="18" height="18" viewBox="0 0 18 18" style={{flexShrink:0}}>
@@ -9217,18 +9356,17 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           )}
         </button>
 
-        {/* ── インポートボタン ── */}
-        <button
-          style={{width:'100%',padding:'11px',borderRadius:12,border:'1.5px dashed #16a34a',cursor: gSyncing ? 'not-allowed' : 'pointer',
-            fontSize:13,fontWeight:700,color:'#16a34a',marginBottom:8,background:'#f0fdf4',transition:'background 0.2s'}}
-          onClick={() => gToken ? doSheetsImport(gToken) : handleGoogleLogin('import')}
-          disabled={gSyncing}>
-          {gSyncing ? <><span className="spinner"/> 処理中...</> : '📥 スプレッドシートからインポート（復元）'}
-        </button>
+        {/* 連携中のシートを開くリンク（折りたたみ外に常時表示） */}
+        {spreadsheetId && (
+          <a href={`https://docs.google.com/spreadsheets/d/${spreadsheetId}`} target="_blank"
+            style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,color:'#2563eb',marginBottom:8,textDecoration:'none'}}>
+            📊 <span style={{textDecoration:'underline'}}>連携中のシートを開く ↗</span>
+          </a>
+        )}
 
         {/* 同期結果カード */}
         {syncResult && !gSyncing && (
-          <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:6,border:'1px solid #bbf7d0'}}>
+          <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:8,border:'1px solid #bbf7d0'}}>
             <div style={{fontSize:11,fontWeight:700,color:'#16a34a',marginBottom:6}}>
               {syncResult.isImport ? `📥 インポート完了 — ${new Date(syncResult.time).toLocaleString('ja-JP')}` : `✅ 同期完了 — ${new Date(syncResult.time).toLocaleString('ja-JP')}`}
             </div>
@@ -9248,10 +9386,66 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
           </div>
         )}
 
-        {/* 前回同期時刻 */}
-        {!syncResult && settings.googleLastSyncTime && (
-          <div style={{fontSize:11,color:'#9ca3af',textAlign:'center',paddingTop:2}}>
-            前回の同期: {new Date(settings.googleLastSyncTime).toLocaleString('ja-JP')}
+        {/* 前回同期時刻（相対表記） */}
+        <div style={{fontSize:11,color:'#9ca3af',marginBottom:8}}>
+          {settings.googleLastSyncTime ? `前回の同期: ${relativeTime(settings.googleLastSyncTime)}` : 'まだ同期していません'}
+        </div>
+
+        {/* ▸ 詳細オプション 折りたたみ */}
+        <button
+          onClick={() => setShowDetailOptions(v => !v)}
+          style={{background:'none',border:'none',padding:'4px 0',fontSize:12,color:'#6b7280',cursor:'pointer',
+            display:'flex',alignItems:'center',gap:4,fontWeight:600,marginBottom:showDetailOptions?8:0}}>
+          <span style={{transition:'transform 0.2s',display:'inline-block',transform:showDetailOptions?'rotate(90deg)':'rotate(0deg)'}}>▸</span>
+          詳細オプション
+        </button>
+
+        {showDetailOptions && (
+          <div style={{borderTop:'1px solid #e5e7eb',paddingTop:12}}>
+            {/* 同期モード選択 */}
+            <div style={{fontSize:11,color:'#6b7280',fontWeight:600,marginBottom:6}}>同期モード</div>
+            <div style={{display:'flex',gap:6,marginBottom:12}}>
+              {[['normal','通常同期','新規追加＋更新のみ'],['full','全件再同期','シート全体を上書き']].map(([m,label,desc]) => (
+                <button key={m} onClick={() => setSyncMode(m)}
+                  style={{flex:1,padding:'8px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',transition:'all 0.15s',
+                    border:`1.5px solid ${syncMode===m?'#16a34a':'#e5e7eb'}`,
+                    background: syncMode===m ? '#f0fdf4' : '#ffffff'}}>
+                  <div style={{fontSize:12,fontWeight:700,color: syncMode===m?'#16a34a':'#374151'}}>{label}</div>
+                  <div style={{fontSize:9,color:'#9ca3af',marginTop:2,lineHeight:1.3}}>{desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* インポートボタン */}
+            <button
+              style={{width:'100%',padding:'11px',borderRadius:12,border:'1.5px dashed #16a34a',cursor: gSyncing ? 'not-allowed' : 'pointer',
+                fontSize:13,fontWeight:700,color:'#16a34a',marginBottom:10,background:'#f0fdf4',transition:'background 0.2s'}}
+              onClick={() => gToken ? doSheetsImport(gToken) : handleGoogleLogin('import')}
+              disabled={gSyncing}>
+              {gSyncing ? <><span className="spinner"/> 処理中...</> : '📥 スプレッドシートからインポート（復元）'}
+            </button>
+
+            {/* 連携先スプレッドシート指定 */}
+            <div>
+              <div style={{fontSize:11,color:'#6b7280',fontWeight:600,marginBottom:4}}>
+                連携先スプレッドシート
+                <span style={{fontWeight:400,color:'#9ca3af',marginLeft:4}}>（空欄 = 自動新規作成）</span>
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <input className="input-field" style={{flex:1,fontSize:12,padding:'8px 10px'}}
+                  value={spreadsheetInput}
+                  onChange={e => setSpreadsheetInput(e.target.value)}
+                  placeholder="既存シートのURL または ID を貼り付け"/>
+                {spreadsheetInput.trim() && (
+                  <button
+                    style={{flexShrink:0,background:'#16a34a',color:'#fff',border:'none',borderRadius:8,padding:'0 12px',fontSize:12,cursor:'pointer',fontWeight:600}}
+                    onClick={() => {
+                      const sid = spreadsheetInput.replace(/.*\/d\/([\w-]+).*/,'$1').trim() || spreadsheetInput.trim();
+                      if (sid) { setSetting('googleSpreadsheetId', sid); toast('✅ スプレッドシートを設定しました'); }
+                    }}>保存</button>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -12571,6 +12765,111 @@ const MercariPanelRoot = () => {
   return React.createElement(MercariPrepPanel, { item: mercariItem, onClose: () => setMercariItem(null), toast });
 };
 
+// ★ visibilitychange でクラウドから最新を取得（Mac⇔iPhone 間の反映）
+// ★ 起動時のスプレッドシート自動同期
+// ToastProvider の中に置くことで useToast() を使用可能にしている
+const CloudAutoSync = () => {
+  const { setFullDataRaw, dataRef, editingItem, pendingEditSaleId, dbStatus } = React.useContext(AppContext);
+  const toast = useToast();
+
+  // ── visibilitychange クラウド再取得（30秒スロットル）──
+  const lastFetchRef = React.useRef(0);
+
+  React.useEffect(() => {
+    const onVisible = async () => {
+      if (document.visibilityState !== 'visible') return;
+      // 編集中はスキップ（データ上書きを防止）
+      if (editingItem || pendingEditSaleId) return;
+      // 30秒スロットル
+      if (Date.now() - lastFetchRef.current < 30000) return;
+      lastFetchRef.current = Date.now();
+
+      try {
+        const cloudData = await fetchSupabaseData();
+        if (!cloudData || cloudData._connError) return;
+
+        const current = dataRef.current;
+        const merged = mergeCloudIntoLocal(current, cloudData);
+
+        // 内容として変化があった場合のみ setFullDataRaw
+        // （マージでキー順が変わるだけの差分を拾わないよう stableJson で比較）
+        const invChanged      = stableJson(merged.inventory) !== stableJson(current.inventory);
+        const salesChanged    = stableJson(merged.sales)     !== stableJson(current.sales);
+        const settingsChanged = stableJson(merged.settings)  !== stableJson(current.settings);
+        const receiptsChanged = stableJson(merged.receipts || []) !== stableJson(current.receipts || []);
+
+        if (invChanged || salesChanged || settingsChanged || receiptsChanged) {
+          setFullDataRaw(prev => {
+            const nf = { ...merged, currentUser: prev.currentUser, userProfiles: prev.userProfiles };
+            dataRef.current = nf;
+            saveData(nf);
+            return nf;
+          });
+          toast('☁️ 最新データを取得しました');
+        }
+      } catch(e) {
+        console.warn('[CloudAutoSync] visibilitychange 再取得失敗:', e.message);
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  // editingItem / pendingEditSaleId が変わるたびに最新値を参照するため依存配列に含める
+  }, [editingItem, pendingEditSaleId, setFullDataRaw]);
+
+  // ── 起動時スプレッドシート自動同期（クラウドロード完了後・24時間以上未同期時）──
+  const autoSyncDoneRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (dbStatus !== 'ok' && dbStatus !== 'migrated') return;
+    if (autoSyncDoneRef.current) return;
+
+    const settings = dataRef.current.settings || {};
+    const token = getStoredGToken();
+
+    // 条件①② スプレッドシートIDとトークンが揃っているか
+    if (!settings.googleSpreadsheetId || !token) return;
+
+    // 条件③ 前回同期から24時間以上経過しているか
+    const lastSync = settings.googleLastSyncTime
+      ? new Date(settings.googleLastSyncTime).getTime()
+      : 0;
+    if (Date.now() - lastSync < 24 * 60 * 60 * 1000) return;
+
+    autoSyncDoneRef.current = true;
+
+    (async () => {
+      try {
+        const currentData = dataRef.current;
+        const user = currentData.currentUser || 'self';
+        // 現在のユーザーの在庫・売上のみを対象
+        const activeData = {
+          inventory: (currentData.inventory || []).filter(i => (i.userId || 'self') === user),
+          sales:     (currentData.sales     || []).filter(s => (s.userId || 'self') === user),
+        };
+        const result = await runSheetsSync(token, activeData, settings, 'normal', {});
+        // googleLastSyncTime を更新
+        const now = result.now;
+        setFullDataRaw(prev => {
+          const nf = { ...prev, settings: { ...prev.settings, googleLastSyncTime: now } };
+          dataRef.current = nf;
+          saveData(nf);
+          return nf;
+        });
+        toast('📊 スプレッドシートを自動同期しました');
+      } catch(e) {
+        console.warn('[CloudAutoSync] 自動同期失敗:', e.message);
+        // 401 ならトークンを削除
+        if (e.message?.includes('401') || e.message?.includes('invalid_token')) {
+          clearStoredGToken();
+        }
+      }
+    })();
+  }, [dbStatus, setFullDataRaw]);
+
+  return null;
+};
+
 const App = () => {
   const [fullData, setFullDataRaw] = React.useState(loadData);   // 全ユーザーの全データ
   const [tab, setTab]            = React.useState('inventory');
@@ -12790,105 +13089,8 @@ const App = () => {
           setLastSyncTime(Date.now());
           setDbStatus('migrated');
         } else {
-          // ★ last-write-wins マージ（以前は「クラウド常に勝つ」でローカル保存が消えるバグがあった）
-          // アイテム単位で updatedAt / createdAt を比較し、新しい方を採用する
-          const mergeByLastWrite = (localArr, cloudArr, deletedIds) => {
-            const deleted   = deletedIds || {};
-            const localMap  = new Map((localArr  || []).map(i => [i.id, i]));
-            const cloudMap  = new Map((cloudArr  || []).map(i => [i.id, i]));
-            const allIds    = new Set([...localMap.keys(), ...cloudMap.keys()]);
-            const result    = [];
-            for (const id of allIds) {
-              // ★ トゥームストーン: 意図的に削除されたIDはクラウドに残っていても復活させない
-              if (deleted[id]) continue;
-              const l = localMap.get(id);
-              const c = cloudMap.get(id);
-              if (!l) { result.push(c); continue; }
-              if (!c) { result.push(l); continue; }
-              // updatedAt（なければ createdAt）で比較 → 新しい方を採用
-              const lt = new Date(l.updatedAt || l.createdAt || 0).getTime();
-              const ct = new Date(c.updatedAt || c.createdAt || 0).getTime();
-              const winner = lt >= ct ? l : c;
-              const loser  = lt >= ct ? c : l;
-              // ★ 勝者のthumbDataUrl/medDataUrlがnullでも、敗者の値で補完する
-              // （ローカル/クラウドどちらかに画像データがあれば必ず保持）
-              const loserPhotoMap = new Map((loser.photos || []).map(p => [p.id, p]));
-              const mergedPhotos = (winner.photos || []).map(p => ({
-                ...p,
-                thumbDataUrl: p.thumbDataUrl || loserPhotoMap.get(p.id)?.thumbDataUrl || null,
-                medDataUrl:   p.medDataUrl   || loserPhotoMap.get(p.id)?.medDataUrl   || null,
-              }));
-              result.push({ ...winner, photos: mergedPhotos });
-            }
-            return result;
-          };
-
-          // 設定: フィールド単位でマージ（空欄よりも入力済みを優先）
-          // ローカルが持つ値はローカル優先、ローカルが空の場合はクラウドを使用
-          const mergeSettings = (local, cloud) => {
-            const base = { ...(cloud || {}), ...(local || {}) };
-            // 空欄のフィールドはクラウド側の値で補完
-            for (const [k, v] of Object.entries(cloud || {})) {
-              if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
-            }
-            // ★ _deletedIds はユニオンマージ（ローカル・クラウド両方の削除記録を保持）＋90日パージ
-            base._deletedIds = mergedDeletedIds;
-            // ★ storeLicenses.セカンドストリートが空の場合はデフォルト値を復元
-            if (!base.storeLicenses) base.storeLicenses = {};
-            if (!base.storeLicenses['セカンドストリート']) {
-              base.storeLicenses = { ...base.storeLicenses, 'セカンドストリート': '古物商許愛知県公安委員会  第541162001000号' };
-            }
-            // ★ yahooStores 古物番号を既知の値で補完
-            if (!Array.isArray(base.yahooStores)) base.yahooStores = [];
-            for (const [storeName, license] of Object.entries(KNOWN_YAHOO_STORE_LICENSES)) {
-              const idx = base.yahooStores.findIndex(s => s.storeName === storeName);
-              if (idx >= 0) {
-                if (!base.yahooStores[idx].license) {
-                  base.yahooStores[idx] = { ...base.yahooStores[idx], license };
-                }
-              } else {
-                base.yahooStores.push({ id: storeName, storeName, license, companyName: '' });
-              }
-            }
-            return base;
-          };
-          // ★ 削除トゥームストーンをローカル・クラウド双方からマージしてmergeByLastWriteに渡す
-          const rawMergedDeletedIds = {
-            ...(localData.settings?._deletedIds || {}),
-            ...(cloudData.settings?._deletedIds || {}),
-          };
-          // ★ 90日超過のトゥームストーンをパージ（無限蓄積を防ぐ）
-          // 90日以内の削除は同期伝播に使われるため削除しない
-          const PURGE_MS = 90 * 24 * 60 * 60 * 1000;
-          const purgeThreshold = Date.now() - PURGE_MS;
-          const mergedDeletedIds = Object.fromEntries(
-            Object.entries(rawMergedDeletedIds).filter(([, ts]) => {
-              const t = new Date(ts).getTime();
-              return !isNaN(t) && t >= purgeThreshold;
-            })
-          );
-          // ★ レシートのマージ（id で名寄せ・updatedAt/createdAt で新しい方を採用）
-          const mergeReceipts = (local, cloud) => {
-            const m = new Map();
-            (cloud || []).forEach(r => { if (r?.id) m.set(r.id, r); });
-            (local || []).forEach(r => {
-              if (!r?.id) return;
-              const ex = m.get(r.id);
-              if (!ex) { m.set(r.id, r); return; }
-              const lt = new Date(r.updatedAt || r.createdAt || 0).getTime();
-              const ct = new Date(ex.updatedAt || ex.createdAt || 0).getTime();
-              if (lt > ct) m.set(r.id, r);
-            });
-            return Array.from(m.values());
-          };
-          const mergedData = {
-            ...cloudData,
-            inventory: mergeByLastWrite(localData.inventory, cloudData.inventory, mergedDeletedIds),
-            sales:     mergeByLastWrite(localData.sales,     cloudData.sales,     mergedDeletedIds),
-            settings:  mergeSettings(localData.settings, cloudData.settings),
-            receipts:  mergeReceipts(localData.receipts,  cloudData.receipts),
-          };
-          const cleanedMerged = normalizeStores(cleanOrphans(mergedData));
+          // ★ モジュールスコープの mergeCloudIntoLocal を使用（ロジックは同一）
+          const cleanedMerged = mergeCloudIntoLocal(localData, cloudData);
           dataRef.current = cleanedMerged;
           setFullDataRaw(cleanedMerged);
           saveData(cleanedMerged);
@@ -13301,10 +13503,12 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem }}>
+    <AppContext.Provider value={{ data, setData, fullData, setFullDataRaw, dataRef, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem }}>
       <ToastProvider>
         {/* メルカリ出品準備パネル（ルートレベルで描画しz-index競合を回避） */}
         <MercariPanelRoot />
+        {/* ★ クラウド自動同期（visibilitychange 再取得 + 起動時スプレッドシート自動同期） */}
+        <CloudAutoSync />
         <div style={{minHeight:'100vh',background:'#f5f5f5'}}>
 
           {/* ── DBステータスバナー ── */}
