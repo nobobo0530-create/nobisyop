@@ -1499,7 +1499,7 @@ const ProfitChart = ({ summarySales, now }) => {
 };
 
 const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
+  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync, setSalesFocusBatch, setPendingReturnSection } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -1548,6 +1548,17 @@ const HomeTab = () => {
     return Math.floor((now - new Date(i.purchaseDate)) / 86400000) > 60;
   });
 
+  // ── 売上記録が止まっていないかチェック ──
+  const lastSaleDate = (data.sales||[])
+    .map(s => s.saleDate).filter(Boolean).sort().slice(-1)[0] || null;
+  const daysSinceLastSale = lastSaleDate
+    ? Math.floor((new Date(`${today()}T00:00:00`) - new Date(`${lastSaleDate}T00:00:00`)) / 86400000)
+    : null;
+  const recordingStalled = daysSinceLastSale != null && daysSinceLastSale >= 7;
+
+  // ── クイック登録ナビゲーション ──
+  const goBatchSales = () => { setSalesFocusBatch(true); setTab('sales'); };
+  const goBatchPurchase = () => { setPendingReturnSection('batch'); setTab('other'); };
 
   // ── 目標編集モーダル ──
   const [editingGoal, setEditingGoal] = React.useState(false);
@@ -1617,6 +1628,23 @@ const HomeTab = () => {
       </div>
 
       <div style={{padding:'12px 14px 24px',display:'flex',flexDirection:'column',gap:10}}>
+
+        {/* ── アラート：売上記録が止まっている ── */}
+        {recordingStalled && (
+          <div onClick={goBatchSales}
+            style={{background:'#fef2f2',border:'1.5px solid #f87171',borderRadius:12,padding:'12px 14px',
+              display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
+            <span style={{fontSize:20}}>📸</span>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#b91c1c'}}>
+                {daysSinceLastSale}日間 売上が記録されていません
+              </div>
+              <div style={{fontSize:11,color:'#dc2626',marginTop:2}}>
+                販売履歴のスクショを選ぶだけでまとめて登録できます →
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── アラート：売上未記録 ── */}
         {unrecordedSoldCount > 0 && (
@@ -1711,6 +1739,28 @@ const HomeTab = () => {
             )}
           </div>
           </div>{/* /flex content */}
+        </div>
+
+        {/* ── クイック登録 ── */}
+        <div style={{display:'flex',gap:10}}>
+          <button onClick={goBatchSales}
+            style={{flex:1,padding:'14px 8px',borderRadius:14,border:'none',
+              background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',
+              fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
+              WebkitTapHighlightColor:'transparent',lineHeight:1.35}}>
+            <div style={{fontSize:20,marginBottom:3}}>📸</div>
+            売れたものを登録
+            <div style={{fontSize:10,fontWeight:600,opacity:0.7,marginTop:2}}>販売履歴のスクショ</div>
+          </button>
+          <button onClick={goBatchPurchase}
+            style={{flex:1,padding:'14px 8px',borderRadius:14,border:'1.5px solid #e5e7eb',
+              background:'#fff',color:'#111827',
+              fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
+              WebkitTapHighlightColor:'transparent',lineHeight:1.35}}>
+            <div style={{fontSize:20,marginBottom:3}}>📦</div>
+            仕入れを登録
+            <div style={{fontSize:10,fontWeight:600,color:'#9ca3af',marginTop:2}}>まとめて一括入力</div>
+          </button>
         </div>
 
         {/* ── 在庫ステータス 3分割 ── */}
@@ -6170,7 +6220,7 @@ const InventoryTab = () => {
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
-  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, setPendingReturnTab, pendingInventoryFilter } = React.useContext(AppContext);
+  const { data, setData, currentUser, setEditingItem, setTab, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, setPendingReturnTab, pendingInventoryFilter, salesFocusBatch, setSalesFocusBatch } = React.useContext(AppContext);
   const toast = useToast();
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
@@ -6184,6 +6234,16 @@ const SalesTab = () => {
   const [batchLoading, setBatchLoading] = React.useState(false); // {done,total} or false
   const [batchRows, setBatchRows] = React.useState(null); // [{extracted, matchedItem, skip, inventoryId}] or null
   const batchInputRef = React.useRef();
+  const batchBtnRef = React.useRef(null);
+  const [batchPulse, setBatchPulse] = React.useState(false);
+  React.useEffect(() => {
+    if (!salesFocusBatch) return;
+    setSalesFocusBatch(false);
+    setBatchPulse(true);
+    const t1 = setTimeout(() => batchBtnRef.current?.scrollIntoView({behavior:'smooth', block:'center'}), 60);
+    const t2 = setTimeout(() => setBatchPulse(false), 2400);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [salesFocusBatch]);
   const [dupConfirm, setDupConfirm] = React.useState(null); // {existingSale, reason, onConfirm}
   const [saleStoreCustom, setSaleStoreCustom] = React.useState(null); // null=選択, string=手入力
   const [saving, setSaving] = React.useState(false); // 保存中フラグ（二重タップ防止）
@@ -7112,23 +7172,30 @@ const SalesTab = () => {
       </div>
 
       <div style={{padding:'12px 16px'}}>
+        {/* 販売履歴一括取込ボタン（主導線） */}
+        <button ref={batchBtnRef}
+          onClick={() => { if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; } batchInputRef.current?.click(); }}
+          style={{width:'100%',marginBottom:14,padding:'15px 12px',borderRadius:14,border:'none',
+            background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',
+            fontWeight:800,fontSize:15,cursor:'pointer',touchAction:'manipulation',
+            WebkitTapHighlightColor:'transparent',
+            boxShadow: batchPulse ? '0 0 0 4px rgba(37,99,235,0.35)' : '0 2px 8px rgba(0,0,0,0.12)',
+            transition:'box-shadow 0.3s'}}>
+          {batchLoading
+            ? `📸 読み取り中… ${batchLoading.done}/${batchLoading.total}枚`
+            : <>📸 販売履歴のスクショから一括登録
+                <div style={{fontSize:11,fontWeight:600,opacity:0.75,marginTop:3}}>
+                  メルカリの「売却済み」画面を複数枚選ぶだけ
+                </div>
+              </>}
+        </button>
+
         {unrecordedSold.length > 0 && (
           <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:12,padding:12,marginBottom:12,fontSize:13}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:4}}>⚠️ 売上未記録の商品が{unrecordedSold.length}件あります</div>
             <div style={{color:'#92400e'}}>「売上登録」から記録してください</div>
           </div>
         )}
-
-        {/* 販売履歴一括取込ボタン */}
-        <button onClick={() => { if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; } batchInputRef.current?.click(); }}
-          style={{width:'100%',marginBottom:16,padding:'11px',borderRadius:12,border:'1.5px dashed #d1d5db',
-            background:'#fafafa',color:'#555',fontWeight:600,fontSize:14,cursor:'pointer',
-            display:'flex',alignItems:'center',justifyContent:'center',gap:6,
-            WebkitTapHighlightColor:'transparent'}}>
-          {batchLoading
-            ? `📸 読み取り中… ${batchLoading.done}/${batchLoading.total}枚`
-            : '📸 メルカリ販売履歴を一括取込'}
-        </button>
 
         {/* 月次サマリー */}
         {months.length > 0 && (
@@ -12878,6 +12945,7 @@ const App = () => {
   const [pendingEditSaleId, setPendingEditSaleId] = React.useState(null); // エクスポート画面から売上編集
   const [pendingReturnTab, setPendingReturnTab] = React.useState(null); // 保存後に戻るタブ
   const [pendingReturnSection, setPendingReturnSection] = React.useState(null); // 保存後にOtherTabで表示するセクション
+  const [salesFocusBatch, setSalesFocusBatch] = React.useState(false); // ホームから売上タブの一括取込へ誘導
   // 在庫タブ: 編集から戻った時にフィルター（未出品/出品中/売却済）とスクロール位置を復元するため保存
   const [pendingInventoryFilter, setPendingInventoryFilter] = React.useState(null);
   const [pendingInventoryScrollY, setPendingInventoryScrollY] = React.useState(null);
@@ -13503,7 +13571,7 @@ const App = () => {
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, fullData, setFullDataRaw, dataRef, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem }}>
+    <AppContext.Provider value={{ data, setData, fullData, setFullDataRaw, dataRef, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem, salesFocusBatch, setSalesFocusBatch }}>
       <ToastProvider>
         {/* メルカリ出品準備パネル（ルートレベルで描画しz-index競合を回避） */}
         <MercariPanelRoot />
