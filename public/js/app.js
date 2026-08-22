@@ -1499,7 +1499,7 @@ const ProfitChart = ({ summarySales, now }) => {
 };
 
 const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync, setSalesFocusBatch, setPendingReturnSection } = React.useContext(AppContext);
+  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync, setSalesFocusBatch, setPendingReturnSection, setPendingInventoryFilter } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -1509,6 +1509,7 @@ const HomeTab = () => {
   const soldInvIds    = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const recordedInvIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
   const unrecordedSoldCount = [...soldInvIds].filter(id => !recordedInvIds.has(id)).length;
+  const priceUnconfirmedCount = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
 
   // ── 売上集計（有効データのみ）──
   const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
@@ -1655,6 +1656,19 @@ const HomeTab = () => {
             <div style={{flex:1}}>
               <span style={{fontSize:13,fontWeight:700,color:'#c2410c'}}>売上未記録 {unrecordedSoldCount}件</span>
               <span style={{fontSize:11,color:'#ea580c',marginLeft:6}}>→ タップして記録</span>
+            </div>
+          </div>
+        )}
+
+        {/* ── アラート：仕入額 未入力 ── */}
+        {priceUnconfirmedCount > 0 && (
+          <div onClick={() => { setPendingInventoryFilter('priceUnconfirmed'); setTab('inventory'); }}
+            style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderRadius:12,padding:'10px 14px',
+              display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
+            <span style={{fontSize:18}}>💰</span>
+            <div style={{flex:1}}>
+              <span style={{fontSize:13,fontWeight:700,color:'#b45309'}}>仕入額 未入力 {priceUnconfirmedCount}件</span>
+              <span style={{fontSize:11,color:'#d97706',marginLeft:6}}>→ タップして入力</span>
             </div>
           </div>
         )}
@@ -2170,10 +2184,21 @@ const PurchaseTab = () => {
     };
   }, []);
 
+  // まとめ仕入れの分割対象額（商品代 + 送料 + 手数料 − クーポン）
+  const bundleTotalBase = React.useMemo(() => {
+    const coupon = Number(form.couponTaxIn) || 0;
+    return Math.max(0, purchaseType === 'store'
+      ? (Number(form.itemPriceTaxIn) || 0) - coupon
+      : (Number(form.itemPriceTaxIn) || 0)
+        + (Number(form.shippingTaxIn) || 0)
+        + (form.showOptionalFee ? (Number(form.optionalFeeTaxIn) || 0) : 0)
+        - coupon);
+  }, [purchaseType, form.itemPriceTaxIn, form.shippingTaxIn, form.optionalFeeTaxIn, form.showOptionalFee, form.couponTaxIn]);
+
   // まとめ仕入れ: 合計金額が変わったとき or バンドルON時 → 均等割りを自動適用
   React.useEffect(() => {
     if (!bundlePurchase || bundleSplitMethod !== 'equal') return;
-    const total = (Number(form.itemPriceTaxIn) || 0) - (Number(form.couponTaxIn) || 0);
+    const total = bundleTotalBase;
     if (total <= 0) return;
     const n = bundleItems.length;
     const base = Math.floor(total / n);
@@ -2182,7 +2207,7 @@ const PurchaseTab = () => {
       ...bi, purchasePrice: String(i === n - 1 ? base + rem : base)
     })));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bundlePurchase, bundleSplitMethod, form.itemPriceTaxIn, form.couponTaxIn, bundleItems.length]);
+  }, [bundlePurchase, bundleSplitMethod, bundleTotalBase, bundleItems.length]);
 
   // iOS: バックグラウンド移行時に画像入れ替え選択状態をリセット
   React.useEffect(() => {
@@ -3013,7 +3038,8 @@ const PurchaseTab = () => {
   const handleSaveAndSell    = () => { postSaveNavToSale.current    = true; handleSave(); };
   const handleSaveAndMercari = () => { postSaveNavToMercari.current = true; handleSave(); };
 
-  const handleSave = () => {
+  const handleSave = (opts = {}) => {
+    const allowNoPrice = !!opts.priceLater;
     // バンドルモード判定（★ Ref経由で最新状態を確実に読み取る – ポータル内クロージャ陳腐化対策）
     const _isBundleMode = bundlePurchaseRef.current;
     const _bundleItems  = bundleItemsRef.current;
@@ -3033,7 +3059,7 @@ const PurchaseTab = () => {
         setFormError('商品名を入力してください');
         return; // finally でロック解放
       }
-      if (!_isBundleMode && (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '')) {
+      if (!allowNoPrice && !_isBundleMode && (Number(form.itemPriceTaxIn) <= 0 || form.itemPriceTaxIn === '')) {
         setFormError('仕入れ価格を入力してください（0円より大きい金額）');
         return; // finally でロック解放
       }
@@ -3041,7 +3067,7 @@ const PurchaseTab = () => {
       // ★★★ バンドルモード時のバリデーション + 自動補完
       let finalBundleItems = _bundleItems;
       if (_isBundleMode) {
-        const totalBudget = (Number(form.itemPriceTaxIn) || 0) - (Number(form.couponTaxIn) || 0);
+        const totalBudget = bundleTotalBase;
         const filledItems = _bundleItems.filter(bi => bi.purchasePrice !== '' && bi.purchasePrice !== '0');
 
         if (filledItems.length < 2) {
@@ -3057,7 +3083,7 @@ const PurchaseTab = () => {
             bundleItemsRef.current = finalBundleItems;
             setBundleItems(finalBundleItems);
             console.log('[Bundle] ★ 均等分割を自動適用（save時）:', finalBundleItems.map(bi => bi.purchasePrice));
-          } else {
+          } else if (!allowNoPrice) {
             setFormError('まとめ仕入れ：仕入れ価格（合計）を入力してください');
             return; // finally でロック解放
           }
@@ -3146,6 +3172,7 @@ const PurchaseTab = () => {
             : (form.listDate || editingItem.listDate || ''),
           size: computedSize,
           purchasePrice: totalPurchaseTaxIn,
+          ...(allowNoPrice && !(totalPurchaseTaxIn > 0) ? { priceUnconfirmed: true } : { priceUnconfirmed: false }),
           purchaseCost,
           purchaseType,
           purchaseTypeSource,
@@ -3218,6 +3245,7 @@ const PurchaseTab = () => {
             brand: '',
             listDate: '',
             purchasePrice: bPrice,
+            ...(allowNoPrice && !(bPrice > 0) ? { priceUnconfirmed: true } : { priceUnconfirmed: false }),
             purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
             size: computedSize,
             purchaseType, purchaseTypeSource, purchaseStoreType,
@@ -3242,6 +3270,7 @@ const PurchaseTab = () => {
           return {
             ...invItem,
             purchasePrice: bPrice,
+            ...(allowNoPrice && !(bPrice > 0) ? { priceUnconfirmed: true } : { priceUnconfirmed: false }),
             purchaseCost: { totalTaxIn: bPrice, totalTaxEx: bPrice },
             ...(form.purchaseDate  ? { purchaseDate:  form.purchaseDate  } : {}),
             ...(form.purchaseStore ? { purchaseStore: form.purchaseStore } : {}),
@@ -3277,6 +3306,7 @@ const PurchaseTab = () => {
         userId: currentUser,
         size: computedSize,
         purchasePrice: totalPurchaseTaxIn,
+        ...(allowNoPrice && !(totalPurchaseTaxIn > 0) ? { priceUnconfirmed: true } : { priceUnconfirmed: false }),
         purchaseCost,
         purchaseType,
         purchaseTypeSource,
@@ -4704,7 +4734,7 @@ const PurchaseTab = () => {
               </div>
 
               {bundlePurchase && (() => {
-                const totalBudget = totalPurchaseTaxIn || 0;
+                const totalBudget = bundleTotalBase;
                 const allocated = bundleItems.reduce((s, bi) => s + (Number(bi.purchasePrice) || 0), 0);
                 const remaining = totalBudget - allocated;
 
@@ -4764,6 +4794,15 @@ const PurchaseTab = () => {
                           {l}
                         </button>
                       ))}
+                    </div>
+
+                    {/* 分割対象額の内訳 */}
+                    <div style={{fontSize:11,color:'#6b7280',marginBottom:8,lineHeight:1.6}}>
+                      商品 ¥{(Number(form.itemPriceTaxIn)||0).toLocaleString()}
+                      {purchaseType === 'online' && (Number(form.shippingTaxIn)||0) > 0 && ` ＋ 送料 ¥${(Number(form.shippingTaxIn)||0).toLocaleString()}`}
+                      {purchaseType === 'online' && form.showOptionalFee && (Number(form.optionalFeeTaxIn)||0) > 0 && ` ＋ 手数料 ¥${(Number(form.optionalFeeTaxIn)||0).toLocaleString()}`}
+                      {(Number(form.couponTaxIn)||0) > 0 && ` − クーポン ¥${(Number(form.couponTaxIn)||0).toLocaleString()}`}
+                      {' '}= <b style={{color:'#111827'}}>¥{bundleTotalBase.toLocaleString()}</b> を {bundleItems.length}点に分割
                     </div>
 
                     {/* 各アイテム入力 */}
@@ -4955,6 +4994,7 @@ const PurchaseTab = () => {
           position:'fixed',
           bottom: 'calc(64px + env(safe-area-inset-bottom))',
           left:0,right:0,
+          maxWidth: 600, marginLeft: 'auto', marginRight: 'auto',
           // ★ キーボード表示中は非表示にして入力欄を塞がない（せり上がり廃止）
           display: kbOffset > 0 ? 'none' : 'block',
           background:'white',padding:'10px 16px 12px',borderTop:'1px solid #f0f0f0',
@@ -5006,10 +5046,22 @@ const PurchaseTab = () => {
           )}
           <button className="btn-primary"
             style={{width:'100%',padding:16,fontSize:17,opacity:saving?0.75:1,transition:'opacity 0.15s',touchAction:'manipulation'}}
-            onClick={handleSave}
+            onClick={() => handleSave()}
             disabled={saving}>
             {saving ? '💾 保存中...' : editingItem ? '💾 更新保存する' : bundlePurchase ? `📦 まとめ仕入れ ${bundleItems.length}件を登録する` : '💾 仕入れを登録する'}
           </button>
+          {!bundlePurchase && !(Number(form.itemPriceTaxIn) > 0) && (
+            <button onClick={() => handleSave({ priceLater: true })}
+              style={{width:'100%',marginTop:8,padding:'13px',borderRadius:12,
+                border:'1.5px dashed #f59e0b',background:'#fffbeb',color:'#b45309',
+                fontWeight:700,fontSize:14,cursor:'pointer',touchAction:'manipulation',
+                WebkitTapHighlightColor:'transparent'}}>
+              💰 金額はあとで入力して保存
+              <div style={{fontSize:11,fontWeight:600,opacity:0.8,marginTop:2}}>
+                クーポンや送料が確定してから入力できます
+              </div>
+            </button>
+          )}
           <button
             onClick={handleSaveAndSell}
             disabled={saving}
@@ -5299,6 +5351,9 @@ const InventoryTab = () => {
   const [bulkMode, setBulkMode] = React.useState(false);
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
+  const [bulkPriceOpen, setBulkPriceOpen] = React.useState(false);
+  const [bulkPriceDraft, setBulkPriceDraft] = React.useState({}); // { [itemId]: '文字列' }
+  const [bulkPriceSplitTotal, setBulkPriceSplitTotal] = React.useState('');
 
   // ★ マウント時: pending値をクリア & スクロール位置を復元
   // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
@@ -5346,7 +5401,8 @@ const InventoryTab = () => {
   const normalizedStore = (item) => normalizeStoreName(item.purchaseStore) || '';
 
   const filtered = data.inventory.filter(item => {
-    if (filter !== 'all' && item.status !== filter) return false;
+    if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
+    else if (filter !== 'all' && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -5416,6 +5472,27 @@ const InventoryTab = () => {
     toast('✅ 未出品に戻しました');
   };
 
+  const saveBulkPrices = () => {
+    const updates = {};
+    Object.entries(bulkPriceDraft).forEach(([id, v]) => {
+      const n = Number(v);
+      if (v !== '' && !isNaN(n) && n > 0) updates[id] = n;
+    });
+    const n = Object.keys(updates).length;
+    if (n === 0) return;
+    setData({
+      ...data,
+      inventory: data.inventory.map(i => updates[i.id] != null
+        ? { ...i, purchasePrice: updates[i.id], priceUnconfirmed: false,
+            purchaseCost: { ...(i.purchaseCost||{}), totalTaxIn: updates[i.id], totalTaxEx: updates[i.id] } }
+        : i),
+    });
+    setBulkPriceOpen(false);
+    setBulkPriceDraft({});
+    setBulkPriceSplitTotal('');
+    toast(`✅ ${n}件の仕入額を登録しました`);
+  };
+
   const deleteItem = (item) => {
     if (!confirm('この商品を削除しますか？')) return;
     const now = new Date().toISOString();
@@ -5468,6 +5545,13 @@ const InventoryTab = () => {
 
   const allChecked  = sorted.length > 0 && checkedIds.size === sorted.length;
   const someChecked = checkedIds.size > 0 && checkedIds.size < sorted.length;
+
+  // まとめ仕入れ バッジ用カウント（map内で毎回filterしない）
+  const bundleCounts = React.useMemo(() => {
+    const m = {};
+    (data.inventory||[]).forEach(i => { if (i.bundleGroup) m[i.bundleGroup] = (m[i.bundleGroup]||0) + 1; });
+    return m;
+  }, [data.inventory]);
 
   return (
     <div className="fade-in">
@@ -5548,6 +5632,28 @@ const InventoryTab = () => {
             </button>
           );
         })}
+        {(() => {
+          const puCnt = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
+          if (puCnt === 0 && filter !== 'priceUnconfirmed') return null;
+          const active = filter === 'priceUnconfirmed';
+          return (
+            <button onClick={() => { setFilter('priceUnconfirmed'); setCheckedIds(new Set()); }}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
+                background: active ? '#b45309' : '#fef3c7',
+                color: active ? 'white' : '#92400e',
+                boxShadow: active ? '0 2px 8px rgba(180,83,9,0.3)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              💰未入力
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#fcd34d',
+                color: active ? 'white' : '#92400e',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {puCnt}
+              </span>
+            </button>
+          );
+        })()}
       </div>
 
       {/* 並び替えバー */}
@@ -5620,9 +5726,23 @@ const InventoryTab = () => {
       )}
 
       <div style={{padding:'12px 16px', paddingBottom: bulkMode && checkedIds.size > 0 ? 100 : 12}}>
+        {filter === 'priceUnconfirmed' && sorted.length > 0 && (
+          <button onClick={() => {
+              const d = {};
+              sorted.forEach(i => { d[i.id] = ''; });
+              setBulkPriceDraft(d);
+              setBulkPriceSplitTotal('');
+              setBulkPriceOpen(true);
+            }}
+            style={{width:'100%',marginBottom:12,padding:'13px',borderRadius:12,border:'none',
+              background:'#b45309',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer',
+              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            💰 まとめて金額を入力（{sorted.length}件）
+          </button>
+        )}
         {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未入力の商品がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -5683,6 +5803,18 @@ const InventoryTab = () => {
                     <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
                     <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
+                      {item.priceUnconfirmed && (
+                        <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
+                          background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
+                          💰 金額未入力
+                        </span>
+                      )}
+                      {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
+                        <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                          background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
+                          📦 まとめ{bundleCounts[item.bundleGroup]}点
+                        </span>
+                      )}
                       {conditionTag(item.condition)}
                       {/* 売却済バッジ＋売却日 */}
                       {isSold && (
@@ -5869,7 +6001,11 @@ const InventoryTab = () => {
                   <>
                     <div>
                       <div style={{fontSize:12,color:'#999'}}>仕入れ値</div>
-                      <div style={{fontWeight:600}}>¥{formatMoney(selPP)}</div>
+                      <div style={{fontWeight:600}}>¥{formatMoney(selPP)}
+                        {selected?.priceUnconfirmed && (
+                          <span style={{fontSize:10,fontWeight:700,color:'#b45309',marginLeft:6}}>💰未入力</span>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <div style={{fontSize:12,color:'#999'}}>{selSale ? '売却価格' : '見込み売上'}</div>
@@ -5891,6 +6027,42 @@ const InventoryTab = () => {
                 <div>{selected.purchaseStore || '-'}</div>
               </div>
             </div>
+
+            {/* まとめ仕入れ内訳セクション */}
+            {selected?.bundleGroup && (() => {
+              const mates = (data.inventory||[]).filter(i => i.bundleGroup === selected.bundleGroup);
+              if (mates.length < 2) return null;
+              const total = mates.reduce((a,i) => a + (i.purchasePrice||0), 0);
+              return (
+                <div style={{marginTop:14,padding:'12px 14px',background:'#eef2ff',
+                  border:'1px solid #c7d2fe',borderRadius:12}}>
+                  <div style={{fontSize:12,fontWeight:800,color:'#3730a3',marginBottom:2}}>
+                    📦 まとめ仕入れ（{mates.length}点）
+                  </div>
+                  <div style={{fontSize:11,color:'#4f46e5',marginBottom:8}}>
+                    合計 ¥{total.toLocaleString()} を分割して登録
+                  </div>
+                  {mates.map(m => (
+                    <div key={m.id}
+                      onClick={() => { if (m.id !== selected.id) setSelected(m); }}
+                      style={{display:'flex',justifyContent:'space-between',gap:8,
+                        padding:'6px 8px',borderRadius:8,marginBottom:4,
+                        background: m.id === selected.id ? '#c7d2fe' : '#fff',
+                        cursor: m.id === selected.id ? 'default' : 'pointer',
+                        fontWeight: m.id === selected.id ? 700 : 500,
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      <span style={{fontSize:12,color:'#1e1b4b',overflow:'hidden',
+                        textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,minWidth:0}}>
+                        {m.id === selected.id ? '▶ ' : ''}{m.productName || '(名称未設定)'}
+                      </span>
+                      <span style={{fontSize:12,color:'#4338ca',flexShrink:0}}>
+                        ¥{(m.purchasePrice||0).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
 
             {selected.size && (
               <div style={{marginBottom:10}}>
@@ -6208,6 +6380,107 @@ const InventoryTab = () => {
                 🗑️ 削除
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* まとめて金額を入力モーダル */}
+      {bulkPriceOpen && (
+        <div className="modal-overlay" onClick={() => setBulkPriceOpen(false)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+            <div className="modal-handle"/>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <div>
+                <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>💰 仕入額をまとめて入力</div>
+                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>クーポン・送料が確定した金額を入力してください</div>
+              </div>
+              <button onClick={() => setBulkPriceOpen(false)}
+                style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
+            </div>
+
+            {/* 合計から均等割りヘルパー */}
+            <div style={{background:'#fef3c7',border:'1px solid #fcd34d',borderRadius:12,padding:'12px 14px',marginBottom:14,marginTop:10}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:8}}>合計金額から均等割り</div>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <input className="input-field" type="number" inputMode="numeric" placeholder="合計金額"
+                  value={bulkPriceSplitTotal}
+                  onChange={e => setBulkPriceSplitTotal(e.target.value)}
+                  style={{flex:1,textAlign:'right'}}/>
+                <button
+                  onClick={() => {
+                    const total = Number(bulkPriceSplitTotal);
+                    if (!total || total <= 0) return;
+                    const ids = sorted.map(i => i.id);
+                    const n = ids.length;
+                    if (n === 0) return;
+                    const base = Math.floor(total / n);
+                    const rem  = total - base * n;
+                    const next = {};
+                    ids.forEach((id, idx) => {
+                      next[id] = String(idx === n - 1 ? base + rem : base);
+                    });
+                    setBulkPriceDraft(next);
+                  }}
+                  style={{flexShrink:0,padding:'12px 14px',borderRadius:10,border:'none',
+                    background:'#b45309',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',
+                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  均等に割る
+                </button>
+              </div>
+            </div>
+
+            {/* 商品ごとの入力行 */}
+            <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
+              {sorted.map(item => {
+                const bgCount = bundleCounts[item.bundleGroup];
+                return (
+                  <div key={item.id}
+                    style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',
+                      background:'#f9fafb',borderRadius:12,border:'1px solid #e5e7eb'}}>
+                    <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                    <div style={{flex:1,minWidth:0}}>
+                      {item.brand && (
+                        <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:1}}>{item.brand}</div>
+                      )}
+                      <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111'}}>{item.productName || '(名称未設定)'}</div>
+                      {item.bundleGroup && bgCount > 1 && (
+                        <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:99,
+                          background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',marginTop:2,display:'inline-block'}}>
+                          📦 まとめ{bgCount}点
+                        </span>
+                      )}
+                    </div>
+                    <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                      value={bulkPriceDraft[item.id] ?? ''}
+                      onChange={e => setBulkPriceDraft(p => ({...p, [item.id]: e.target.value}))}
+                      style={{width:110,flexShrink:0,textAlign:'right'}}/>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* スティッキーフッター */}
+            {(() => {
+              const readyCnt = Object.entries(bulkPriceDraft).filter(([,v]) => {
+                const n = Number(v); return v !== '' && !isNaN(n) && n > 0;
+              }).length;
+              return (
+                <div style={{position:'sticky',bottom:0,background:'white',paddingTop:10,paddingBottom:'calc(10px + env(safe-area-inset-bottom))',marginTop:-10}}>
+                  <button
+                    onClick={saveBulkPrices}
+                    disabled={readyCnt === 0}
+                    style={{width:'100%',padding:'14px',borderRadius:12,border:'none',
+                      background: readyCnt > 0 ? '#b45309' : '#e5e7eb',
+                      color: readyCnt > 0 ? 'white' : '#aaa',
+                      fontWeight:800,fontSize:15,cursor: readyCnt > 0 ? 'pointer' : 'default',
+                      pointerEvents: readyCnt === 0 ? 'none' : 'auto',
+                      touchAction:'manipulation',WebkitTapHighlightColor:'transparent',
+                      transition:'all 0.15s'}}>
+                    保存する（{readyCnt}件）
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
