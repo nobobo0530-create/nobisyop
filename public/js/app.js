@@ -1638,14 +1638,14 @@ const SummaryPanel = ({ setActiveSection }) => {
         </div>
       )}
 
-      {/* ── アラート：仕入額 未入力 ── */}
+      {/* ── アラート：仕入額 未確定 ── */}
       {priceUnconfirmedCount > 0 && (
         <div onClick={() => { setPendingInventoryFilter('priceUnconfirmed'); setTab('inventory'); }}
           style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderRadius:12,padding:'10px 14px',
             display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
           <span style={{fontSize:18}}>💰</span>
           <div style={{flex:1}}>
-            <span style={{fontSize:13,fontWeight:700,color:'#b45309'}}>仕入額 未入力 {priceUnconfirmedCount}件</span>
+            <span style={{fontSize:13,fontWeight:700,color:'#b45309'}}>仕入額 未確定 {priceUnconfirmedCount}件</span>
             <span style={{fontSize:11,color:'#d97706',marginLeft:6}}>→ タップして入力</span>
           </div>
         </div>
@@ -5402,6 +5402,8 @@ const InventoryTab = () => {
   const [bulkPriceOpen, setBulkPriceOpen] = React.useState(false);
   const [bulkPriceDraft, setBulkPriceDraft] = React.useState({}); // { [itemId]: '文字列' }
   const [bulkPriceSplitTotal, setBulkPriceSplitTotal] = React.useState('');
+  const [bulkCouponTotal, setBulkCouponTotal] = React.useState('');  // まとめて差し引くクーポン合計
+  const [bulkCouponDraft, setBulkCouponDraft] = React.useState({});  // { [itemId]: クーポン按分額 }
 
   // ★ マウント時: pending値をクリア & スクロール位置を復元
   // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
@@ -5530,15 +5532,28 @@ const InventoryTab = () => {
     if (n === 0) return;
     setData({
       ...data,
-      inventory: data.inventory.map(i => updates[i.id] != null
-        ? { ...i, purchasePrice: updates[i.id], priceUnconfirmed: false,
-            purchaseCost: { ...(i.purchaseCost||{}), totalTaxIn: updates[i.id], totalTaxEx: updates[i.id] } }
-        : i),
+      inventory: data.inventory.map(i => {
+        if (updates[i.id] == null) return i;
+        const coupon = Number(bulkCouponDraft[i.id]) || 0;
+        return {
+          ...i,
+          purchasePrice: updates[i.id],
+          priceUnconfirmed: false,
+          purchaseCost: {
+            ...(i.purchaseCost||{}),
+            totalTaxIn: updates[i.id],
+            totalTaxEx: updates[i.id],
+            ...(coupon > 0 ? { couponTaxIn: coupon, couponNote: i.purchaseCost?.couponNote || 'クーポン値引き' } : {}),
+          },
+        };
+      }),
     });
     setBulkPriceOpen(false);
     setBulkPriceDraft({});
     setBulkPriceSplitTotal('');
-    toast(`✅ ${n}件の仕入額を登録しました`);
+    setBulkCouponTotal('');
+    setBulkCouponDraft({});
+    toast(`✅ ${n}件の仕入額を確定しました`);
   };
 
   const deleteItem = (item) => {
@@ -5692,7 +5707,7 @@ const InventoryTab = () => {
                 color: active ? 'white' : '#92400e',
                 boxShadow: active ? '0 2px 8px rgba(180,83,9,0.3)' : 'none',
                 transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              💰未入力
+              💰未確定
               <span style={{
                 background: active ? 'rgba(255,255,255,0.3)' : '#fcd34d',
                 color: active ? 'white' : '#92400e',
@@ -5777,20 +5792,23 @@ const InventoryTab = () => {
         {filter === 'priceUnconfirmed' && sorted.length > 0 && (
           <button onClick={() => {
               const d = {};
-              sorted.forEach(i => { d[i.id] = ''; });
+              // 落札価格などが既に入っていれば初期値として出す（クーポン分を引くだけで済むように）
+              sorted.forEach(i => { d[i.id] = (i.purchasePrice || 0) > 0 ? String(i.purchasePrice) : ''; });
               setBulkPriceDraft(d);
               setBulkPriceSplitTotal('');
+              setBulkCouponTotal('');
+              setBulkCouponDraft({});
               setBulkPriceOpen(true);
             }}
             style={{width:'100%',marginBottom:12,padding:'13px',borderRadius:12,border:'none',
               background:'#b45309',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer',
               touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-            💰 まとめて金額を入力（{sorted.length}件）
+            💰 まとめて金額を確定（{sorted.length}件）
           </button>
         )}
         {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未入力の商品がありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -5854,7 +5872,7 @@ const InventoryTab = () => {
                       {item.priceUnconfirmed && (
                         <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
                           background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
-                          💰 金額未入力
+                          💰 金額未確定
                         </span>
                       )}
                       {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
@@ -6051,7 +6069,7 @@ const InventoryTab = () => {
                       <div style={{fontSize:12,color:'#999'}}>仕入れ値</div>
                       <div style={{fontWeight:600}}>¥{formatMoney(selPP)}
                         {selected?.priceUnconfirmed && (
-                          <span style={{fontSize:10,fontWeight:700,color:'#b45309',marginLeft:6}}>💰未入力</span>
+                          <span style={{fontSize:10,fontWeight:700,color:'#b45309',marginLeft:6}}>💰未確定</span>
                         )}
                       </div>
                     </div>
@@ -6439,8 +6457,8 @@ const InventoryTab = () => {
             <div className="modal-handle"/>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
               <div>
-                <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>💰 仕入額をまとめて入力</div>
-                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>クーポン・送料が確定した金額を入力してください</div>
+                <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>💰 仕入額をまとめて確定</div>
+                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>決済後の最終金額に直してください。クーポンは下でまとめて差し引けます</div>
               </div>
               <button onClick={() => setBulkPriceOpen(false)}
                 style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
@@ -6477,6 +6495,52 @@ const InventoryTab = () => {
               </div>
             </div>
 
+            {/* クーポン分をまとめて差し引く */}
+            <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#1d4ed8',marginBottom:8}}>🎟️ クーポン分を差し引く</div>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <input className="input-field" type="number" inputMode="numeric" placeholder="クーポン合計"
+                  value={bulkCouponTotal}
+                  onChange={e => setBulkCouponTotal(e.target.value)}
+                  style={{flex:1,textAlign:'right'}}/>
+                <button
+                  onClick={() => {
+                    const coupon = Number(bulkCouponTotal);
+                    if (!coupon || coupon <= 0) return;
+                    // 現在の入力額に応じて按分（金額が入っていないものは対象外）
+                    const rows = sorted
+                      .map(i => ({ id: i.id, price: Number(bulkPriceDraft[i.id]) }))
+                      .filter(r => r.price > 0);
+                    if (rows.length === 0) { toast('❌ 先に各商品の金額を入力してください'); return; }
+                    const sum = rows.reduce((a, r) => a + r.price, 0);
+                    if (coupon >= sum) { toast('❌ クーポン額が合計金額以上です'); return; }
+                    const nextPrice = { ...bulkPriceDraft };
+                    const nextCoupon = { ...bulkCouponDraft };
+                    let used = 0;
+                    rows.forEach((r, idx) => {
+                      const share = idx === rows.length - 1
+                        ? coupon - used
+                        : Math.floor(coupon * r.price / sum);
+                      used += share;
+                      nextCoupon[r.id] = share;
+                      nextPrice[r.id] = String(Math.max(0, r.price - share));
+                    });
+                    setBulkPriceDraft(nextPrice);
+                    setBulkCouponDraft(nextCoupon);
+                    setBulkCouponTotal('');
+                    toast(`🎟️ クーポン ¥${coupon.toLocaleString()} を ${rows.length}件に按分しました`);
+                  }}
+                  style={{flexShrink:0,padding:'12px 14px',borderRadius:10,border:'none',
+                    background:'#1d4ed8',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',
+                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  差し引く
+                </button>
+              </div>
+              <div style={{fontSize:11,color:'#1e40af',marginTop:6,opacity:0.85}}>
+                金額の大きい商品ほど多く引かれます（金額に応じて按分）
+              </div>
+            </div>
+
             {/* 商品ごとの入力行 */}
             <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
               {sorted.map(item => {
@@ -6496,6 +6560,11 @@ const InventoryTab = () => {
                           background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',marginTop:2,display:'inline-block'}}>
                           📦 まとめ{bgCount}点
                         </span>
+                      )}
+                      {(Number(bulkCouponDraft[item.id]) || 0) > 0 && (
+                        <div style={{fontSize:10,fontWeight:700,color:'#1d4ed8',marginTop:2}}>
+                          🎟️ クーポン −¥{Number(bulkCouponDraft[item.id]).toLocaleString()}
+                        </div>
                       )}
                     </div>
                     <input className="input-field" type="number" inputMode="numeric" placeholder="0"
@@ -10902,7 +10971,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
 
         const purchasePrice = Number(extracted.purchase_price) || 0;
         const shippingCost = Number(extracted.shipping_cost) || 0;
-        if (purchasePrice <= 0) warnMsgs.push('仕入れ価格が0円です');
+        if (purchasePrice <= 0) warnMsgs.push('仕入れ価格が未入力です（登録後にまとめて入力できます）');
 
         const listingCategory = normalizeListingCategory(extracted.listing_category, extracted.product_name);
         if (!listingCategory) warnMsgs.push('カテゴリーを判定できませんでした。選択してください');
@@ -10967,6 +11036,8 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       const purchaseDate = e.purchase_date || todayStr();
       const id = Date.now().toString() + '_' + count;
       const lcFields = listingCategoryToFields(e.listing_category);
+      // 金額未入力、または「あとで確定」指定なら未確定フラグを立てる
+      const pricePending = !((Number(e.purchase_price) || 0) > 0) || !!e.price_pending;
 
       // 商品写真を保存
       let photoRefs = [];
@@ -11032,6 +11103,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         couponNote: '',
         purchasePrice: totalPrice,
         purchaseCost: { totalTaxIn: totalPrice, totalTaxEx: totalPrice, itemPriceTaxIn: Number(e.purchase_price) || 0, itemTaxRate: 10, shippingTaxIn: Number(e.shipping_cost) || 0, shippingTaxRate: 10 },
+        priceUnconfirmed: pricePending,
         purchaseType: 'online',
         purchaseTypeSource: 'manual',
         purchaseStoreType: 'normal',
@@ -11172,6 +11244,33 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
                     onChange={e => updateEdited(pair.id, 'shipping_cost', e.target.value)} />
                 </div>
               </div>
+
+              {/* 金額あとで確定（クーポン・決済前） */}
+              {(() => {
+                const noPrice = !(Number(pair.edited.purchase_price) > 0);
+                const on = !!pair.edited.price_pending || noPrice;
+                return (
+                  <div>
+                    <button onClick={() => updateEdited(pair.id, 'price_pending', !pair.edited.price_pending)}
+                      disabled={noPrice}
+                      style={{width:'100%',padding:'8px 12px',borderRadius:10,fontSize:12,fontWeight:700,
+                        textAlign:'left',cursor: noPrice ? 'default' : 'pointer',
+                        border: on ? '1.5px solid #fcd34d' : '1.5px solid #e5e7eb',
+                        background: on ? '#fffbeb' : '#fff',
+                        color: on ? '#b45309' : '#6b7280',
+                        touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
+                      {on ? '🎟️ 金額あとで確定：ON' : '🎟️ 金額をあとで確定する（クーポン・決済前）'}
+                    </button>
+                    {on && (
+                      <div style={{fontSize:11,color:'#b45309',marginTop:3}}>
+                        {noPrice
+                          ? '金額未入力のため自動でONになります。登録後、在庫の「💰未確定」からまとめて入力できます'
+                          : '登録後、在庫の「💰未確定」からクーポン分を差し引けます'}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
                 <div>
                   <div style={{fontSize:11,color:'#666',marginBottom:2}}>仕入れ日</div>
