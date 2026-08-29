@@ -1498,18 +1498,214 @@ const ProfitChart = ({ summarySales, now }) => {
   );
 };
 
-const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync, setSalesFocusBatch, setPendingReturnSection, setPendingInventoryFilter } = React.useContext(AppContext);
+// ============================================================
+// サマリーパネル（その他タブ）: 要対応アラート・在庫状況・サブ指標
+// ============================================================
+const SummaryPanel = ({ setActiveSection }) => {
+  const { data, setTab, setSalesFocusBatch, setPendingInventoryFilter } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-  // ── 在庫集計 ──
   const unlistedCount = (data.inventory||[]).filter(i => i.status === 'unlisted').length;
   const listedCount   = (data.inventory||[]).filter(i => i.status === 'listed').length;
   const soldInvIds    = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const recordedInvIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
   const unrecordedSoldCount = [...soldInvIds].filter(id => !recordedInvIds.has(id)).length;
   const priceUnconfirmedCount = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
+
+  const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
+  const validSales = (data.sales||[]).filter(s => !s.inventoryId || _invIdSet.has(s.inventoryId));
+  const getEffectivePP = (s) => {
+    if ((s.purchasePrice||0) > 0) return s.purchasePrice;
+    return (data.inventory||[]).find(i => i.id === s.inventoryId)?.purchasePrice || 0;
+  };
+  const summarySales = validSales.filter(s => (s.salePrice||0) > 0 && getEffectivePP(s) > 0);
+  const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(currentMonth));
+  const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
+  const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const profitRate   = totalRevenue > 0 ? Math.round(totalProfit / totalRevenue * 100) : 0;
+
+  const turnoverList = monthlySales.map(s => s.turnoverDays).filter(d => d != null && d >= 0);
+  const avgTurnover  = turnoverList.length > 0 ? Math.round(turnoverList.reduce((a,b)=>a+b,0)/turnoverList.length) : null;
+
+  const longStayItems = (data.inventory||[]).filter(i => {
+    if (i.status === 'sold' || !i.purchaseDate) return false;
+    return Math.floor((now - new Date(i.purchaseDate)) / 86400000) > 60;
+  });
+
+  const lastSaleDate = (data.sales||[])
+    .map(s => s.saleDate).filter(Boolean).sort().slice(-1)[0] || null;
+  const daysSinceLastSale = lastSaleDate
+    ? Math.floor((new Date(`${today()}T00:00:00`) - new Date(`${lastSaleDate}T00:00:00`)) / 86400000)
+    : null;
+  const recordingStalled = daysSinceLastSale != null && daysSinceLastSale >= 7;
+
+  const goBatchSales = () => { setSalesFocusBatch(true); setTab('sales'); };
+  const goBatchPurchase = () => setActiveSection('batch');
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+
+      {/* ── クイック登録 ── */}
+      <div style={{display:'flex',gap:10}}>
+        <button onClick={goBatchSales}
+          style={{flex:1,padding:'14px 8px',borderRadius:14,border:'none',
+            background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',
+            fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
+            WebkitTapHighlightColor:'transparent',lineHeight:1.35}}>
+          <div style={{fontSize:20,marginBottom:3}}>📸</div>
+          売れたものを登録
+          <div style={{fontSize:10,fontWeight:600,opacity:0.7,marginTop:2}}>販売履歴のスクショ</div>
+        </button>
+        <button onClick={goBatchPurchase}
+          style={{flex:1,padding:'14px 8px',borderRadius:14,border:'1.5px solid #e5e7eb',
+            background:'#fff',color:'#111827',
+            fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
+            WebkitTapHighlightColor:'transparent',lineHeight:1.35}}>
+          <div style={{fontSize:20,marginBottom:3}}>📦</div>
+          仕入れを登録
+          <div style={{fontSize:10,fontWeight:600,color:'#9ca3af',marginTop:2}}>まとめて一括入力</div>
+        </button>
+      </div>
+
+      {/* ── アラート：売上記録が止まっている ── */}
+      {recordingStalled && (
+        <div onClick={goBatchSales}
+          style={{background:'#fef2f2',border:'1.5px solid #f87171',borderRadius:12,padding:'12px 14px',
+            display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
+          <span style={{fontSize:20}}>📸</span>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,fontWeight:800,color:'#b91c1c'}}>
+              {daysSinceLastSale}日間 売上が記録されていません
+            </div>
+            <div style={{fontSize:11,color:'#dc2626',marginTop:2}}>
+              販売履歴のスクショを選ぶだけでまとめて登録できます →
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── アラート：売上未記録 ── */}
+      {unrecordedSoldCount > 0 && (
+        <div onClick={() => setTab('sales')}
+          style={{background:'#fff7ed',border:'1.5px solid #fb923c',borderRadius:12,padding:'10px 14px',
+            display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
+          <span style={{fontSize:18}}>⚠️</span>
+          <div style={{flex:1}}>
+            <span style={{fontSize:13,fontWeight:700,color:'#c2410c'}}>売上未記録 {unrecordedSoldCount}件</span>
+            <span style={{fontSize:11,color:'#ea580c',marginLeft:6}}>→ タップして記録</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── アラート：仕入額 未入力 ── */}
+      {priceUnconfirmedCount > 0 && (
+        <div onClick={() => { setPendingInventoryFilter('priceUnconfirmed'); setTab('inventory'); }}
+          style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderRadius:12,padding:'10px 14px',
+            display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
+          <span style={{fontSize:18}}>💰</span>
+          <div style={{flex:1}}>
+            <span style={{fontSize:13,fontWeight:700,color:'#b45309'}}>仕入額 未入力 {priceUnconfirmedCount}件</span>
+            <span style={{fontSize:11,color:'#d97706',marginLeft:6}}>→ タップして入力</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── 警告：長期在庫 ── */}
+      {longStayItems.length > 0 && (
+        <div onClick={() => setTab('inventory')}
+          style={{background:'#fef2f2',border:'1.5px solid #fca5a5',borderRadius:12,
+            padding:'10px 14px',display:'flex',alignItems:'center',gap:10,
+            cursor:'pointer',touchAction:'manipulation'}}>
+          <span style={{fontSize:16}}>🕐</span>
+          <div style={{flex:1}}>
+            <span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>
+              長期在庫 {longStayItems.length}件（60日超）
+            </span>
+            <div style={{fontSize:10,color:'#ef4444',marginTop:1}}>回転率改善のために確認を →</div>
+          </div>
+        </div>
+      )}
+
+      {!recordingStalled && unrecordedSoldCount === 0 && priceUnconfirmedCount === 0 && longStayItems.length === 0 && (
+        <div style={{background:'#f0fdf4',border:'1.5px solid #bbf7d0',borderRadius:12,padding:'12px 14px',
+          fontSize:12,fontWeight:700,color:'#15803d'}}>
+          ✅ 要対応はありません
+        </div>
+      )}
+
+      {/* ── 在庫ステータス 3分割 ── */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+        <div onClick={() => setTab('inventory')}
+          style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
+            cursor:'pointer',touchAction:'manipulation',
+            border: unlistedCount > 0 ? '1.5px solid #fca5a5' : '1.5px solid #e5e7eb',
+            boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+          <div style={{fontSize:9,color: unlistedCount>0?'#dc2626':'#9ca3af',
+            fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>未出品</div>
+          <div style={{fontSize:28,fontWeight:900,lineHeight:1,marginBottom:2,
+            color: unlistedCount>0?'#dc2626':'#374151'}}>
+            {unlistedCount}
+          </div>
+          <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
+        </div>
+        <div onClick={() => setTab('inventory')}
+          style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
+            cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #e5e7eb',
+            boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+          <div style={{fontSize:9,color:'#374151',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>出品中</div>
+          <div style={{fontSize:28,fontWeight:900,color:'#111827',lineHeight:1,marginBottom:2}}>{listedCount}</div>
+          <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
+        </div>
+        <div onClick={() => setTab('sales')}
+          style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
+            cursor:'pointer',touchAction:'manipulation',
+            border: monthlySales.length>0 ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',
+            boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+          <div style={{fontSize:9,color:'#16a34a',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月売上</div>
+          <div style={{fontSize:28,fontWeight:900,color:'#15803d',lineHeight:1,marginBottom:2}}>{monthlySales.length}</div>
+          <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
+        </div>
+      </div>
+
+      {/* ── サブ指標 2列 ── */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+        <div style={{background:'#ffffff',borderRadius:14,padding:'14px',
+          border:'1.5px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+          <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月 利益率</div>
+          <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,
+            color: profitRate >= 20 ? '#16a34a' : profitRate >= 10 ? '#d97706' : '#dc2626'}}>
+            {totalRevenue > 0 ? `${profitRate}%` : '−'}
+          </div>
+          {totalRevenue > 0 && (
+            <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
+              売上 ¥{formatMoney(totalRevenue)}
+            </div>
+          )}
+        </div>
+        <div style={{background:'#ffffff',borderRadius:14,padding:'14px',
+          border:'1.5px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
+          <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>平均回転日数</div>
+          <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,color:'#111827'}}>
+            {avgTurnover !== null ? avgTurnover : '−'}
+            {avgTurnover !== null && <span style={{fontSize:13,color:'#9ca3af',fontWeight:500,marginLeft:2}}>日</span>}
+          </div>
+          {avgTurnover !== null && (
+            <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
+              {monthlySales.length}件の平均
+            </div>
+          )}
+        </div>
+      </div>
+
+    </div>
+  );
+};
+
+const HomeTab = () => {
+  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
   // ── 売上集計（有効データのみ）──
   const _invIdSet = new Set((data.inventory||[]).map(i => i.id));
@@ -1524,7 +1720,6 @@ const HomeTab = () => {
   const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(currentMonth));
   const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
-  const profitRate   = totalRevenue > 0 ? Math.round(totalProfit / totalRevenue * 100) : 0;
 
   // ── 前月比 ──
   const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -1538,28 +1733,6 @@ const HomeTab = () => {
   const progressPct  = monthlyGoal > 0 ? Math.min(100, Math.round(totalProfit / monthlyGoal * 100)) : 0;
   const remaining    = Math.max(0, monthlyGoal - totalProfit);
   const daysInMonth  = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-
-  // ── 平均回転日数（今月売上） ──
-  const turnoverList = monthlySales.map(s => s.turnoverDays).filter(d => d != null && d >= 0);
-  const avgTurnover  = turnoverList.length > 0 ? Math.round(turnoverList.reduce((a,b)=>a+b,0)/turnoverList.length) : null;
-
-  // ── 長期在庫（60日超・未売却）──
-  const longStayItems = (data.inventory||[]).filter(i => {
-    if (i.status === 'sold' || !i.purchaseDate) return false;
-    return Math.floor((now - new Date(i.purchaseDate)) / 86400000) > 60;
-  });
-
-  // ── 売上記録が止まっていないかチェック ──
-  const lastSaleDate = (data.sales||[])
-    .map(s => s.saleDate).filter(Boolean).sort().slice(-1)[0] || null;
-  const daysSinceLastSale = lastSaleDate
-    ? Math.floor((new Date(`${today()}T00:00:00`) - new Date(`${lastSaleDate}T00:00:00`)) / 86400000)
-    : null;
-  const recordingStalled = daysSinceLastSale != null && daysSinceLastSale >= 7;
-
-  // ── クイック登録ナビゲーション ──
-  const goBatchSales = () => { setSalesFocusBatch(true); setTab('sales'); };
-  const goBatchPurchase = () => { setPendingReturnSection('batch'); setTab('other'); };
 
   // ── 目標編集モーダル ──
   const [editingGoal, setEditingGoal] = React.useState(false);
@@ -1629,49 +1802,6 @@ const HomeTab = () => {
       </div>
 
       <div style={{padding:'12px 14px 24px',display:'flex',flexDirection:'column',gap:10}}>
-
-        {/* ── アラート：売上記録が止まっている ── */}
-        {recordingStalled && (
-          <div onClick={goBatchSales}
-            style={{background:'#fef2f2',border:'1.5px solid #f87171',borderRadius:12,padding:'12px 14px',
-              display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
-            <span style={{fontSize:20}}>📸</span>
-            <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:800,color:'#b91c1c'}}>
-                {daysSinceLastSale}日間 売上が記録されていません
-              </div>
-              <div style={{fontSize:11,color:'#dc2626',marginTop:2}}>
-                販売履歴のスクショを選ぶだけでまとめて登録できます →
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── アラート：売上未記録 ── */}
-        {unrecordedSoldCount > 0 && (
-          <div onClick={() => setTab('sales')}
-            style={{background:'#fff7ed',border:'1.5px solid #fb923c',borderRadius:12,padding:'10px 14px',
-              display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
-            <span style={{fontSize:18}}>⚠️</span>
-            <div style={{flex:1}}>
-              <span style={{fontSize:13,fontWeight:700,color:'#c2410c'}}>売上未記録 {unrecordedSoldCount}件</span>
-              <span style={{fontSize:11,color:'#ea580c',marginLeft:6}}>→ タップして記録</span>
-            </div>
-          </div>
-        )}
-
-        {/* ── アラート：仕入額 未入力 ── */}
-        {priceUnconfirmedCount > 0 && (
-          <div onClick={() => { setPendingInventoryFilter('priceUnconfirmed'); setTab('inventory'); }}
-            style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderRadius:12,padding:'10px 14px',
-              display:'flex',alignItems:'center',gap:10,cursor:'pointer',touchAction:'manipulation'}}>
-            <span style={{fontSize:18}}>💰</span>
-            <div style={{flex:1}}>
-              <span style={{fontSize:13,fontWeight:700,color:'#b45309'}}>仕入額 未入力 {priceUnconfirmedCount}件</span>
-              <span style={{fontSize:11,color:'#d97706',marginLeft:6}}>→ タップして入力</span>
-            </div>
-          </div>
-        )}
 
         {/* ── HERO: 今月の純利益（白カード） ── */}
         <div style={{background:'#ffffff',borderRadius:16,overflow:'hidden',
@@ -1755,133 +1885,8 @@ const HomeTab = () => {
           </div>{/* /flex content */}
         </div>
 
-        {/* ── クイック登録 ── */}
-        <div style={{display:'flex',gap:10}}>
-          <button onClick={goBatchSales}
-            style={{flex:1,padding:'14px 8px',borderRadius:14,border:'none',
-              background:'linear-gradient(135deg,#0f172a,#1e3a5f)',color:'#fff',
-              fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
-              WebkitTapHighlightColor:'transparent',lineHeight:1.35}}>
-            <div style={{fontSize:20,marginBottom:3}}>📸</div>
-            売れたものを登録
-            <div style={{fontSize:10,fontWeight:600,opacity:0.7,marginTop:2}}>販売履歴のスクショ</div>
-          </button>
-          <button onClick={goBatchPurchase}
-            style={{flex:1,padding:'14px 8px',borderRadius:14,border:'1.5px solid #e5e7eb',
-              background:'#fff',color:'#111827',
-              fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
-              WebkitTapHighlightColor:'transparent',lineHeight:1.35}}>
-            <div style={{fontSize:20,marginBottom:3}}>📦</div>
-            仕入れを登録
-            <div style={{fontSize:10,fontWeight:600,color:'#9ca3af',marginTop:2}}>まとめて一括入力</div>
-          </button>
-        </div>
-
-        {/* ── 在庫ステータス 3分割 ── */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-          {/* 未出品：赤 */}
-          <div onClick={() => setTab('inventory')}
-            style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
-              cursor:'pointer',touchAction:'manipulation',
-              border: unlistedCount > 0 ? '1.5px solid #fca5a5' : '1.5px solid #e5e7eb',
-              boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
-            <div style={{fontSize:9,color: unlistedCount>0?'#dc2626':'#9ca3af',
-              fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>未出品</div>
-            <div style={{fontSize:28,fontWeight:900,lineHeight:1,marginBottom:2,
-              color: unlistedCount>0?'#dc2626':'#374151'}}>
-              {unlistedCount}
-            </div>
-            <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
-          </div>
-          {/* 出品中：黒 */}
-          <div onClick={() => setTab('inventory')}
-            style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
-              cursor:'pointer',touchAction:'manipulation',border:'1.5px solid #e5e7eb',
-              boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
-            <div style={{fontSize:9,color:'#374151',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>出品中</div>
-            <div style={{fontSize:28,fontWeight:900,color:'#111827',lineHeight:1,marginBottom:2}}>{listedCount}</div>
-            <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
-          </div>
-          {/* 今月売上：緑 */}
-          <div onClick={() => setTab('sales')}
-            style={{background:'#ffffff',borderRadius:14,padding:'14px 10px',textAlign:'center',
-              cursor:'pointer',touchAction:'manipulation',
-              border: monthlySales.length>0 ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',
-              boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
-            <div style={{fontSize:9,color:'#16a34a',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月売上</div>
-            <div style={{fontSize:28,fontWeight:900,color:'#15803d',lineHeight:1,marginBottom:2}}>{monthlySales.length}</div>
-            <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
-          </div>
-        </div>
-
-        {/* ── サブ指標 2列 ── */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-          <div style={{background:'#ffffff',borderRadius:14,padding:'14px',
-            border:'1.5px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
-            <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月 利益率</div>
-            <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,
-              color: profitRate >= 20 ? '#16a34a' : profitRate >= 10 ? '#d97706' : '#dc2626'}}>
-              {totalRevenue > 0 ? `${profitRate}%` : '−'}
-            </div>
-            {totalRevenue > 0 && (
-              <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
-                売上 ¥{formatMoney(totalRevenue)}
-              </div>
-            )}
-          </div>
-          <div style={{background:'#ffffff',borderRadius:14,padding:'14px',
-            border:'1.5px solid #e5e7eb',boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
-            <div style={{fontSize:9,color:'#9ca3af',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>平均回転日数</div>
-            <div style={{fontSize:28,fontWeight:900,letterSpacing:'-1px',lineHeight:1,color:'#111827'}}>
-              {avgTurnover !== null ? avgTurnover : '−'}
-              {avgTurnover !== null && <span style={{fontSize:13,color:'#9ca3af',fontWeight:500,marginLeft:2}}>日</span>}
-            </div>
-            {avgTurnover !== null && (
-              <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
-                {monthlySales.length}件の平均
-              </div>
-            )}
-          </div>
-        </div>
-
         {/* ── 利益推移グラフ ── */}
         <ProfitChart summarySales={summarySales} now={now} />
-
-        {/* ── 警告：長期在庫 ── */}
-        {longStayItems.length > 0 && (
-          <div onClick={() => setTab('inventory')}
-            style={{background:'#fef2f2',border:'1.5px solid #fca5a5',borderRadius:12,
-              padding:'10px 14px',display:'flex',alignItems:'center',gap:10,
-              cursor:'pointer',touchAction:'manipulation'}}>
-            <span style={{fontSize:16}}>🕐</span>
-            <div style={{flex:1}}>
-              <span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>
-                長期在庫 {longStayItems.length}件（60日超）
-              </span>
-              <div style={{fontSize:10,color:'#ef4444',marginTop:1}}>回転率改善のために確認を →</div>
-            </div>
-          </div>
-        )}
-
-        {/* ── クイックアクション ── */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:2}}>
-          <button onClick={() => setTab('purchase')}
-            style={{background:'#111827',border:'none',borderRadius:14,padding:'14px',
-              display:'flex',alignItems:'center',justifyContent:'center',gap:8,
-              cursor:'pointer',touchAction:'manipulation',
-              boxShadow:'0 2px 6px rgba(0,0,0,0.15)'}}>
-            <span style={{fontSize:18}}>📥</span>
-            <span style={{fontSize:14,fontWeight:700,color:'white'}}>仕入れ登録</span>
-          </button>
-          <button onClick={() => setTab('sales')}
-            style={{background:'#16a34a',border:'none',borderRadius:14,padding:'14px',
-              display:'flex',alignItems:'center',justifyContent:'center',gap:8,
-              cursor:'pointer',touchAction:'manipulation',
-              boxShadow:'0 2px 6px rgba(22,163,74,0.25)'}}>
-            <span style={{fontSize:18}}>💰</span>
-            <span style={{fontSize:14,fontWeight:700,color:'white'}}>売上記録</span>
-          </button>
-        </div>
 
       </div>
 
@@ -11212,7 +11217,7 @@ const OtherTab = () => {
   const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, pendingReturnSection, setPendingReturnSection } = React.useContext(AppContext);
   const toast = useToast();
   const SECTION_ALIAS = { export: 'data', import: 'data', qr: 'settings', db: 'settings' };
-  const initialSection = SECTION_ALIAS[pendingReturnSection] || pendingReturnSection || 'receipts';
+  const initialSection = SECTION_ALIAS[pendingReturnSection] || pendingReturnSection || 'summary';
   const [activeSection, setActiveSection] = React.useState(initialSection);
   React.useEffect(() => { if (pendingReturnSection) setPendingReturnSection(null); }, []);
   const [openGroups, setOpenGroups] = React.useState({});
@@ -11595,6 +11600,7 @@ const OtherTab = () => {
   };
 
   const sections = [
+    { id: 'summary',  label: '状況',     icon: '📊' },
     { id: 'batch',    label: '一括仕入', icon: '📦' },
     { id: 'receipts', label: 'レシート', icon: '🧾' },
     { id: 'removebg', label: '白抜き',   icon: '✂️' },
@@ -11628,6 +11634,11 @@ const OtherTab = () => {
       </div>
 
       <div style={{padding:'12px 16px'}}>
+
+        {/* 状況サマリー */}
+        {activeSection === 'summary' && (
+          <SummaryPanel setActiveSection={setActiveSection} />
+        )}
 
         {/* 一括仕入れ */}
         {activeSection === 'batch' && (
@@ -13842,6 +13853,7 @@ const App = () => {
   const _soldNavIds = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const _recordedNavIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
   const navBadgeSales = [..._soldNavIds].filter(id => !_recordedNavIds.has(id)).length;
+  const navBadgeOther = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
 
   return (
     <AppContext.Provider value={{ data, setData, fullData, setFullDataRaw, dataRef, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem, salesFocusBatch, setSalesFocusBatch }}>
@@ -13952,6 +13964,7 @@ const App = () => {
             {tabs.map(t => {
               const badge = t.id === 'inventory' ? navBadgeInventory
                           : t.id === 'sales'     ? navBadgeSales
+                          : t.id === 'other'     ? navBadgeOther
                           : 0;
               return (
                 <div key={t.id} className={`bottom-nav-item ${tab === t.id ? 'active' : ''}`}
@@ -13962,7 +13975,7 @@ const App = () => {
                     {badge > 0 && (
                       <div style={{
                         position:'absolute',top:-4,right:-6,
-                        background: t.id === 'sales' ? '#f97316' : '#2563eb',
+                        background: t.id === 'sales' ? '#f97316' : t.id === 'other' ? '#d97706' : '#2563eb',
                         color:'white',borderRadius:99,
                         fontSize:9,fontWeight:700,
                         minWidth:14,height:14,
