@@ -882,6 +882,42 @@ const findDuplicatePurchase = (cand, items) => {
   return best;
 };
 
+// まとめ買いグループの金額を集計する。
+// 旧形式のまとめ仕入れは「グループ全体の送料」を全メンバーに同じ値でコピーしているため、
+// そのまま足すと多重計上になる。1点ずつの内訳を持っているかを判定して切り替える。
+const bundleTotals = (members) => {
+  const list = members || [];
+  const shipRaw = m => Number(m.purchaseCost?.shippingTaxIn ?? m.shippingTaxIn) || 0;
+  const priceOf = m => Number(m.purchasePrice) || 0;
+  const grandTotal = list.reduce((s, m) => s + priceOf(m), 0);
+  // 1点ずつの内訳を持っている＝「商品代 + 送料 = 仕入れ値」が全員で成立している
+  const perItem = list.length > 0 && list.every(m => {
+    const ip = Number(m.purchaseCost?.itemPriceTaxIn ?? m.itemPriceTaxIn) || 0;
+    return ip + shipRaw(m) === priceOf(m);
+  });
+  let shipSum = perItem
+    ? list.reduce((s, m) => s + shipRaw(m), 0)
+    : list.reduce((mx, m) => Math.max(mx, shipRaw(m)), 0);
+  if (shipSum > grandTotal) shipSum = 0; // 内訳が壊れているものは送料不明として扱う
+  // 1点あたりの送料。旧形式は仕入れ値の比率で割り戻す（端数は最後の1点）
+  const shipById = {};
+  if (perItem) {
+    list.forEach(m => { shipById[m.id] = shipRaw(m); });
+  } else {
+    let rest = shipSum;
+    list.forEach((m, idx) => {
+      if (idx === list.length - 1) { shipById[m.id] = rest; return; }
+      const v = grandTotal > 0 ? Math.floor(shipSum * priceOf(m) / grandTotal) : 0;
+      shipById[m.id] = v;
+      rest -= v;
+    });
+  }
+  return {
+    grandTotal, shipSum, itemSum: grandTotal - shipSum, perItem,
+    shipOf: m => shipById[m.id] || 0,
+  };
+};
+
 // 出品カテゴリー（説明文のハッシュタグ用・5種）
 const LISTING_CATEGORIES = ['毛皮', 'レディース', 'メンズ', 'バッグ', '小物'];
 
@@ -5576,8 +5612,10 @@ const InventoryTab = () => {
   const bundleShipMembers = (bg) => (data.inventory || []).filter(i => i.bundleGroup === bg);
 
   const openBundleShip = (bg) => {
+    const members = bundleShipMembers(bg);
+    const bt = bundleTotals(members);
     const d = {};
-    bundleShipMembers(bg).forEach(i => { d[i.id] = String(Number(i.purchaseCost?.shippingTaxIn ?? i.shippingTaxIn) || 0); });
+    members.forEach(i => { d[i.id] = String(bt.shipOf(i)); });
     setBundleShipDraft(d);
     setBundleShipTotalIn('');
     setBundleShipOpen(bg);
@@ -5591,7 +5629,8 @@ const InventoryTab = () => {
     if (total <= 0) { toast('❌ 送料の合計を入力してください'); return; }
     let alloc = [];
     if (mode === 'ratio') {
-      const priceOf = i => Math.max(0, (Number(i.purchasePrice) || 0) - (Number(i.purchaseCost?.shippingTaxIn ?? i.shippingTaxIn) || 0));
+      const bt = bundleTotals(members);
+      const priceOf = i => Math.max(0, (Number(i.purchasePrice) || 0) - bt.shipOf(i));
       const sum = members.reduce((s, m) => s + priceOf(m), 0);
       if (sum <= 0) { toast('❌ 仕入れ価格が未確定のため按分できません（均等割りを使ってください）'); return; }
       let rest = total;
@@ -5612,13 +5651,14 @@ const InventoryTab = () => {
 
   const saveBundleShip = () => {
     const members = bundleShipMembers(bundleShipOpen);
+    const bt = bundleTotals(members);
     const deltaById = {};
     const newShipById = {};
     members.forEach(i => {
       const v = bundleShipDraft[i.id];
       const newShip = Number(v);
       if (v === '' || isNaN(newShip) || newShip < 0) return;
-      const oldShip = Number(i.purchaseCost?.shippingTaxIn ?? i.shippingTaxIn) || 0;
+      const oldShip = bt.shipOf(i);
       if (newShip === oldShip) return;
       deltaById[i.id] = newShip - oldShip;
       newShipById[i.id] = newShip;
@@ -5630,16 +5670,21 @@ const InventoryTab = () => {
       inventory: (data.inventory || []).map(i => {
         if (newShipById[i.id] == null) return i;
         const delta = deltaById[i.id];
+        const newPrice = (Number(i.purchasePrice) || 0) + delta;
+        // 旧形式（送料がグループ全体の額のまま）も、この保存で1点ずつの内訳に直す
+        const newItemPrice = Math.max(0, newPrice - newShipById[i.id]);
         return {
           ...i,
-          purchasePrice: (Number(i.purchasePrice) || 0) + delta,
+          purchasePrice: newPrice,
           shippingTaxIn: newShipById[i.id],
+          itemPriceTaxIn: newItemPrice,
           purchaseCost: {
             ...(i.purchaseCost || {}),
+            itemPriceTaxIn: newItemPrice,
             shippingTaxIn: newShipById[i.id],
             shippingTaxRate: i.purchaseCost?.shippingTaxRate ?? 10,
-            totalTaxIn: (Number(i.purchaseCost?.totalTaxIn) || 0) + delta,
-            totalTaxEx: (Number(i.purchaseCost?.totalTaxEx) || 0) + delta,
+            totalTaxIn: newPrice,
+            totalTaxEx: newPrice,
           },
         };
       }),
@@ -5971,7 +6016,7 @@ const InventoryTab = () => {
               const groups = {};
               sorted.forEach(i => { if (i.bundleGroup) (groups[i.bundleGroup] = groups[i.bundleGroup] || []).push(i); });
               return Object.entries(groups).map(([bg, members]) => {
-                const shipSum = members.reduce((s, m) => s + (Number(m.purchaseCost?.shippingTaxIn ?? m.shippingTaxIn) || 0), 0);
+                const { grandTotal, shipSum, itemSum } = bundleTotals(members);
                 const label = members[0].bundleLabel || '';
                 return (
                   <div key={bg} style={{background:'white',borderRadius:8,padding:10,marginBottom:8,border:'1px solid #e0e7ff',
@@ -5980,8 +6025,17 @@ const InventoryTab = () => {
                       <div style={{fontWeight:700,fontSize:12,color:'#3730a3'}}>
                         {/^[A-Z]$/.test(label) ? `まとめ${label}` : (label || 'まとめ')} · {members.length}点
                       </div>
-                      <div style={{fontSize:11,color:'#6b7280',marginTop:2}}>
-                        送料合計 ¥{formatMoney(shipSum)} · {members[0].purchaseStore || '仕入れ先未設定'} · {members[0].purchaseDate || ''}
+                      <div style={{display:'flex',alignItems:'baseline',gap:5,flexWrap:'wrap',marginTop:3}}>
+                        <span style={{fontSize:10,color:'#9ca3af'}}>商品代</span>
+                        <span style={{fontSize:11,fontWeight:700,color:'#374151'}}>¥{formatMoney(itemSum)}</span>
+                        <span style={{fontSize:10,color:'#d1d5db'}}>＋</span>
+                        <span style={{fontSize:10,color:'#9ca3af'}}>送料</span>
+                        <span style={{fontSize:11,fontWeight:700,color:'#374151'}}>¥{formatMoney(shipSum)}</span>
+                        <span style={{fontSize:10,color:'#d1d5db'}}>＝</span>
+                        <span style={{fontSize:14,fontWeight:800,color:'#3730a3'}}>¥{formatMoney(grandTotal)}</span>
+                      </div>
+                      <div style={{fontSize:11,color:'#6b7280',marginTop:3}}>
+                        {members[0].purchaseStore || '仕入れ先未設定'} · {members[0].purchaseDate || ''}
                       </div>
                     </div>
                     <button onClick={() => openBundleShip(bg)}
@@ -6287,15 +6341,32 @@ const InventoryTab = () => {
             {selected?.bundleGroup && (() => {
               const mates = (data.inventory||[]).filter(i => i.bundleGroup === selected.bundleGroup);
               if (mates.length < 2) return null;
-              const total = mates.reduce((a,i) => a + (i.purchasePrice||0), 0);
+              const bt = bundleTotals(mates);
+              const total = bt.grandTotal, shipSum = bt.shipSum, itemSum = bt.itemSum;
               return (
                 <div style={{marginTop:14,padding:'12px 14px',background:'#eef2ff',
                   border:'1px solid #c7d2fe',borderRadius:12}}>
                   <div style={{fontSize:12,fontWeight:800,color:'#3730a3',marginBottom:2}}>
                     📦 まとめ仕入れ（{mates.length}点）
                   </div>
-                  <div style={{fontSize:11,color:'#4f46e5',marginBottom:8}}>
-                    合計 ¥{total.toLocaleString()} を分割して登録
+                  <div style={{background:'#fff',border:'1px solid #e0e7ff',borderRadius:10,padding:'9px 11px',margin:'6px 0 10px'}}>
+                    {shipSum > 0 && (
+                      <React.Fragment>
+                        <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#6b7280',marginBottom:4}}>
+                          <span>商品代</span>
+                          <span style={{fontWeight:600,color:'#374151'}}>¥{formatMoney(itemSum)}</span>
+                        </div>
+                        <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#6b7280',
+                          paddingBottom:7,marginBottom:7,borderBottom:'1px solid #eef2ff'}}>
+                          <span>送料（同梱）</span>
+                          <span style={{fontWeight:600,color:'#374151'}}>¥{formatMoney(shipSum)}</span>
+                        </div>
+                      </React.Fragment>
+                    )}
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline'}}>
+                      <span style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>まとめ仕入れ合計</span>
+                      <span style={{fontSize:17,fontWeight:800,color:'#3730a3'}}>¥{formatMoney(total)}</span>
+                    </div>
                   </div>
                   {mates.map(m => (
                     <div key={m.id}
@@ -6310,9 +6381,16 @@ const InventoryTab = () => {
                         textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,minWidth:0}}>
                         {m.id === selected.id ? '▶ ' : ''}{m.productName || '(名称未設定)'}
                       </span>
-                      <span style={{fontSize:12,color:'#4338ca',flexShrink:0}}>
-                        ¥{(m.purchasePrice||0).toLocaleString()}
-                      </span>
+                      <div style={{flexShrink:0,textAlign:'right'}}>
+                        <div style={{fontSize:12,color:'#4338ca',fontWeight:700}}>
+                          ¥{formatMoney(m.purchasePrice||0)}
+                        </div>
+                        {bt.shipOf(m) > 0 && (
+                          <div style={{fontSize:10,color:'#818cf8',fontWeight:500,marginTop:1}}>
+                            送料 ¥{formatMoney(bt.shipOf(m))} 込
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -6833,8 +6911,8 @@ const InventoryTab = () => {
 
             {/* 商品ごとの送料入力行 */}
             <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
-              {bundleShipMembers(bundleShipOpen).map(item => {
-                const currentShip = Number(item.purchaseCost?.shippingTaxIn ?? item.shippingTaxIn) || 0;
+              {(() => { const _bt = bundleTotals(bundleShipMembers(bundleShipOpen)); return bundleShipMembers(bundleShipOpen).map(item => {
+                const currentShip = _bt.shipOf(item);
                 const hasSale = (data.sales||[]).some(s => s.inventoryId === item.id);
                 return (
                   <div key={item.id}
@@ -6853,7 +6931,7 @@ const InventoryTab = () => {
                       style={{width:110,flexShrink:0,textAlign:'right'}}/>
                   </div>
                 );
-              })}
+              }); })()}
             </div>
 
             {/* ライブ合計 + 保存ボタン */}
@@ -11573,11 +11651,23 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
             {usedBundleLabels.map(label => {
               const members = bundleMembers(label);
               const shipSum = members.reduce((s, m) => s + (Number(m.edited.shipping_cost) || 0), 0);
+              const itemSum = members.reduce((s, m) => s + (Number(m.edited.purchase_price) || 0), 0);
+              const grandTotal = itemSum + shipSum;
               return (
                 <div key={label} style={{background:'white',borderRadius:8,padding:10,marginBottom:8,border:'1px solid #e0e7ff'}}>
                   <div style={{fontWeight:700,fontSize:12,marginBottom:6,color:'#3730a3'}}>
                     まとめ{label} · {members.length}点
-                    <span style={{fontWeight:600,color:'#6b7280',marginLeft:6}}>現在の送料合計 ¥{formatMoney(shipSum)}</span>
+                  </div>
+                  <div style={{display:'flex',alignItems:'baseline',gap:5,flexWrap:'wrap',
+                    background:'#f8faff',border:'1px solid #e0e7ff',borderRadius:8,padding:'7px 10px',marginBottom:8}}>
+                    <span style={{fontSize:11,color:'#9ca3af'}}>商品代</span>
+                    <span style={{fontSize:12,fontWeight:700,color:'#374151'}}>¥{formatMoney(itemSum)}</span>
+                    <span style={{fontSize:11,color:'#d1d5db'}}>＋</span>
+                    <span style={{fontSize:11,color:'#9ca3af'}}>送料</span>
+                    <span style={{fontSize:12,fontWeight:700,color:'#374151'}}>¥{formatMoney(shipSum)}</span>
+                    <span style={{fontSize:11,color:'#d1d5db'}}>＝</span>
+                    <span style={{fontSize:11,color:'#4338ca',fontWeight:700}}>仕入れ合計</span>
+                    <span style={{fontSize:15,fontWeight:800,color:'#3730a3'}}>¥{formatMoney(grandTotal)}</span>
                   </div>
                   <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={{fontSize:11,color:'#666'}}>🚚 同梱送料 合計</span>
