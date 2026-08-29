@@ -1826,7 +1826,7 @@ const SummaryPanel = ({ setActiveSection }) => {
 };
 
 const HomeTab = () => {
-  const { data, setTab, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
+  const { data, setTab, setPendingReturnSection, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -1925,6 +1925,24 @@ const HomeTab = () => {
       </div>
 
       <div style={{padding:'12px 14px 24px',display:'flex',flexDirection:'column',gap:10}}>
+
+        {/* ── 一括仕入れ登録への入口 ── */}
+        <button
+          onClick={() => { setPendingReturnSection('batch'); setTab('other'); }}
+          style={{width:'100%',display:'flex',alignItems:'center',gap:12,
+            padding:'14px 16px',borderRadius:16,border:'none',cursor:'pointer',
+            background:'linear-gradient(135deg,#4338ca,#6366f1)',color:'white',
+            boxShadow:'0 4px 14px rgba(67,56,202,0.28)',textAlign:'left',
+            WebkitTapHighlightColor:'transparent',touchAction:'manipulation'}}>
+          <span style={{fontSize:26,lineHeight:1}}>📦</span>
+          <span style={{flex:1,minWidth:0}}>
+            <span style={{display:'block',fontSize:15,fontWeight:800,letterSpacing:'-0.02em'}}>一括仕入れ登録</span>
+            <span style={{display:'block',fontSize:11,fontWeight:600,opacity:0.85,marginTop:2}}>
+              写真を2枚1組でまとめて登録
+            </span>
+          </span>
+          <span style={{fontSize:20,opacity:0.9}}>›</span>
+        </button>
 
         {/* ── HERO: 今月の純利益（白カード） ── */}
         <div style={{background:'#ffffff',borderRadius:16,overflow:'hidden',
@@ -10386,7 +10404,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const goEditFromKobotsu = canEditKobotsu ? (e) => {
                     e.stopPropagation();
                     if (setPendingReturnSection) setPendingReturnSection('export');
-                    if (setPendingReturnTab) setPendingReturnTab('other');
+                    if (setPendingReturnTab) setPendingReturnTab('data');
                     setEditingItem(item); setTab('purchase');
                   } : undefined;
                   const rowBg = bs ? `${bs.color}12` : (i%2===0?'white':'#fafafa');
@@ -10539,7 +10557,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                         <button onClick={() => {
                           setExpandedBundleGroup(null);
                           if (setPendingReturnSection) setPendingReturnSection('export');
-                          if (setPendingReturnTab) setPendingReturnTab('other');
+                          if (setPendingReturnTab) setPendingReturnTab('data');
                           setEditingItem(item); setTab('purchase');
                         }}
                           style={{padding:'3px 10px',fontSize:11,fontWeight:700,border:'1px solid #d1d5db',
@@ -10612,7 +10630,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       e.stopPropagation();
                       setShowAllKobotsu(false);
                       if (setPendingReturnSection) setPendingReturnSection('export');
-                      if (setPendingReturnTab) setPendingReturnTab('other');
+                      if (setPendingReturnTab) setPendingReturnTab('data');
                       setEditingItem(item); setTab('purchase');
                     } : undefined;
                     return (
@@ -10770,7 +10788,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   onClick={() => {
                     setKobotsuSelected(null);
                     if (setPendingReturnSection) setPendingReturnSection('export');
-                    if (setPendingReturnTab) setPendingReturnTab('other');
+                    if (setPendingReturnTab) setPendingReturnTab('data');
                     setEditingItem(item);
                     setTab('purchase');
                   }}>
@@ -11985,13 +12003,17 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
 // ============================================================
 // その他タブ（設定・レシート・エクスポート）
 // ============================================================
-const OtherTab = () => {
+const OtherTab = ({ mode }) => {
   const { data, setData, dbStatus, dbError, userProfile, setUserProfile, currentUser, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, pendingReturnSection, setPendingReturnSection } = React.useContext(AppContext);
   const toast = useToast();
   const SECTION_ALIAS = { export: 'data', import: 'data', qr: 'settings', db: 'settings' };
-  const initialSection = SECTION_ALIAS[pendingReturnSection] || pendingReturnSection || 'summary';
+  const isDataTab = mode === 'data';
+  const _requested = SECTION_ALIAS[pendingReturnSection] || pendingReturnSection || 'summary';
+  const initialSection = isDataTab ? 'data' : (_requested === 'data' ? 'summary' : _requested);
   const [activeSection, setActiveSection] = React.useState(initialSection);
   React.useEffect(() => { if (pendingReturnSection) setPendingReturnSection(null); }, []);
+  // 「データ」は独立タブに移したので、その他タブに 'data' が要求されたらタブごと切り替える
+  React.useEffect(() => { if (!isDataTab && _requested === 'data') setTab('data'); }, []);
   const [openGroups, setOpenGroups] = React.useState({});
   const toggleGroup = (id) => setOpenGroups(prev => ({ ...prev, [id]: !prev[id] }));
   const [receiptAnalyzing, setReceiptAnalyzing] = React.useState(false);
@@ -12376,17 +12398,17 @@ const OtherTab = () => {
     { id: 'batch',    label: '一括仕入', icon: '📦' },
     { id: 'receipts', label: 'レシート', icon: '🧾' },
     { id: 'removebg', label: '白抜き',   icon: '✂️' },
-    { id: 'data',     label: 'データ',   icon: '📊' },
     { id: 'settings', label: '設定',     icon: '⚙️' },
   ];
 
   return (
     <div className="fade-in">
       <div className="header">
-        <h1>⚙️ その他</h1>
+        <h1>{isDataTab ? '📤 エクスポート' : '⚙️ その他'}</h1>
       </div>
 
       {/* サブナビ */}
+      {!isDataTab && (
       <div style={{display:'flex',gap:6,padding:'8px 10px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
         {sections.map(s => {
           const active = activeSection === s.id;
@@ -12404,6 +12426,7 @@ const OtherTab = () => {
           );
         })}
       </div>
+      )}
 
       <div style={{padding:'12px 16px'}}>
 
@@ -13995,7 +14018,7 @@ const CloudAutoSync = () => {
 
 const App = () => {
   const [fullData, setFullDataRaw] = React.useState(loadData);   // 全ユーザーの全データ
-  const [tab, setTab]            = React.useState('inventory');
+  const [tab, setTab]            = React.useState('home');
   const [editingItem, setEditingItem] = React.useState(null);
   const [pendingSaleItemId, setPendingSaleItemId] = React.useState(null); // 売上記録を促すinventoryId
   const [pendingEditSaleId, setPendingEditSaleId] = React.useState(null); // エクスポート画面から売上編集
@@ -14603,6 +14626,13 @@ const App = () => {
         <polyline points="16 7 22 7 22 13"/>
       </svg>
     ),
+    data: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+        <path d="M7 10l5 5 5-5"/>
+        <path d="M12 15V3"/>
+      </svg>
+    ),
     other: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="3"/>
@@ -14614,6 +14644,7 @@ const App = () => {
     { id: 'home',      label: 'ホーム' },
     { id: 'inventory', label: '在庫'   },
     { id: 'sales',     label: '売上'   },
+    { id: 'data',      label: 'エクスポート' },
     { id: 'other',     label: 'その他' },
   ];
 
@@ -14728,7 +14759,8 @@ const App = () => {
             {tab === 'purchase' && <PurchaseTab />}
             {tab === 'inventory' && <InventoryTab />}
             {tab === 'sales' && <SalesTab />}
-{tab === 'other' && <OtherTab />}
+            {tab === 'other' && <OtherTab />}
+            {tab === 'data' && <OtherTab mode="data" />}
           </div>
 
           {/* ボトムナビ */}
