@@ -835,10 +835,43 @@ const TRAVEL_SPOTS = [
   { min: 1000000, name: 'モルディブ',     emoji: '🏝️', desc: '水上コテージで2人だけの楽園' },
 ];
 
+// 出品カテゴリー（説明文のハッシュタグ用・5種）
+const LISTING_CATEGORIES = ['毛皮', 'レディース', 'メンズ', 'バッグ', '小物'];
+
+// 出品カテゴリー → 在庫データのフィールド（category / gender）
+const listingCategoryToFields = (lc) => {
+  if (lc === '毛皮')       return { category: '毛皮',   gender: 'レディース' };
+  if (lc === 'レディース') return { category: '衣類',   gender: 'レディース' };
+  if (lc === 'メンズ')     return { category: '衣類',   gender: 'メンズ' };
+  if (lc === 'バッグ')     return { category: 'バッグ' };
+  if (lc === '小物')       return { category: '小物' };
+  return {};
+};
+
+// 商品名から出品カテゴリーを推定するキーワード（上から優先）
+const LISTING_CATEGORY_RULES = [
+  ['毛皮',   ['ファー','毛皮','ミンク','フォックス','ラビット','セーブル','チンチラ','ムートン','fur','mink','fox']],
+  ['バッグ', ['バッグ','bag','鞄','かばん','ショルダー','トート','クラッチ','リュック','ボストン','ハンドバッグ','クロスボディ','サコッシュ','バックパック','ウエストポーチ']],
+  ['小物',   ['財布','ウォレット','wallet','コインケース','カードケース','キーケース','名刺入れ','ポーチ','ベルト','スカーフ','ストール','帽子','キャップ','手袋','サングラス','ネックレス','ブレスレット','リング','ピアス','イヤリング','腕時計','アクセサリー']],
+];
+
+// AIの回答 or 商品名から出品カテゴリーを推定（不明なら空文字）
+const normalizeListingCategory = (value, title) => {
+  const v = (value || '').trim();
+  if (LISTING_CATEGORIES.includes(v)) return v;
+  const t = (title || '').toLowerCase();
+  if (!t) return '';
+  for (const [cat, keywords] of LISTING_CATEGORY_RULES) {
+    if (keywords.some(k => t.includes(k))) return cat;
+  }
+  return '';
+};
+
 // カテゴリー・性別に応じたハッシュタグを返す
+// ※毛皮はレディース一覧と毛皮一覧の2つを付ける
 const getHashtag = (category, gender) => {
+  if (category === '毛皮')     return '#のびSHOPレディース一覧\n#のびSHOP毛皮一覧';
   if (category === 'バッグ')   return '#のびSHOPバッグ一覧';
-  if (category === '毛皮')     return '#のびSHOP毛皮一覧';
   if (category === '小物')     return '#のびSHOP小物一覧';
   if (gender === 'レディース') return '#のびSHOPレディース一覧';
   return '#のびSHOPメンズ一覧';
@@ -1186,7 +1219,8 @@ const RECEIPT_ANALYSIS_PROMPT = `レシートの写真を分析して以下のJS
 - 旅費交通費：電車・バス・ガソリン・駐車場
 - 雑費：上記に当てはまらないもの`;
 
-const BATCH_PURCHASE_PROMPT = `フリマ・オークションアプリの購入済み取引画面のスクリーンショットから情報を読み取ってください。
+const BATCH_PURCHASE_PROMPT = `画像を2枚渡します。1枚目＝商品そのものの写真、2枚目＝フリマ・オークションアプリの購入済み取引画面のスクリーンショットです。
+金額・日付・出品者などの取引情報は必ず2枚目から読み取り、listing_categoryは1枚目の見た目と商品名の両方から判断してください。
 メルカリ・ヤフオク・ラクマに対応。JSONのみで回答（説明不要）：
 {
   "product_name": "商品名（画面に表示されているまま全文）",
@@ -1198,8 +1232,14 @@ const BATCH_PURCHASE_PROMPT = `フリマ・オークションアプリの購入�
   "purchase_date": "購入日（YYYY-MM-DD形式、画面に表示されている日付）",
   "condition": "商品の状態（新品・未使用/未使用に近い/目立った傷や汚れなし/やや傷や汚れあり/傷や汚れあり/全体的に状態が悪い から最も近いもの）",
   "platform": "プラットフォーム（メルカリ/ヤフオク/ラクマ/その他）",
-  "category_keywords": "商品名から推測したメルカリSEO用キーワード。半角スペース区切り3〜6語（例: バッグ ショルダーバッグ レザー / 財布 長財布 / スニーカー シューズ）"
+  "category_keywords": "商品名から推測したメルカリSEO用キーワード。半角スペース区切り3〜6語（例: バッグ ショルダーバッグ レザー / 財布 長財布 / スニーカー シューズ）",
+  "listing_category": "出品カテゴリー。必ず 毛皮 / レディース / メンズ / バッグ / 小物 のいずれか1つだけを返す"
 }
+listing_categoryの判定基準（上から順に優先）：
+1. ファー・毛皮・ミンク・フォックス・ラビット・セーブル等の毛皮製品 →「毛皮」
+2. バッグ・鞄・ショルダー・トート・クラッチ・リュック・ボストン →「バッグ」
+3. 財布・カードケース・キーケース・ベルト・スカーフ・帽子・手袋・アクセサリー・時計・サングラス →「小物」
+4. それ以外の衣類・靴 → 婦人物なら「レディース」、紳士物なら「メンズ」
 注意：purchase_dateは画面に表示されている実際の日付を読み取ること。取引日・購入日・落札日などのラベルの横にある日付。`;
 
 const SS_ANALYSIS_PROMPT = `フリマ・オークションアプリの取引画面スクリーンショットから情報を読み取ってください。
@@ -2613,6 +2653,7 @@ const PurchaseTab = () => {
   // サイズ合成（表記サイズ＋実寸）
   const sizeMeasureLabels = {
     '衣類':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
+    '毛皮':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
     'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
     '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
     'シューズ': [],
@@ -2762,6 +2803,7 @@ const PurchaseTab = () => {
     // サイズブロック
     const sizeLabels = {
       '衣類':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
+      '毛皮':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
       'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
       '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
       'シューズ': [],
@@ -2876,6 +2918,7 @@ const PurchaseTab = () => {
       // サイズブロック（りこぴ用：sizeM2 = 脇下身幅）
       const rikoSizeLabels = {
         '衣類':   [['sizeM1','着丈'],['sizeM2','脇下身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
+        '毛皮':   [['sizeM1','着丈'],['sizeM2','脇下身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
         'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
         '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
         'シューズ': [],
@@ -3845,7 +3888,7 @@ const PurchaseTab = () => {
               <select className="input-field" style={{marginBottom:8}}
                 value={form.category} onChange={e => setF('category', e.target.value)}>
                 <option value="">選択</option>
-                {['バッグ','衣類','小物','シューズ','その他'].map(c => <option key={c} value={c}>{c}</option>)}
+                {['バッグ','毛皮','衣類','小物','シューズ','その他'].map(c => <option key={c} value={c}>{c}</option>)}
               </select>
 
               {/* SEOタグ */}
@@ -8516,7 +8559,7 @@ const SalesTab = () => {
                         <label className="field-label">カテゴリー</label>
                         <select className="input-field" value={inf.category} onChange={e => setInf('category', e.target.value)}>
                           <option value="">選択</option>
-                          {['バッグ','衣類','小物','シューズ','その他'].map(c => <option key={c} value={c}>{c}</option>)}
+                          {['バッグ','毛皮','衣類','小物','シューズ','その他'].map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                       </div>
                       <div>
@@ -10830,8 +10873,14 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       try {
         const infoCompressed = await compressImage(infoPhoto.file, 1500, 0.8);
         const infoBase64 = await blobToBase64(infoCompressed);
-        const imageDataList = [{ data: infoBase64, mimeType: 'image/jpeg' }];
-        const raw = await analyzeImagesWithClaude(imageDataList, apiKey, BATCH_PURCHASE_PROMPT, 600);
+        // 商品写真もカテゴリー判定用に渡す（小さめに圧縮）
+        const prodCompressed = await compressImage(productPhoto.file, 800, 0.7);
+        const prodBase64 = await blobToBase64(prodCompressed);
+        const imageDataList = [
+          { data: prodBase64, mimeType: 'image/jpeg' },
+          { data: infoBase64, mimeType: 'image/jpeg' },
+        ];
+        const raw = await analyzeImagesWithClaude(imageDataList, apiKey, BATCH_PURCHASE_PROMPT, 700);
         const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           extracted = JSON.parse(jsonMatch[0]);
@@ -10855,6 +10904,9 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         const shippingCost = Number(extracted.shipping_cost) || 0;
         if (purchasePrice <= 0) warnMsgs.push('仕入れ価格が0円です');
 
+        const listingCategory = normalizeListingCategory(extracted.listing_category, extracted.product_name);
+        if (!listingCategory) warnMsgs.push('カテゴリーを判定できませんでした。選択してください');
+
         extracted = {
           ...extracted,
           purchase_date: parsedDate,
@@ -10864,11 +10916,12 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           condition_code: mapCondition(extracted.condition || ''),
           brand: extracted.brand || '',
           model_number: extracted.model_number || '',
+          listing_category: listingCategory,
           list_price: 0,
         };
         if (warnMsgs.length > 0) status = 'warn';
       } catch (err) {
-        extracted = { product_name: '', purchase_price: 0, shipping_cost: 0, store_name: '', purchase_date: todayStr(), condition_code: 'A', brand: '', model_number: '', list_price: 0 };
+        extracted = { product_name: '', purchase_price: 0, shipping_cost: 0, store_name: '', purchase_date: todayStr(), condition_code: 'A', brand: '', model_number: '', listing_category: '', list_price: 0 };
         status = 'error';
         warnMsgs.push('AI読み取り失敗: ' + err.message);
       }
@@ -10913,6 +10966,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       const totalPrice = (Number(e.purchase_price) || 0) + (Number(e.shipping_cost) || 0);
       const purchaseDate = e.purchase_date || todayStr();
       const id = Date.now().toString() + '_' + count;
+      const lcFields = listingCategoryToFields(e.listing_category);
 
       // 商品写真を保存
       let photoRefs = [];
@@ -10948,7 +11002,8 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         productName: e.product_name || '（未入力）',
         brand: e.brand || '',
         modelNumber: e.model_number || '',
-        gender: 'メンズ',
+        gender: lcFields.gender || 'メンズ',
+        category: lcFields.category || '',
         seoCategories: e.category_keywords
           ? e.category_keywords.split(/\s+/).filter(Boolean).slice(0, 6)
           : [],
@@ -11062,6 +11117,38 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
             <div style={{display:'flex',gap:8,marginBottom:10}}>
               <img src={pair.productPhoto.url} style={{width:80,height:80,objectFit:'cover',borderRadius:8,border:'1px solid #e5e7eb'}} alt="商品" />
               <img src={pair.infoPhoto.url} style={{width:80,height:80,objectFit:'cover',borderRadius:8,border:'1px solid #e5e7eb'}} alt="情報" />
+            </div>
+
+            {/* 出品カテゴリー（説明文のハッシュタグに使用） */}
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:'#666',marginBottom:4}}>
+                カテゴリー <span style={{color:'#9ca3af'}}>（説明文のハッシュタグに使用）</span>
+              </div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {LISTING_CATEGORIES.map(c => {
+                  const on = pair.edited.listing_category === c;
+                  return (
+                    <button key={c} onClick={() => updateEdited(pair.id, 'listing_category', c)}
+                      style={{padding:'7px 14px',borderRadius:99,fontSize:12,fontWeight:700,cursor:'pointer',
+                        border: on ? '1.5px solid #111827' : '1.5px solid #e5e7eb',
+                        background: on ? '#111827' : '#fff',
+                        color: on ? '#fff' : '#6b7280',
+                        touchAction:'manipulation', WebkitTapHighlightColor:'transparent'}}>
+                      {c}
+                    </button>
+                  );
+                })}
+              </div>
+              {!pair.edited.listing_category && (
+                <div style={{fontSize:11,color:'#b45309',marginTop:4}}>
+                  ⚠️ 未選択（このままだと「#のびSHOPメンズ一覧」になります）
+                </div>
+              )}
+              {pair.edited.listing_category === '毛皮' && (
+                <div style={{fontSize:11,color:'#15803d',marginTop:4}}>
+                  ✅ 説明文に #のびSHOPレディース一覧 と #のびSHOP毛皮一覧 が入ります
+                </div>
+              )}
             </div>
 
             <div style={{display:'grid',gap:6}}>
