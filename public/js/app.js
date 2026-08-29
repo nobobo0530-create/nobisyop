@@ -835,6 +835,53 @@ const TRAVEL_SPOTS = [
   { min: 1000000, name: 'モルディブ',     emoji: '🏝️', desc: '水上コテージで2人だけの楽園' },
 ];
 
+// Dice係数でタイトル類似度を計算（bigram）
+const diceSimilarity = (a, b) => {
+  const n = s => (s || '').toLowerCase().replace(/[\s　【】（）()「」\-_・,、。．]/g, '');
+  const na = n(a), nb = n(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const bigrams = s => { const set = new Set(); for (let i=0; i<s.length-1; i++) set.add(s.slice(i,i+2)); return set; };
+  const ba = bigrams(na), bb = bigrams(nb);
+  if (ba.size === 0 || bb.size === 0) return 0;
+  let common = 0; for (const g of ba) if (bb.has(g)) common++;
+  return (2 * common) / (ba.size + bb.size);
+};
+
+// 仕入れの重複候補を探す（タイトル類似度＋価格/日付/仕入れ先の一致度でスコアリング）
+const findDuplicatePurchase = (cand, items) => {
+  const title = ((cand.brand || '') + ' ' + (cand.productName || '')).trim();
+  if (!title) return null;
+  const price = Number(cand.purchasePrice) || 0;
+  const dt = cand.purchaseDate ? new Date(cand.purchaseDate).getTime() : NaN;
+  let best = null;
+  for (const inv of (items || [])) {
+    if (!inv) continue;
+    const exTitle = ((inv.brand || '') + ' ' + (inv.productName || '')).trim();
+    const sim = diceSimilarity(title, exTitle);
+    if (sim < 0.75) continue;
+    const exPrice = Number(inv.purchaseCost?.itemPriceTaxIn ?? inv.itemPriceTaxIn) || 0;
+    const priceMatch = price > 0 && exPrice > 0 && price === exPrice;
+    // 仕入れ価格が一致しないなら、タイトルがほぼ同一のときだけ候補にする
+    // （同じ日に同じ店で買った別のバッグ等を拾わないため）
+    if (!priceMatch && sim < 0.9) continue;
+    const reasons = [`タイトル類似度 ${Math.round(sim * 100)}%`];
+    let score = sim >= 0.9 ? 1 : 0;
+    if (priceMatch) { score += 2; reasons.push('仕入れ価格一致'); }
+    const exDt = inv.purchaseDate ? new Date(inv.purchaseDate).getTime() : NaN;
+    if (!isNaN(dt) && !isNaN(exDt)) {
+      const diffDays = Math.abs(exDt - dt) / 86400000;
+      if (diffDays <= 7) { score += 1; reasons.push(diffDays < 1 ? '仕入れ日が同日' : `仕入れ日が${Math.round(diffDays)}日差`); }
+    }
+    if (cand.purchaseStore && inv.purchaseStore && cand.purchaseStore === inv.purchaseStore) { score += 1; reasons.push('仕入れ先一致'); }
+    if (score < 2) continue;
+    if (!best || score > best.score || (score === best.score && sim > best.sim)) {
+      best = { item: inv, sim, score, reason: reasons.join(' · ') };
+    }
+  }
+  return best;
+};
+
 // 出品カテゴリー（説明文のハッシュタグ用・5種）
 const LISTING_CATEGORIES = ['毛皮', 'レディース', 'メンズ', 'バッグ', '小物'];
 
@@ -7183,19 +7230,6 @@ const SalesTab = () => {
 
   // 重複売上チェック（商品ID一致 or 同在庫の売上登録済み）
   // ── 重複売上 複合判定 ──────────────────────────────────────────
-  // Dice係数でタイトル類似度を計算（bigram）
-  const diceSimilarity = (a, b) => {
-    const n = s => (s || '').toLowerCase().replace(/[\s　【】（）()「」\-_・,、。．]/g, '');
-    const na = n(a), nb = n(b);
-    if (!na || !nb) return 0;
-    if (na === nb) return 1;
-    const bigrams = s => { const set = new Set(); for (let i=0; i<s.length-1; i++) set.add(s.slice(i,i+2)); return set; };
-    const ba = bigrams(na), bb = bigrams(nb);
-    if (ba.size === 0 || bb.size === 0) return 0;
-    let common = 0; for (const g of ba) if (bb.has(g)) common++;
-    return (2 * common) / (ba.size + bb.size);
-  };
-
   const findDuplicateSale = ({ inventoryId, platformId, salePrice, shipping, brand, category, productName }) => {
     const normStr = s => (s || '').trim().toLowerCase();
     const newTitle = normStr((brand || '') + ' ' + (productName || ''));
@@ -10995,6 +11029,46 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         warnMsgs.push('AI読み取り失敗: ' + err.message);
       }
 
+      // ── 重複チェック（既存在庫 ＋ 同じバッチ内） ──
+      const dupCand = {
+        productName: extracted.product_name || '',
+        brand: extracted.brand || '',
+        purchasePrice: Number(extracted.purchase_price) || 0,
+        purchaseDate: extracted.purchase_date || '',
+        purchaseStore: extracted.store_name || '',
+      };
+      let duplicate = null;
+      const invHit = findDuplicatePurchase(dupCand, data.inventory || []);
+      if (invHit) {
+        duplicate = {
+          source: 'inventory',
+          productName: invHit.item.productName || '（名称なし）',
+          brand: invHit.item.brand || '',
+          purchaseDate: invHit.item.purchaseDate || '',
+          purchasePrice: Number(invHit.item.purchasePrice) || 0,
+          reason: invHit.reason,
+        };
+      } else {
+        const batchHit = findDuplicatePurchase(dupCand, newPairs.map(p => ({
+          productName: p.edited.product_name || '',
+          brand: p.edited.brand || '',
+          purchaseDate: p.edited.purchase_date || '',
+          purchaseStore: p.edited.store_name || '',
+          purchasePrice: Number(p.edited.purchase_price) || 0,
+          itemPriceTaxIn: Number(p.edited.purchase_price) || 0,
+        })));
+        if (batchHit) {
+          duplicate = {
+            source: 'batch',
+            productName: batchHit.item.productName || '（名称なし）',
+            brand: batchHit.item.brand || '',
+            purchaseDate: batchHit.item.purchaseDate || '',
+            purchasePrice: batchHit.item.purchasePrice || 0,
+            reason: batchHit.reason,
+          };
+        }
+      }
+
       newPairs.push({
         id: `pair_${i}`,
         productPhoto,
@@ -11003,7 +11077,8 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         edited: { ...extracted },
         status,
         warnMsgs,
-        skip: false,
+        duplicate,
+        skip: !!duplicate,
       });
     }
 
@@ -11160,10 +11235,21 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           </button>
         </div>
 
+        {pairs.filter(p => p.duplicate).length > 0 && (
+          <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',border:'1px solid #fecaca',borderRadius:8,padding:'8px 10px',marginBottom:10,fontWeight:600}}>
+            ⚠️ 重複候補が{pairs.filter(p => p.duplicate).length}件あります（自動でスキップ済み・登録したい場合はスキップを解除）
+          </div>
+        )}
+
         {pairs.map((pair, idx) => (
           <div key={pair.id} className="card" style={{marginBottom:12,padding:14,opacity: pair.skip ? 0.45 : 1}}>
             <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'center'}}>
               <div style={{fontWeight:700,fontSize:13,flex:1}}>📦 商品 {idx + 1}</div>
+              {pair.duplicate && (
+                <span style={{fontSize:11,background:'#fee2e2',color:'#991b1b',padding:'2px 8px',borderRadius:99,fontWeight:600}}>
+                  ⚠️ 重複候補
+                </span>
+              )}
               {pair.status === 'warn' && (
                 <span style={{fontSize:11,background:'#fef3c7',color:'#92400e',padding:'2px 8px',borderRadius:99,fontWeight:600}}>
                   ⚠️ 要確認
@@ -11179,6 +11265,21 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
                 {pair.skip ? 'スキップ中' : 'スキップ'}
               </button>
             </div>
+
+            {pair.duplicate && (
+              <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',border:'1px solid #fecaca',borderRadius:8,padding:'8px 10px',marginBottom:10}}>
+                <div style={{fontWeight:700,marginBottom:3}}>
+                  {pair.duplicate.source === 'batch' ? '⚠️ この読み込み内に同じ商品がありそうです' : '⚠️ すでに登録済みの可能性があります'}
+                </div>
+                <div style={{marginBottom:3}}>{pair.duplicate.reason}</div>
+                <div style={{color:'#7f1d1d'}}>
+                  {pair.duplicate.brand ? pair.duplicate.brand + ' ' : ''}{pair.duplicate.productName}
+                  {pair.duplicate.purchaseDate ? ` · ${pair.duplicate.purchaseDate}` : ''}
+                  {pair.duplicate.purchasePrice > 0 ? ` · 仕入れ値 ¥${formatMoney(pair.duplicate.purchasePrice)}` : ''}
+                </div>
+                <div style={{fontSize:11,color:'#7f1d1d',marginTop:4}}>※スキップを解除すると重複して登録されます</div>
+              </div>
+            )}
 
             {pair.warnMsgs.length > 0 && (
               <div style={{fontSize:12,color:'#92400e',background:'#fef3c7',borderRadius:8,padding:'6px 10px',marginBottom:10}}>
