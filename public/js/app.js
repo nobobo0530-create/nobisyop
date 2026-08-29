@@ -9368,9 +9368,9 @@ const _ensureSheetTab = async (token, sid, title) => {
 const _INV_HEADERS = [
   '商品名','ステータス','ブランド','カテゴリー',
   '仕入れ日','仕入れ金額(税込)','出品価格',
-  '仕入先','プラットフォーム','管理番号','メモ','ID'
+  '仕入先','プラットフォーム','管理番号','メモ','ID','まとめID'
 ];
-const _INV_COL_W    = [220,70,110,110, 90,105,90, 150,105,100,150, 220];
+const _INV_COL_W    = [220,70,110,110, 90,105,90, 150,105,100,150, 220, 80];
 const _INV_DATE_COLS = [4];
 const _INV_ID_COL   = 11;
 
@@ -9395,11 +9395,19 @@ const _KOBOTSU_DATE_COLS = [0, 9];
 // ── 行ビルダー ───────────────────────────────────────────────
 const _statusLabel = s => s === 'unlisted' ? '未出品' : s === 'listed' ? '出品中' : s === 'sold' ? '売却済' : s || '';
 
+// まとめ買い（同梱）グループの短縮コード。bundleGroup から決まるので値は安定する
+const _bundleCode = bg => {
+  if (!bg) return '';
+  let h = 0;
+  for (let i = 0; i < String(bg).length; i++) h = (h * 31 + String(bg).charCodeAt(i)) >>> 0;
+  return 'M' + String(h % 100000).padStart(5, '0');
+};
+
 const _invRow = item => [
   item.productName||'', _statusLabel(item.status), item.brand||'', item.category||'',
   item.purchaseDate||'', item.purchasePrice||0, item.listPrice||'',
   item.purchaseStore||item.storeName||'', item.platform||'', item.mgmtNo||'', item.memo||'',
-  item.id||''
+  item.id||'', _bundleCode(item.bundleGroup)
 ];
 
 const _saleRow = (s, invMap, rowNum) => {
@@ -9524,10 +9532,9 @@ const _upsertSheet = async (token, sid, sheetName, headers, localRows, idCol) =>
   const existing = (await _sheetsGet(token, sid, `${sheetName}!${colLetter}:${colLetter}`)).values || [];
   _SYNC_LOG(`existing rows (incl header): ${existing.length}`);
 
-  if (existing.length === 0) {
-    _SYNC_LOG('writing headers to A1');
-    await _sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
-  }
+  // 列を追加してもヘッダーが古いままにならないよう、毎回書き直す
+  _SYNC_LOG('writing headers to A1');
+  await _sheetsBatchUpdate(token, sid, [{ range: `${sheetName}!A1`, values: [headers] }]);
 
   const idToRow = {};
   existing.forEach((row, i) => { if (i > 0 && row[0]) idToRow[String(row[0])] = i + 1; });
@@ -9794,7 +9801,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
       // ── 在庫データ取得 ──
       let invRows = [];
       try {
-        const r = await _sheetsGet(token, sid, '在庫データ!A2:L10000');
+        const r = await _sheetsGet(token, sid, '在庫データ!A2:M10000');
         invRows = (r.values || []).filter(row => row[0]);
       } catch(e) { _SYNC_LOG('在庫データ read error:', e.message); }
 
@@ -9809,7 +9816,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
 
       // ── 在庫アイテム変換 ──
       // 列: 商品名(0) ステータス(1) ブランド(2) カテゴリー(3) 仕入れ日(4) 仕入れ金額(5)
-      //     出品価格(6) 仕入先(7) プラットフォーム(8) 管理番号(9) メモ(10) ID(11)
+      //     出品価格(6) 仕入先(7) プラットフォーム(8) 管理番号(9) メモ(10) ID(11) まとめID(12・読み取らない)
       const existingInvMap = new Map(data.inventory.map(i => [i.id, i]));
       const importedInv = [];
       for (const row of invRows) {
