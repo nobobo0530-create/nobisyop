@@ -1357,6 +1357,29 @@ const BATCH_SS_PROMPT = `これはフリマサイト（主にメルカリ）の�
 ]
 読み取れない値はnullにしてください。全行を漏れなく抽出してください。`;
 
+// ヤフオク マイオク「落札分」一覧スクショ → 複数仕入れ一括読み取り用プロンプト
+const YAHOO_WON_LIST_PROMPT = `ヤフオクのマイオク「落札分」一覧ページのスクリーンショットです（複数枚ある場合は全画像を合わせて読みます）。
+画面に表示されている全ての落札商品を読み取り、以下のJSON配列だけを返してください。
+必ずJSON配列だけを返す。前置き・説明・マークダウンのコードフェンス(\`\`\`)を付けない。
+複数枚の画像にまたがる場合、全画像の全行を1つの配列にまとめる。
+同じ商品が複数画像に重複して写っている場合は1件にまとめる。
+[
+  {
+    "auctionId": "w1234567890",
+    "productName": "商品名（一覧に出ている通り、省略せず全部）",
+    "brand": "ブランド名（商品名から推測できる場合のみ。不明なら\"\"）",
+    "purchasePrice": 3800,
+    "purchaseDate": "2026-09-10",
+    "sellerName": "出品者名またはストア名（そのまま）",
+    "quantity": 1
+  }
+]
+注意事項：
+- auctionId: オークションID（英数字）。画面に見つからなければ ""
+- purchasePrice: 落札価格。カンマを除いた数値のみ。円マーク不要。送料・手数料は含めない
+- purchaseDate: 落札日/終了日時。YYYY-MM-DD形式の西暦4桁。年の表記がなければ今年とみなし、未来日になる場合は前年とする
+- 読み取れない項目は空文字か0にする。推測で埋めない`;
+
 // ============================================================
 // Toast
 // ============================================================
@@ -11179,6 +11202,14 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   // グループごとの同梱送料合計の入力値: { [label]: '文字列' }
   const [bundleShipTotal, setBundleShipTotal] = React.useState({});
 
+  // ── ヤフオク落札一覧モード用state ──
+  const [importMode, setImportMode] = React.useState('photo'); // 'photo' | 'yahooList'
+  const [yahooListFiles, setYahooListFiles] = React.useState([]); // [{id, file, url}]
+  const [yahooListRows, setYahooListRows] = React.useState([]); // review行データ
+  const [yahooListAnalyzing, setYahooListAnalyzing] = React.useState(false);
+  const [yahooListRegistering, setYahooListRegistering] = React.useState(false);
+  const yahooListFileInputRef = React.useRef();
+
   const apiKey = (data?.settings?.apiKey || '').trim();
   const [keyStatus, setKeyStatus] = React.useState(null); // null | 'ok' | 'error'
   const [keyTesting, setKeyTesting] = React.useState(false);
@@ -11273,6 +11304,219 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       if (raw.includes(k)) return v;
     }
     return 'A';
+  };
+
+  // ── ヤフオク落札一覧: 出品者名 → settings.yahooStores/storeMaster.yahooStores でマッチング ──
+  const normalizeForMatch = (s) => (s || '').replace(/[\s　]/g, '').toLowerCase()
+    .replace(/[！-～]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+
+  const resolveYahooStore = (sellerName) => {
+    const key = normalizeForMatch(sellerName);
+    if (!key) return { purchaseStore: sellerName || '', sellerLicense: '', sellerCompanyName: '', licenseUnconfirmed: true };
+    const allStores = [...(data.settings?.yahooStores || [])];
+    // storeMaster.yahooStores は名称だけのリストなので licenseなし
+    // 完全一致を最優先。部分一致は許可証番号の誤紐付けを招くため3文字以上のときだけ許す
+    const found = allStores.find(s => normalizeForMatch(s.storeName) === key)
+      || (key.length >= 3 && allStores.find(s => {
+        const sk = normalizeForMatch(s.storeName);
+        return sk.length >= 3 && (sk.includes(key) || key.includes(sk));
+      }));
+    if (found) {
+      return {
+        purchaseStore: found.storeName,
+        sellerLicense: found.license || '',
+        sellerCompanyName: found.companyName || '',
+        licenseUnconfirmed: !found.license,
+      };
+    }
+    return { purchaseStore: sellerName || '', sellerLicense: '', sellerCompanyName: '', licenseUnconfirmed: true };
+  };
+
+  // ── ヤフオク落札一覧: 画像読み取り ──
+  const handleAnalyzeYahooList = async () => {
+    if (yahooListFiles.length === 0) { toast('❌ スクショを1枚以上選んでください'); return; }
+    if (!apiKey) { toast('❌ Claude APIキーが設定されていません（設定タブで入力）'); return; }
+    setYahooListAnalyzing(true);
+    try {
+      const imageDataList = [];
+      for (const f of yahooListFiles) {
+        const blob = await compressImage(f.file, 1500, 0.8);
+        const base64 = await blobToBase64(blob);
+        imageDataList.push({ data: base64, mimeType: 'image/jpeg' });
+      }
+      // 年が省略された日付を正しく補正させるため、今日の日付をプロンプトに渡す
+      const prompt = `${YAHOO_WON_LIST_PROMPT}\n- 今日の日付は ${todayStr()} です`;
+      const raw = await analyzeImagesWithClaude(imageDataList, apiKey, prompt, 4000);
+      const arrMatch = raw.match(/\[[\s\S]*\]/);
+      if (!arrMatch) {
+        console.warn('[YAHOO_WON_LIST] JSON配列未検出:', raw);
+        toast('❌ 読み取りに失敗しました。スクショを撮り直すか、枚数を減らして試してください');
+        setYahooListAnalyzing(false);
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(arrMatch[0]);
+      } catch(e) {
+        console.warn('[YAHOO_WON_LIST] JSONパースエラー:', e, raw);
+        toast('❌ 読み取りに失敗しました。スクショを撮り直すか、枚数を減らして試してください');
+        setYahooListAnalyzing(false);
+        return;
+      }
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        toast('❌ 商品が1件も読み取れませんでした。スクショを確認してください');
+        setYahooListAnalyzing(false);
+        return;
+      }
+
+      const rows = [];
+      for (let i = 0; i < parsed.length; i++) {
+        const item = parsed[i];
+        const purchaseDate = parsePurchaseDate(item.purchaseDate) || todayStr();
+        const purchasePrice = Number(item.purchasePrice) || 0;
+        const storeInfo = resolveYahooStore(item.sellerName || '');
+
+        // 重複判定1: オークションID一致
+        let skip = false;
+        let dupReason = '';
+        const auctionId = (item.auctionId || '').trim();
+        if (auctionId) {
+          const idHit = (data.inventory || []).find(inv => (inv.yahooAuctionId || '') === auctionId);
+          if (idHit) {
+            skip = true;
+            dupReason = 'オークションID一致';
+          }
+        }
+
+        // 重複判定2: findDuplicatePurchase
+        if (!skip) {
+          const dupCand = {
+            productName: item.productName || '',
+            brand: item.brand || '',
+            purchasePrice,
+            purchaseDate,
+            purchaseStore: storeInfo.purchaseStore,
+          };
+          const simHit = findDuplicatePurchase(dupCand, data.inventory || []);
+          if (simHit) {
+            skip = true;
+            dupReason = `類似の仕入れが既にあります（${simHit.item.productName || ''}）`;
+          }
+        }
+
+        rows.push({
+          id: `ylist_${Date.now()}_${i}`,
+          auctionId,
+          productName: item.productName || '',
+          brand: item.brand || '',
+          purchasePrice,
+          purchaseDate,
+          sellerName: item.sellerName || '',
+          quantity: Number(item.quantity) || 1,
+          paymentMethod: 'PayPay',
+          ...storeInfo,
+          skip,
+          dupReason,
+        });
+      }
+
+      setYahooListRows(rows);
+      setStep('review_yahoo');
+    } catch(e) {
+      console.warn('[YAHOO_WON_LIST] エラー:', e);
+      toast('❌ 読み取りエラー: ' + e.message);
+    }
+    setYahooListAnalyzing(false);
+  };
+
+  // ── ヤフオク落札一覧: row の編集 ──
+  const updateYahooRow = (rowId, field, value) => {
+    setYahooListRows(prev => prev.map(r => {
+      if (r.id !== rowId) return r;
+      const updated = { ...r, [field]: value };
+      // 仕入れ先を編集したら再マッチング
+      if (field === 'purchaseStore') {
+        const storeInfo = resolveYahooStore(value);
+        return { ...updated, ...storeInfo, purchaseStore: value };
+      }
+      return updated;
+    }));
+  };
+
+  const toggleYahooSkip = (rowId) => {
+    setYahooListRows(prev => prev.map(r => r.id !== rowId ? r : { ...r, skip: !r.skip }));
+  };
+
+  // ── ヤフオク落札一覧: 登録 ──
+  const handleRegisterYahooList = async () => {
+    const targets = yahooListRows.filter(r => !r.skip);
+    if (targets.length === 0) { toast('❌ 登録する商品がありません'); return; }
+    setYahooListRegistering(true);
+    const skippedCount = yahooListRows.filter(r => r.skip).length;
+    let count = 0;
+    const newInventory = [...(data.inventory || [])];
+
+    for (const row of targets) {
+      const id = Date.now().toString() + '_ylist_' + count;
+      const purchasePrice = Number(row.purchasePrice) || 0;
+      const newItem = {
+        id,
+        userId: currentUser,
+        productName: row.productName || '（未入力）',
+        brand: row.brand || '',
+        modelNumber: '',
+        gender: 'メンズ',
+        category: '',
+        seoCategories: [],
+        condition: 'A',
+        conditionDetail: '',
+        sizeTag: '', sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '',
+        sizeConfidence: 'medium', material: '',
+        purchaseDate: row.purchaseDate || todayStr(),
+        purchaseStore: row.purchaseStore || '',
+        sellerLicense: row.sellerLicense || '',
+        sellerCompanyName: row.sellerCompanyName || '',
+        paymentMethod: row.paymentMethod || 'PayPay',
+        listDate: '',
+        estimatedPriceRange: '',
+        notes: '[ヤフオク落札一覧から登録]',
+        englishTitle: '',
+        descriptionText: '',
+        itemPriceTaxIn: purchasePrice,
+        itemTaxRate: 10,
+        shippingTaxIn: 0,
+        shippingTaxRate: 10,
+        optionalFeeTaxIn: 0,
+        optionalTaxRate: 10,
+        showOptionalFee: false,
+        couponTaxIn: 0,
+        couponNote: '',
+        purchasePrice: purchasePrice,
+        purchaseCost: { totalTaxIn: purchasePrice, totalTaxEx: purchasePrice, itemPriceTaxIn: purchasePrice, itemTaxRate: 10, shippingTaxIn: 0, shippingTaxRate: 10 },
+        priceUnconfirmed: true,
+        purchaseType: 'online',
+        purchaseTypeSource: 'manual',
+        purchaseStoreType: 'yahoo',
+        aiTypeDetection: null,
+        size: '',
+        listPrice: 0,
+        photos: [],
+        mgmtNo: '',
+        status: 'unlisted',
+        profit: 0,
+        createdAt: new Date().toISOString(),
+        // 仕入れ元の記録。item.platform は「出品先」を指すフィールドなので使わない
+        yahooAuctionId: row.auctionId || '',
+      };
+      newInventory.push(newItem);
+      count++;
+    }
+
+    setData({ ...data, inventory: newInventory });
+    setDoneCount(count);
+    setStep('done');
+    setYahooListRegistering(false);
+    toast(`✅ ${count}件の仕入れを登録しました（${skippedCount}件は重複のためスキップ）`);
   };
 
   const handleAnalyze = async () => {
@@ -11627,7 +11871,122 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     setDoneCount(0);
     setBundleMap({});
     setBundleShipTotal({});
+    // yahooList用stateもリセット
+    yahooListFiles.forEach(f => URL.revokeObjectURL(f.url));
+    setYahooListFiles([]);
+    setYahooListRows([]);
   };
+
+  if (step === 'review_yahoo') {
+    const skipCount = yahooListRows.filter(r => r.skip).length;
+    const activeCount = yahooListRows.filter(r => !r.skip).length;
+    return (
+      <div className="fade-in">
+        <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+          <div style={{fontWeight:700,fontSize:15,flex:1}}>📋 {yahooListRows.length}件を確認</div>
+          <button className="btn-secondary" style={{padding:'6px 12px',fontSize:12}} onClick={() => setStep('upload')}>
+            ← 戻る
+          </button>
+        </div>
+
+        {skipCount > 0 && (
+          <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',border:'1px solid #fecaca',borderRadius:8,padding:'8px 10px',marginBottom:10,fontWeight:600}}>
+            ⚠️ {skipCount}件は登録済みのためスキップします（手動でチェックを入れると登録できます）
+          </div>
+        )}
+
+        {yahooListRows.map((row, idx) => (
+          <div key={row.id} className="card" style={{marginBottom:10,padding:12,opacity: row.skip ? 0.45 : 1}}>
+            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
+              <div style={{fontWeight:700,fontSize:13,flex:1}}>#{idx + 1} {row.productName || '（名称なし）'}</div>
+              {row.dupReason && (
+                <span style={{fontSize:10,background:'#fee2e2',color:'#991b1b',padding:'2px 7px',borderRadius:99,fontWeight:600,flexShrink:0}}>
+                  ⚠️ 重複
+                </span>
+              )}
+              {row.licenseUnconfirmed && (
+                <span style={{fontSize:10,background:'#fef3c7',color:'#92400e',padding:'2px 7px',borderRadius:99,fontWeight:600,flexShrink:0}}>
+                  ⚠️ 許可証番号 未設定
+                </span>
+              )}
+              <button onClick={() => toggleYahooSkip(row.id)}
+                style={{fontSize:11,padding:'4px 10px',border:'1px solid #e5e7eb',borderRadius:99,
+                  background: row.skip ? '#fee2e2' : '#f3f4f6',
+                  color: row.skip ? '#991b1b' : '#666',
+                  fontWeight:600,cursor:'pointer',flexShrink:0}}>
+                {row.skip ? 'スキップ中' : 'スキップ'}
+              </button>
+            </div>
+
+            {row.dupReason && (
+              <div style={{fontSize:11,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px',marginBottom:8}}>
+                {row.dupReason}（スキップを解除すると重複して登録されます）
+              </div>
+            )}
+
+            <div style={{display:'grid',gap:6}}>
+              <div>
+                <div style={{fontSize:11,color:'#666',marginBottom:2}}>商品名</div>
+                <input style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                  value={row.productName}
+                  onChange={e => updateYahooRow(row.id, 'productName', e.target.value)} />
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>落札価格（円）</div>
+                  <input type="number" inputMode="numeric" style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={row.purchasePrice || ''}
+                    onChange={e => updateYahooRow(row.id, 'purchasePrice', Number(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>落札日</div>
+                  <input type="date" style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={row.purchaseDate}
+                    onChange={e => updateYahooRow(row.id, 'purchaseDate', e.target.value)} />
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>仕入れ先（出品者）</div>
+                  <input style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={row.purchaseStore}
+                    onChange={e => updateYahooRow(row.id, 'purchaseStore', e.target.value)} />
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>決済方法</div>
+                  <select style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={row.paymentMethod}
+                    onChange={e => updateYahooRow(row.id, 'paymentMethod', e.target.value)}>
+                    {['PayPay','クレカ','現金','銀行振込','その他'].map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>ブランド</div>
+                  <input style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={row.brand}
+                    onChange={e => updateYahooRow(row.id, 'brand', e.target.value)} />
+                </div>
+                <div>
+                  <div style={{fontSize:11,color:'#666',marginBottom:2}}>オークションID</div>
+                  <input style={{width:'100%',padding:'6px 10px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,boxSizing:'border-box'}}
+                    value={row.auctionId}
+                    onChange={e => updateYahooRow(row.id, 'auctionId', e.target.value)} />
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        <button className="btn-primary" style={{width:'100%',marginTop:4,padding:14,fontSize:15,fontWeight:700}}
+          disabled={yahooListRegistering || activeCount === 0}
+          onClick={handleRegisterYahooList}>
+          {yahooListRegistering ? '登録中...' : `✅ ${activeCount}件をまとめて登録`}
+        </button>
+      </div>
+    );
+  }
 
   if (step === 'done') {
     return (
@@ -11927,73 +12286,155 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   // step === 'upload'
   return (
     <div className="fade-in">
-      <div className="card" style={{padding:16,marginBottom:12}}>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📦 一括仕入れ登録</div>
-        <div style={{fontSize:13,color:'#666',marginBottom:12}}>
-          写真を2枚1組でアップロード。<br/>
-          <strong>奇数枚目</strong>＝商品写真、<strong>偶数枚目</strong>＝購入画面スクリーンショット
-        </div>
-        <button className="btn-primary" style={{width:'100%',marginBottom:8}}
-          onClick={() => fileInputRef.current?.click()}>
-          📷 写真を追加
+      {/* ── モード切替セグメント ── */}
+      <div style={{display:'flex',gap:0,marginBottom:12,borderRadius:10,overflow:'hidden',border:'1px solid #e5e7eb',background:'#f3f4f6'}}>
+        <button
+          onClick={() => setImportMode('photo')}
+          style={{flex:1,padding:'10px 0',fontSize:13,fontWeight:700,border:'none',cursor:'pointer',
+            background: importMode === 'photo' ? '#111827' : 'transparent',
+            color: importMode === 'photo' ? '#fff' : '#555',
+            borderRadius: importMode === 'photo' ? 9 : 0,
+            transition:'background 0.15s',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+          📷 写真ペアから
         </button>
-        <input ref={fileInputRef} type="file" accept="image/*" multiple style={{display:'none'}}
-          onChange={handleFilesSelected} />
-        {!apiKey ? (
-          <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px'}}>
-            ⚠️ Claude APIキーが未設定です（設定タブで入力してください）
-          </div>
-        ) : (
-          <button onClick={testApiKey} disabled={keyTesting}
-            style={{width:'100%',padding:'8px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,cursor:'pointer',
-              background: keyStatus==='ok' ? '#d1fae5' : keyStatus==='error' ? '#fee2e2' : '#f3f4f6',
-              color: keyStatus==='ok' ? '#065f46' : keyStatus==='error' ? '#991b1b' : '#555',fontWeight:600}}>
-            {keyTesting ? '確認中...' : keyStatus==='ok' ? '✅ APIキー有効' : keyStatus==='error' ? '❌ APIキー無効' : '🔑 APIキーを確認する'}
-          </button>
-        )}
+        <button
+          onClick={() => setImportMode('yahooList')}
+          style={{flex:1,padding:'10px 0',fontSize:13,fontWeight:700,border:'none',cursor:'pointer',
+            background: importMode === 'yahooList' ? '#111827' : 'transparent',
+            color: importMode === 'yahooList' ? '#fff' : '#555',
+            borderRadius: importMode === 'yahooList' ? 9 : 0,
+            transition:'background 0.15s',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+          📋 ヤフオク落札一覧から
+        </button>
       </div>
 
-      {photos.length > 0 && (
-        <div className="card" style={{padding:14,marginBottom:12}}>
-          <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>
-            {photos.length}枚 → {Math.floor(photos.length / 2)}組（{photos.length % 2 !== 0 ? '最後の1枚は無視されます' : ''}）
-          </div>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:12}}>
-            {photos.map((p, idx) => (
-              <div key={p.id} style={{position:'relative'}}>
-                <img src={p.url} style={{width:'100%',aspectRatio:'1',objectFit:'cover',borderRadius:8,
-                  border: idx % 2 === 0 ? '2px solid #3b82f6' : '2px solid #10b981'}} alt="" />
-                <div style={{position:'absolute',top:2,left:2,background: idx % 2 === 0 ? '#3b82f6' : '#10b981',
-                  color:'white',fontSize:10,fontWeight:700,borderRadius:4,padding:'1px 5px'}}>
-                  {idx % 2 === 0 ? '商品' : '情報'}
-                </div>
-                <div style={{position:'absolute',top:2,right:2,display:'flex',gap:2}}>
-                  {idx > 0 && (
-                    <button onClick={() => movePhoto(idx, -1)}
-                      style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
-                      ←
-                    </button>
-                  )}
-                  {idx < photos.length - 1 && (
-                    <button onClick={() => movePhoto(idx, 1)}
-                      style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
-                      →
-                    </button>
-                  )}
-                  <button onClick={() => removePhoto(p.id)}
-                    style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
-                    ✕
-                  </button>
-                </div>
+      {importMode === 'photo' && (
+        <>
+          <div className="card" style={{padding:16,marginBottom:12}}>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📦 一括仕入れ登録</div>
+            <div style={{fontSize:13,color:'#666',marginBottom:12}}>
+              写真を2枚1組でアップロード。<br/>
+              <strong>奇数枚目</strong>＝商品写真、<strong>偶数枚目</strong>＝購入画面スクリーンショット
+            </div>
+            <button className="btn-primary" style={{width:'100%',marginBottom:8}}
+              onClick={() => fileInputRef.current?.click()}>
+              📷 写真を追加
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple style={{display:'none'}}
+              onChange={handleFilesSelected} />
+            {!apiKey ? (
+              <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px'}}>
+                ⚠️ Claude APIキーが未設定です（設定タブで入力してください）
               </div>
-            ))}
+            ) : (
+              <button onClick={testApiKey} disabled={keyTesting}
+                style={{width:'100%',padding:'8px',border:'1px solid #e5e7eb',borderRadius:8,fontSize:13,cursor:'pointer',
+                  background: keyStatus==='ok' ? '#d1fae5' : keyStatus==='error' ? '#fee2e2' : '#f3f4f6',
+                  color: keyStatus==='ok' ? '#065f46' : keyStatus==='error' ? '#991b1b' : '#555',fontWeight:600}}>
+                {keyTesting ? '確認中...' : keyStatus==='ok' ? '✅ APIキー有効' : keyStatus==='error' ? '❌ APIキー無効' : '🔑 APIキーを確認する'}
+              </button>
+            )}
           </div>
 
-          <button className="btn-primary" style={{width:'100%',padding:14,fontSize:15,fontWeight:700}}
-            disabled={analyzing || photos.length < 2}
-            onClick={handleAnalyze}>
-            {analyzing ? 'AI解析中...' : `🤖 AI解析して確認画面へ（${Math.floor(photos.length/2)}組）`}
+          {photos.length > 0 && (
+            <div className="card" style={{padding:14,marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>
+                {photos.length}枚 → {Math.floor(photos.length / 2)}組（{photos.length % 2 !== 0 ? '最後の1枚は無視されます' : ''}）
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:12}}>
+                {photos.map((p, idx) => (
+                  <div key={p.id} style={{position:'relative'}}>
+                    <img src={p.url} style={{width:'100%',aspectRatio:'1',objectFit:'cover',borderRadius:8,
+                      border: idx % 2 === 0 ? '2px solid #3b82f6' : '2px solid #10b981'}} alt="" />
+                    <div style={{position:'absolute',top:2,left:2,background: idx % 2 === 0 ? '#3b82f6' : '#10b981',
+                      color:'white',fontSize:10,fontWeight:700,borderRadius:4,padding:'1px 5px'}}>
+                      {idx % 2 === 0 ? '商品' : '情報'}
+                    </div>
+                    <div style={{position:'absolute',top:2,right:2,display:'flex',gap:2}}>
+                      {idx > 0 && (
+                        <button onClick={() => movePhoto(idx, -1)}
+                          style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                          ←
+                        </button>
+                      )}
+                      {idx < photos.length - 1 && (
+                        <button onClick={() => movePhoto(idx, 1)}
+                          style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                          →
+                        </button>
+                      )}
+                      <button onClick={() => removePhoto(p.id)}
+                        style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button className="btn-primary" style={{width:'100%',padding:14,fontSize:15,fontWeight:700}}
+                disabled={analyzing || photos.length < 2}
+                onClick={handleAnalyze}>
+                {analyzing ? 'AI解析中...' : `🤖 AI解析して確認画面へ（${Math.floor(photos.length/2)}組）`}
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {importMode === 'yahooList' && (
+        <div className="card" style={{padding:16,marginBottom:12}}>
+          <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>📋 ヤフオク落札一覧から一括登録</div>
+          <div style={{fontSize:13,color:'#666',marginBottom:12}}>
+            ヤフオク アプリ/サイトの「マイオク → 落札分」の一覧画面をスクショして選んでください（1〜3枚まで。スクロールして複数枚でもOK）
+          </div>
+
+          <button className="btn-primary" style={{width:'100%',marginBottom:8}}
+            onClick={() => yahooListFileInputRef.current?.click()}>
+            🖼️ スクショを選ぶ（最大3枚）
           </button>
+          <input ref={yahooListFileInputRef} type="file" accept="image/*" multiple style={{display:'none'}}
+            onChange={e => {
+              const files = Array.from(e.target.files || []).slice(0, 3);
+              if (!files.length) return;
+              yahooListFiles.forEach(f => URL.revokeObjectURL(f.url));
+              const newFiles = files.map((f, i) => ({ id: `yss_${Date.now()}_${i}`, file: f, url: URL.createObjectURL(f) }));
+              setYahooListFiles(newFiles);
+              e.target.value = '';
+            }} />
+
+          {yahooListFiles.length > 0 && (
+            <div style={{marginBottom:10}}>
+              <div style={{display:'grid',gridTemplateColumns:`repeat(${yahooListFiles.length},1fr)`,gap:6,marginBottom:8}}>
+                {yahooListFiles.map((f, i) => (
+                  <div key={f.id} style={{position:'relative'}}>
+                    <img src={f.url} style={{width:'100%',aspectRatio:'1',objectFit:'cover',borderRadius:8,border:'2px solid #f59e0b'}} alt="" />
+                    <div style={{position:'absolute',top:2,left:2,background:'#f59e0b',color:'white',fontSize:10,fontWeight:700,borderRadius:4,padding:'1px 5px'}}>
+                      {i + 1}枚目
+                    </div>
+                    <button onClick={() => {
+                        URL.revokeObjectURL(f.url);
+                        setYahooListFiles(prev => prev.filter(x => x.id !== f.id));
+                      }}
+                      style={{position:'absolute',top:2,right:2,background:'rgba(220,38,38,0.8)',color:'white',border:'none',borderRadius:4,padding:'2px 5px',fontSize:10,cursor:'pointer'}}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+              {!apiKey ? (
+                <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px'}}>
+                  ⚠️ Claude APIキーが未設定です（設定タブで入力してください）
+                </div>
+              ) : (
+                <button className="btn-primary" style={{width:'100%',padding:14,fontSize:15,fontWeight:700}}
+                  disabled={yahooListAnalyzing}
+                  onClick={handleAnalyzeYahooList}>
+                  {yahooListAnalyzing ? 'AI読み取り中...' : `🤖 AIで読み取る（${yahooListFiles.length}枚）`}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
