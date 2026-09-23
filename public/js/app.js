@@ -5533,6 +5533,9 @@ const InventoryTab = () => {
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
   const [groupBundles, setGroupBundles] = React.useState(() => localStorage.getItem('nobushop_group_bundles') !== '0');
   const [openBundles, setOpenBundles] = React.useState(() => new Set());
+  const [bundleTypeDraft, setBundleTypeDraft] = React.useState('');   // '' | 'individual' | 'set'
+  const [bundleItemDraft, setBundleItemDraft] = React.useState({});   // { [itemId]: '文字列' } 商品代（送料抜き）
+  const [bundleSetTotalIn, setBundleSetTotalIn] = React.useState(''); // セット総額（商品代の合計）
 
   // ★ マウント時: pending値をクリア & スクロール位置を復元
   // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
@@ -5657,10 +5660,19 @@ const InventoryTab = () => {
   const openBundleShip = (bg) => {
     const members = bundleShipMembers(bg);
     const bt = bundleTotals(members);
-    const d = {};
-    members.forEach(i => { d[i.id] = String(bt.shipOf(i)); });
-    setBundleShipDraft(d);
-    setBundleShipTotalIn('');
+    const shipDraft = {};
+    const itemDraft = {};
+    members.forEach(i => {
+      shipDraft[i.id] = String(bt.shipOf(i));
+      // 旧形式は itemPriceTaxIn にもグループ総額が全員コピーされているため信用できない。
+      // purchasePrice から送料を引いて求める（新形式でも同じ値になる）
+      itemDraft[i.id] = String(Math.max(0, (Number(i.purchasePrice) || 0) - bt.shipOf(i)));
+    });
+    setBundleShipDraft(shipDraft);
+    setBundleItemDraft(itemDraft);
+    setBundleShipTotalIn(String(bt.shipSum));
+    setBundleSetTotalIn(String(bt.itemSum));
+    setBundleTypeDraft(members[0]?.bundleType || '');
     setBundleShipOpen(bg);
   };
 
@@ -5672,17 +5684,21 @@ const InventoryTab = () => {
     if (total <= 0) { toast('❌ 送料の合計を入力してください'); return; }
     let alloc = [];
     if (mode === 'ratio') {
-      const bt = bundleTotals(members);
-      const priceOf = i => Math.max(0, (Number(i.purchasePrice) || 0) - bt.shipOf(i));
+      const priceOf = i => Math.max(0, Number(bundleItemDraft[i.id]) || 0);
       const sum = members.reduce((s, m) => s + priceOf(m), 0);
-      if (sum <= 0) { toast('❌ 仕入れ価格が未確定のため按分できません（均等割りを使ってください）'); return; }
-      let rest = total;
-      alloc = members.map((m, idx) => {
-        if (idx === members.length - 1) return rest;
-        const v = Math.floor(total * priceOf(m) / sum);
-        rest -= v;
-        return v;
-      });
+      if (sum <= 0) {
+        // 全部0なら均等割りにフォールバック
+        const base = Math.floor(total / members.length);
+        alloc = members.map((_, idx) => idx === members.length - 1 ? total - base * (members.length - 1) : base);
+      } else {
+        let rest = total;
+        alloc = members.map((m, idx) => {
+          if (idx === members.length - 1) return rest;
+          const v = Math.floor(total * priceOf(m) / sum);
+          rest -= v;
+          return v;
+        });
+      }
     } else {
       const base = Math.floor(total / members.length);
       alloc = members.map((_, idx) => idx === members.length - 1 ? total - base * (members.length - 1) : base);
@@ -5692,39 +5708,81 @@ const InventoryTab = () => {
     setBundleShipDraft(d);
   };
 
+  // セット購入用：商品代の合計をメンバーに割り振る（均等割り／比率按分）
+  const splitBundleItem = (mode) => {
+    const members = bundleShipMembers(bundleShipOpen);
+    if (members.length === 0) return;
+    const total = Number(bundleSetTotalIn) || 0;
+    if (total <= 0) { toast('❌ セット総額（商品代）を入力してください'); return; }
+    let alloc = [];
+    if (mode === 'ratio') {
+      const priceOf = i => Math.max(0, Number(bundleItemDraft[i.id]) || 0);
+      const sum = members.reduce((s, m) => s + priceOf(m), 0);
+      if (sum <= 0) {
+        // 全部0なら均等割りにフォールバック
+        const base = Math.floor(total / members.length);
+        alloc = members.map((_, idx) => idx === members.length - 1 ? total - base * (members.length - 1) : base);
+      } else {
+        let rest = total;
+        alloc = members.map((m, idx) => {
+          if (idx === members.length - 1) return rest;
+          const v = Math.floor(total * priceOf(m) / sum);
+          rest -= v;
+          return v;
+        });
+      }
+    } else {
+      const base = Math.floor(total / members.length);
+      alloc = members.map((_, idx) => idx === members.length - 1 ? total - base * (members.length - 1) : base);
+    }
+    const d = {};
+    members.forEach((m, idx) => { d[m.id] = String(alloc[idx]); });
+    setBundleItemDraft(d);
+  };
+
   const saveBundleShip = () => {
     const members = bundleShipMembers(bundleShipOpen);
-    const bt = bundleTotals(members);
+    // 未分類（bundleTypeDraft === ''）: 金額は変更せず bundleType をクリアするだけ
+    if (bundleTypeDraft === '') {
+      setData({
+        ...data,
+        inventory: (data.inventory || []).map(i => {
+          if (!members.find(m => m.id === i.id)) return i;
+          const { bundleType, ...rest } = i;
+          return rest;
+        }),
+      });
+      setBundleShipOpen(null);
+      setBundleShipDraft({});
+      setBundleItemDraft({});
+      setBundleShipTotalIn('');
+      setBundleSetTotalIn('');
+      setBundleTypeDraft('');
+      toast('種類を未分類に戻しました');
+      return;
+    }
+    // 個別購入 / セット購入: 各メンバーの金額を更新
     const deltaById = {};
-    const newShipById = {};
-    members.forEach(i => {
-      const v = bundleShipDraft[i.id];
-      const newShip = Number(v);
-      if (v === '' || isNaN(newShip) || newShip < 0) return;
-      const oldShip = bt.shipOf(i);
-      if (newShip === oldShip) return;
-      deltaById[i.id] = newShip - oldShip;
-      newShipById[i.id] = newShip;
-    });
-    const changed = Object.keys(newShipById).length;
-    if (changed === 0) { setBundleShipOpen(null); toast('変更はありません'); return; }
     setData({
       ...data,
       inventory: (data.inventory || []).map(i => {
-        if (newShipById[i.id] == null) return i;
-        const delta = deltaById[i.id];
-        const newPrice = (Number(i.purchasePrice) || 0) + delta;
-        // 旧形式（送料がグループ全体の額のまま）も、この保存で1点ずつの内訳に直す
-        const newItemPrice = Math.max(0, newPrice - newShipById[i.id]);
+        if (!members.find(m => m.id === i.id)) return i;
+        const newItemPrice = Math.max(0, Number(bundleItemDraft[i.id]) || 0);
+        const newShip = Math.max(0, Number(bundleShipDraft[i.id]) || 0);
+        const newPrice = newItemPrice + newShip;
+        const delta = newPrice - (Number(i.purchasePrice) || 0);
+        deltaById[i.id] = delta;
         return {
           ...i,
+          bundleType: bundleTypeDraft,
           purchasePrice: newPrice,
-          shippingTaxIn: newShipById[i.id],
           itemPriceTaxIn: newItemPrice,
+          shippingTaxIn: newShip,
+          priceUnconfirmed: newPrice > 0 ? false : i.priceUnconfirmed,
           purchaseCost: {
             ...(i.purchaseCost || {}),
             itemPriceTaxIn: newItemPrice,
-            shippingTaxIn: newShipById[i.id],
+            shippingTaxIn: newShip,
             shippingTaxRate: i.purchaseCost?.shippingTaxRate ?? 10,
             totalTaxIn: newPrice,
             totalTaxEx: newPrice,
@@ -5739,8 +5797,11 @@ const InventoryTab = () => {
     });
     setBundleShipOpen(null);
     setBundleShipDraft({});
+    setBundleItemDraft({});
     setBundleShipTotalIn('');
-    toast(`✅ ${changed}件の送料を更新しました`);
+    setBundleSetTotalIn('');
+    setBundleTypeDraft('');
+    toast(`✅ ${members.length}点の内訳を更新しました`);
   };
 
   const saveBulkPrices = () => {
@@ -6106,7 +6167,7 @@ const InventoryTab = () => {
                     <button onClick={() => openBundleShip(bg)}
                       style={{flexShrink:0,fontSize:12,fontWeight:700,padding:'8px 12px',border:'none',borderRadius:8,
                         background:'#4338ca',color:'white',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
-                      🚚 送料を入れ直す
+                      📦 内訳を編集
                     </button>
                   </div>
                 );
@@ -6200,6 +6261,22 @@ const InventoryTab = () => {
                               background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
                               📦 まとめ買い {members.length}点
                             </span>
+                            {firstItem.bundleType === 'individual' ? (
+                              <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                                background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
+                                📦 個別（同梱）
+                              </span>
+                            ) : firstItem.bundleType === 'set' ? (
+                              <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                                background:'#fdf4ff',color:'#86198f',border:'1px solid #f0abfc'}}>
+                                🎁 セット
+                              </span>
+                            ) : (
+                              <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                                background:'#f3f4f6',color:'#6b7280',border:'1px solid #e5e7eb'}}>
+                                ❓ 未分類
+                              </span>
+                            )}
                             {unconfirmedCount > 0 && (
                               <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
                                 background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
@@ -6317,6 +6394,14 @@ const InventoryTab = () => {
                               </div>
                             );
                           })}
+                          <div style={{padding:'10px 14px',background:'#fff'}}>
+                            <button onClick={e => { e.stopPropagation(); openBundleShip(bundleGroup); }}
+                              style={{width:'100%',padding:'10px',borderRadius:10,border:'1px solid #c7d2fe',
+                                background:'#eef2ff',color:'#3730a3',fontWeight:700,fontSize:12,cursor:'pointer',
+                                touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                              📦 仕入れ内訳を編集
+                            </button>
+                          </div>
                         </div>
                       )}
                     </React.Fragment>
@@ -7139,90 +7224,259 @@ const InventoryTab = () => {
         </div>
       )}
 
-      {/* まとめ買い送料入れ直しモーダル */}
+      {/* まとめ買い内訳エディタモーダル */}
       {bundleShipOpen && (
         <div className="modal-overlay" onClick={() => setBundleShipOpen(null)}>
           <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
             <div className="modal-handle"/>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
               <div>
-                <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>🚚 まとめ買いの送料を入れ直す</div>
-                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>同梱で送料が変わった場合はここで入れ直せます。仕入れ値と利益も自動で計算し直します</div>
+                <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>📦 まとめ買いの内訳</div>
+                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>仕入れの種類を選んで、各商品の金額を決めます。合計が支払総額と一致すると保存できます</div>
               </div>
               <button onClick={() => setBundleShipOpen(null)}
                 style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
             </div>
 
-            {/* 送料合計入力 + 割り振りボタン */}
-            <div style={{background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:12,padding:'12px 14px',marginBottom:14,marginTop:10}}>
-              <div style={{fontSize:12,fontWeight:700,color:'#3730a3',marginBottom:8}}>送料の合計</div>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                <input className="input-field" type="number" inputMode="numeric" placeholder="送料合計"
-                  value={bundleShipTotalIn}
-                  onChange={e => setBundleShipTotalIn(e.target.value)}
-                  style={{flex:1,textAlign:'right'}}/>
-                <button
-                  onClick={() => splitBundleShip('equal')}
-                  style={{flexShrink:0,padding:'12px 14px',borderRadius:10,border:'none',
-                    background:'#4338ca',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',
-                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                  均等に割る
+            {/* 種別セレクタ */}
+            <div style={{display:'flex',gap:8,marginBottom:14,marginTop:10}}>
+              {[
+                {value:'individual',label:'📦 個別購入（同梱）',desc:'個別に落札して同梱発送'},
+                {value:'set',label:'🎁 セット購入',desc:'まとめて1件で販売されていた'},
+                {value:'',label:'❓ 未分類',desc:'あとで決める'},
+              ].map(opt => (
+                <button key={opt.value} onClick={() => setBundleTypeDraft(opt.value)}
+                  style={{flex:1,padding:'10px 8px',borderRadius:10,border: bundleTypeDraft === opt.value ? 'none' : '1px solid #e5e7eb',
+                    background: bundleTypeDraft === opt.value ? '#4338ca' : '#f3f4f6',
+                    color: bundleTypeDraft === opt.value ? 'white' : '#374151',
+                    fontWeight:700,fontSize:12,cursor:'pointer',
+                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent',
+                    textAlign:'center',lineHeight:1.4}}>
+                  <div>{opt.label}</div>
+                  <div style={{fontSize:10,fontWeight:400,marginTop:2,opacity:0.85}}>{opt.desc}</div>
                 </button>
-                <button
-                  onClick={() => splitBundleShip('ratio')}
-                  style={{flexShrink:0,padding:'12px 14px',borderRadius:10,border:'none',
-                    background:'#6366f1',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',
-                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                  金額で按分
-                </button>
-              </div>
-              <div style={{fontSize:11,color:'#4338ca',marginTop:6,opacity:0.85}}>※端数は最後の1点に寄せます</div>
+              ))}
             </div>
 
-            {/* 商品ごとの送料入力行 */}
-            <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
-              {(() => { const _bt = bundleTotals(bundleShipMembers(bundleShipOpen)); return bundleShipMembers(bundleShipOpen).map(item => {
-                const currentShip = _bt.shipOf(item);
-                const hasSale = (data.sales||[]).some(s => s.inventoryId === item.id);
-                return (
-                  <div key={item.id}
-                    style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',
-                      background:'#f9fafb',borderRadius:12,border:'1px solid #e5e7eb'}}>
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111'}}>{item.productName || '(名称未設定)'}</div>
-                      <div style={{fontSize:11,color:'#9ca3af',marginTop:2}}>現在 ¥{formatMoney(currentShip)}</div>
-                      {hasSale && (
-                        <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',marginTop:2}}>✅ 売却済 · 利益も再計算されます</div>
-                      )}
-                    </div>
-                    <input className="input-field" type="number" inputMode="numeric" placeholder="0"
-                      value={bundleShipDraft[item.id] ?? ''}
-                      onChange={e => setBundleShipDraft(prev => ({ ...prev, [item.id]: e.target.value }))}
-                      style={{width:110,flexShrink:0,textAlign:'right'}}/>
+            {/* 未分類時: 読み取り専用の現在内訳表示 */}
+            {bundleTypeDraft === '' && (() => {
+              const _bt = bundleTotals(bundleShipMembers(bundleShipOpen));
+              return (
+                <div style={{background:'#f9fafb',border:'1px solid #e5e7eb',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+                  <div style={{fontSize:12,color:'#6b7280',marginBottom:8}}>種類を選ぶと、各商品の金額を編集できます</div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontSize:12,color:'#374151'}}>商品代 <strong>¥{formatMoney(_bt.itemSum)}</strong></span>
+                    <span style={{color:'#d1d5db'}}>＋</span>
+                    <span style={{fontSize:12,color:'#374151'}}>送料 <strong>¥{formatMoney(_bt.shipSum)}</strong></span>
+                    <span style={{color:'#d1d5db'}}>＝</span>
+                    <span style={{fontSize:12,fontWeight:800,color:'#3730a3'}}>合計 ¥{formatMoney(_bt.grandTotal)}</span>
                   </div>
-                );
-              }); })()}
-            </div>
+                </div>
+              );
+            })()}
 
-            {/* ライブ合計 + 保存ボタン */}
+            {/* 個別購入のUI */}
+            {bundleTypeDraft === 'individual' && (
+              <>
+                <div style={{background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#3730a3',marginBottom:8}}>共通送料</div>
+                  <input className="input-field" type="number" inputMode="numeric" placeholder="送料合計"
+                    value={bundleShipTotalIn}
+                    onChange={e => setBundleShipTotalIn(e.target.value)}
+                    style={{width:'100%',textAlign:'right'}}/>
+                  <div style={{display:'flex',gap:8,marginTop:8}}>
+                    <button onClick={() => splitBundleShip('equal')}
+                      style={{flex:1,padding:'10px 8px',borderRadius:10,border:'none',
+                        background:'#4338ca',color:'white',fontWeight:700,fontSize:12,cursor:'pointer',
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      均等に割る
+                    </button>
+                    <button onClick={() => splitBundleShip('ratio')}
+                      style={{flex:1,padding:'10px 8px',borderRadius:10,border:'none',
+                        background:'#6366f1',color:'white',fontWeight:700,fontSize:12,cursor:'pointer',
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      落札価格で按分
+                    </button>
+                  </div>
+                  <div style={{fontSize:11,color:'#4338ca',marginTop:6,opacity:0.85}}>※端数は最後の1点に寄せます</div>
+                </div>
+
+                <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
+                  {bundleShipMembers(bundleShipOpen).map(item => {
+                    const hasSale = (data.sales||[]).some(s => s.inventoryId === item.id);
+                    const itemVal = Number(bundleItemDraft[item.id]) || 0;
+                    const shipVal = Number(bundleShipDraft[item.id]) || 0;
+                    return (
+                      <div key={item.id}
+                        style={{padding:'10px 12px',background:'#f9fafb',borderRadius:12,border:'1px solid #e5e7eb'}}>
+                        <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111'}}>{item.productName || '(名称未設定)'}</div>
+                            {item.brand ? <div style={{fontSize:11,color:'#9ca3af',marginTop:1}}>{item.brand}</div> : null}
+                            {hasSale && (
+                              <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',marginTop:2}}>✅ 売却済 · 利益も再計算されます</div>
+                            )}
+                          </div>
+                          <div style={{display:'flex',flexDirection:'column',gap:6,flexShrink:0}}>
+                            <div>
+                              <div style={{fontSize:10,color:'#9ca3af',textAlign:'right',marginBottom:2}}>落札価格</div>
+                              <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                                value={bundleItemDraft[item.id] ?? ''}
+                                onChange={e => setBundleItemDraft(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                style={{width:110,textAlign:'right'}}/>
+                            </div>
+                            <div>
+                              <div style={{fontSize:10,color:'#9ca3af',textAlign:'right',marginBottom:2}}>送料</div>
+                              <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                                value={bundleShipDraft[item.id] ?? ''}
+                                onChange={e => setBundleShipDraft(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                style={{width:110,textAlign:'right'}}/>
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{fontSize:11,fontWeight:700,color:'#374151',textAlign:'right',marginTop:6}}>
+                          小計 ¥{formatMoney(itemVal + shipVal)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* セット購入のUI */}
+            {bundleTypeDraft === 'set' && (
+              <>
+                <div style={{background:'#fdf4ff',border:'1px solid #f0abfc',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#86198f',marginBottom:8}}>セット総額（商品代）</div>
+                  <input className="input-field" type="number" inputMode="numeric" placeholder="商品代の合計"
+                    value={bundleSetTotalIn}
+                    onChange={e => setBundleSetTotalIn(e.target.value)}
+                    style={{width:'100%',textAlign:'right'}}/>
+                  <div style={{display:'flex',gap:8,marginTop:8,marginBottom:12}}>
+                    <button onClick={() => splitBundleItem('equal')}
+                      style={{flex:1,padding:'10px 8px',borderRadius:10,border:'none',
+                        background:'#86198f',color:'white',fontWeight:700,fontSize:12,cursor:'pointer',
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      均等に割る
+                    </button>
+                    <button onClick={() => splitBundleItem('ratio')}
+                      style={{flex:1,padding:'10px 8px',borderRadius:10,border:'none',
+                        background:'#a21caf',color:'white',fontWeight:700,fontSize:12,cursor:'pointer',
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      比率で按分
+                    </button>
+                  </div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#86198f',marginBottom:8}}>送料</div>
+                  <input className="input-field" type="number" inputMode="numeric" placeholder="送料合計"
+                    value={bundleShipTotalIn}
+                    onChange={e => setBundleShipTotalIn(e.target.value)}
+                    style={{width:'100%',textAlign:'right'}}/>
+                  <div style={{display:'flex',gap:8,marginTop:8}}>
+                    <button onClick={() => splitBundleShip('equal')}
+                      style={{flex:1,padding:'10px 8px',borderRadius:10,border:'none',
+                        background:'#4338ca',color:'white',fontWeight:700,fontSize:12,cursor:'pointer',
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      均等に割る
+                    </button>
+                    <button onClick={() => splitBundleShip('ratio')}
+                      style={{flex:1,padding:'10px 8px',borderRadius:10,border:'none',
+                        background:'#6366f1',color:'white',fontWeight:700,fontSize:12,cursor:'pointer',
+                        touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      金額で按分
+                    </button>
+                  </div>
+                  <div style={{fontSize:11,color:'#86198f',marginTop:6,opacity:0.85}}>※0円の配分もできます。端数は最後の1点に寄せます</div>
+                </div>
+
+                <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
+                  {bundleShipMembers(bundleShipOpen).map(item => {
+                    const hasSale = (data.sales||[]).some(s => s.inventoryId === item.id);
+                    const itemVal = Number(bundleItemDraft[item.id]) || 0;
+                    const shipVal = Number(bundleShipDraft[item.id]) || 0;
+                    return (
+                      <div key={item.id}
+                        style={{padding:'10px 12px',background:'#f9fafb',borderRadius:12,border:'1px solid #e5e7eb'}}>
+                        <div style={{display:'flex',alignItems:'flex-start',gap:10}}>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111'}}>{item.productName || '(名称未設定)'}</div>
+                            {item.brand ? <div style={{fontSize:11,color:'#9ca3af',marginTop:1}}>{item.brand}</div> : null}
+                            {hasSale && (
+                              <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',marginTop:2}}>✅ 売却済 · 利益も再計算されます</div>
+                            )}
+                          </div>
+                          <div style={{display:'flex',flexDirection:'column',gap:6,flexShrink:0}}>
+                            <div>
+                              <div style={{fontSize:10,color:'#9ca3af',textAlign:'right',marginBottom:2}}>商品代</div>
+                              <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                                value={bundleItemDraft[item.id] ?? ''}
+                                onChange={e => setBundleItemDraft(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                style={{width:110,textAlign:'right'}}/>
+                            </div>
+                            <div>
+                              <div style={{fontSize:10,color:'#9ca3af',textAlign:'right',marginBottom:2}}>送料</div>
+                              <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                                value={bundleShipDraft[item.id] ?? ''}
+                                onChange={e => setBundleShipDraft(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                style={{width:110,textAlign:'right'}}/>
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{fontSize:11,fontWeight:700,color:'#374151',textAlign:'right',marginTop:6}}>
+                          小計 ¥{formatMoney(itemVal + shipVal)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* sticky サマリー + 保存ボタン */}
             {(() => {
-              const draftSum = Object.values(bundleShipDraft).reduce((s, v) => s + (Number(v) || 0), 0);
-              const targetTotal = Number(bundleShipTotalIn) || 0;
-              const mismatch = targetTotal > 0 && draftSum !== targetTotal;
+              const members = bundleShipMembers(bundleShipOpen);
+              const itemSum = members.reduce((s, m) => s + (Number(bundleItemDraft[m.id]) || 0), 0);
+              const shipSum = members.reduce((s, m) => s + (Number(bundleShipDraft[m.id]) || 0), 0);
+              const allocTotal = itemSum + shipSum;
+              const targetItem = bundleTypeDraft === 'set' ? (Number(bundleSetTotalIn) || 0) : itemSum;
+              const targetShip = Number(bundleShipTotalIn) || 0;
+              const payTotal = targetItem + targetShip;
+              const restItem = targetItem - itemSum;
+              const restShip = targetShip - shipSum;
+              const ok = bundleTypeDraft === '' || (restItem === 0 && restShip === 0);
               return (
                 <div style={{position:'sticky',bottom:0,background:'white',paddingTop:10,paddingBottom:'calc(10px + env(safe-area-inset-bottom))',marginTop:-10}}>
-                  <div style={{fontSize:12,fontWeight:700,color: mismatch ? '#dc2626' : '#6b7280',marginBottom:8,textAlign:'right'}}>
-                    入力中の合計 ¥{formatMoney(draftSum)}
-                    {mismatch && <span style={{marginLeft:6,fontSize:11}}>（目標 ¥{formatMoney(targetTotal)} と異なります）</span>}
-                  </div>
+                  {bundleTypeDraft !== '' && (
+                    <div style={{fontSize:12,fontWeight:700,marginBottom:8,textAlign:'right',lineHeight:1.6}}>
+                      <div style={{color:'#6b7280'}}>
+                        支払総額 ¥{formatMoney(payTotal)}
+                        <span style={{margin:'0 6px',color:'#d1d5db'}}>／</span>
+                        配分合計 ¥{formatMoney(allocTotal)}
+                      </div>
+                      <div>
+                        {bundleTypeDraft === 'set' ? (
+                          restItem === 0 && restShip === 0
+                            ? <span style={{color:'#16a34a'}}>✅ 合計が一致しています</span>
+                            : <span style={{color:'#dc2626'}}>商品代 残り ¥{formatMoney(restItem)}　送料 残り ¥{formatMoney(restShip)}</span>
+                        ) : (
+                          restShip === 0
+                            ? <span style={{color:'#16a34a'}}>✅ 合計が一致しています</span>
+                            : <span style={{color:'#dc2626'}}>送料 残り ¥{formatMoney(restShip)}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   <button
-                    onClick={saveBundleShip}
+                    onClick={ok ? saveBundleShip : undefined}
+                    disabled={!ok}
                     style={{width:'100%',padding:'14px',borderRadius:12,border:'none',
-                      background:'#4338ca',color:'white',
-                      fontWeight:800,fontSize:15,cursor:'pointer',
+                      background: ok ? '#4338ca' : '#e5e7eb',
+                      color: ok ? 'white' : '#9ca3af',
+                      fontWeight:800,fontSize:15,
+                      cursor: ok ? 'pointer' : 'default',
                       touchAction:'manipulation',WebkitTapHighlightColor:'transparent',
                       transition:'all 0.15s'}}>
-                    保存する
+                    {ok ? '保存する' : '合計が一致していません'}
                   </button>
                 </div>
               );
