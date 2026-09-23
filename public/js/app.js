@@ -1020,6 +1020,9 @@ const getInitialData = () => ({
         'すまりく ヤフオク！ショップ','pleasure','ECO BASEヤフー店','リアクロ','エルミ ヤフーSHOP',
       ],
     },
+    // 仕入先マスタ（Phase 1）
+    // { key, name, type, license, companyName, address, note, aliases: [], updatedAt }
+    suppliers: [],
     // Google Sheets連携（OAuth2）
     gasUrl: '',
     googleClientId: '',
@@ -10035,16 +10038,50 @@ const _saleRow = (s, invMap, rowNum) => {
   ];
 };
 
+// ── 仕入先マスタ ヘルパー ──────────────────────────────────────────────────
+// 仕入先名の照合キー（空白除去・全角英数→半角・小文字化）
+const normalizeSupplierKey = (s) => String(s || '')
+  .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+  .replace(/[\u3000\s]+/g, '')
+  .toLowerCase();
+
+// 許可証番号の表記ゆれを整える（提案用。自動適用はしない）
+// 全角スペース1個はそのまま残す（正しい表記なので不要な「直す」提案を出さない）
+const tidyLicense = (s) => String(s || '')
+  .replace(/^古物商許可証番号?[:：]?\s*/, '')
+  .replace(/^古物商許(?=.{0,8}公安委員会)/, '')
+  .replace(/[ \t]{2,}/g, ' ')
+  .replace(/\u3000{2,}/g, '\u3000')
+  .trim();
+
+// suppliers から1件引く（key一致 → aliases一致）
+const findSupplier = (name, settings) => {
+  const k = normalizeSupplierKey(name);
+  if (!k) return null;
+  const list = settings?.suppliers || [];
+  return list.find(s => s.key === k)
+      || list.find(s => (s.aliases || []).includes(k))
+      || null;
+};
+// ─────────────────────────────────────────────────────────────────────────────
+
 // 許可証番号の解決（settings を引数で受け取る）
+// 優先順: ① item 保存済み → ② suppliers → ③ yahooStores → ④ storeLicenses
 const _resolveLicense = (item, settings) => {
   if (item.sellerLicense) return item.sellerLicense;
-  const found = (settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+  const storeName = item.purchaseStore || item.storeName;
+  const sup = findSupplier(storeName, settings);
+  if (sup?.license) return sup.license;
+  const found = (settings?.yahooStores||[]).find(s => s.storeName === storeName);
   if (found?.license) return found.license;
-  return (settings?.storeLicenses||{})[item.purchaseStore] || '';
+  return (settings?.storeLicenses||{})[storeName] || '';
 };
 const _resolveCompanyName = (item, settings) => {
   if (item.sellerCompanyName) return item.sellerCompanyName;
-  const found = (settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
+  const storeName = item.purchaseStore || item.storeName;
+  const sup = findSupplier(storeName, settings);
+  if (sup?.companyName) return sup.companyName;
+  const found = (settings?.yahooStores||[]).find(s => s.storeName === storeName);
   return found?.companyName || '';
 };
 
@@ -10610,18 +10647,9 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
   const thStyle = {padding:'5px 7px',textAlign:'left',fontSize:11,color:'#888',fontWeight:700,borderBottom:'1px solid #eee',whiteSpace:'nowrap'};
   const tdStyle = (extra={}) => ({padding:'6px 7px',whiteSpace:'nowrap',...extra});
 
-  // 許可証番号の解決関数（item保存値 → settings.yahooStores → settings.storeLicenses の順で検索）
-  const resolveLicense = (item) => {
-    if (item.sellerLicense) return item.sellerLicense;
-    const found = (data.settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
-    if (found?.license) return found.license;
-    return (settings.storeLicenses||{})[item.purchaseStore] || '';
-  };
-  const resolveCompanyName = (item) => {
-    if (item.sellerCompanyName) return item.sellerCompanyName;
-    const found = (data.settings?.yahooStores||[]).find(s => s.storeName === item.purchaseStore);
-    return found?.companyName || '';
-  };
+  // 許可証番号の解決関数（モジュールスコープの _resolveLicense/_resolveCompanyName に委譲）
+  const resolveLicense     = (item) => _resolveLicense(item, data.settings);
+  const resolveCompanyName = (item) => _resolveCompanyName(item, data.settings);
 
   // 相対時刻表示ヘルパー
   const relativeTime = (isoStr) => {
@@ -12949,6 +12977,9 @@ const OtherTab = ({ mode }) => {
   const bgFileInputRef = React.useRef();
   const [settings, setSettings] = React.useState({ ...getInitialData().settings, ...data.settings });
   const [yahooAddForm, setYahooAddForm] = React.useState(null); // null=非表示, {storeName:'',license:''}=入力中
+  const [supplierSearch, setSupplierSearch] = React.useState('');
+  const [supplierCompletedOpen, setSupplierCompletedOpen] = React.useState(false);
+  const [supplierShowLimit, setSupplierShowLimit] = React.useState(20); // 一度に描画する未入力仕入先の件数（入力のたびに全行が再描画されて重くなるのを防ぐ）
   const [storeRenameForm, setStoreRenameForm] = React.useState({ from: '', to: '' }); // ストア名一括変更
   const receiptFileRef = React.useRef();
   const restoreFileRef = React.useRef();
@@ -13090,7 +13121,7 @@ const OtherTab = ({ mode }) => {
     setSettings(prev => {
       const updated = { ...prev, [key]: val };
       // 即時保存が必要なキー
-      if (['storeLicenses','yahooStores','googleClientId','googleSpreadsheetId'].includes(key)) {
+      if (['storeLicenses','yahooStores','suppliers','googleClientId','googleSpreadsheetId'].includes(key)) {
         setData({ ...data, settings: updated });
       }
       return updated;
@@ -14095,6 +14126,165 @@ const OtherTab = ({ mode }) => {
               </button>
               {openGroups.stores && (
                 <div style={{padding:'0 16px 16px 16px'}}>
+
+            {/* ── 仕入先の整備（仕入先マスタ Phase 1） ── */}
+            {(() => {
+              // 使用件数を集計
+              const countMap = {};
+              (data.inventory || []).forEach(item => {
+                const name = item.purchaseStore || item.storeName;
+                if (!name) return;
+                countMap[name] = (countMap[name] || 0) + 1;
+              });
+              const allNames = Object.keys(countMap).sort((a, b) => countMap[b] - countMap[a]);
+
+              const suppliers = settings.suppliers || [];
+
+              // 許可証が引けるか判定
+              const hasLicense = (name) => {
+                const sup = findSupplier(name, settings);
+                if (sup?.license) return true;
+                if ((settings.yahooStores||[]).find(s => s.storeName === name)?.license) return true;
+                if ((settings.storeLicenses||{})[name]) return true;
+                return false;
+              };
+
+              const filteredNames = supplierSearch
+                ? allNames.filter(n => n.includes(supplierSearch))
+                : allNames;
+
+              const missingNames = filteredNames.filter(n => !hasLicense(n));
+              const completedNames = filteredNames.filter(n => hasLicense(n));
+
+              // suppliers の upsert
+              const upsertSupplier = (name, patch) => {
+                const k = normalizeSupplierKey(name);
+                const list = [...(settings.suppliers || [])];
+                const idx = list.findIndex(s => s.key === k);
+                if (idx >= 0) {
+                  list[idx] = { ...list[idx], ...patch, updatedAt: new Date().toISOString() };
+                } else {
+                  // type の初期値を判定
+                  const yahooMaster = (settings.storeMaster?.yahooStores || []);
+                  const normalMaster = (settings.storeMaster?.normalStores || []);
+                  const isYahoo = yahooMaster.includes(name) || (settings.yahooStores||[]).some(s => s.storeName === name);
+                  const isStore = normalMaster.includes(name);
+                  const type = isYahoo ? 'yahoo' : (isStore ? 'store' : 'store');
+                  list.push({ key: k, name, type, license: '', companyName: '', address: '', note: '', aliases: [], updatedAt: new Date().toISOString(), ...patch });
+                }
+                setSetting('suppliers', list);
+              };
+
+              // 1行コンポーネント（関数で返す）
+              const renderSupplierRow = (name) => {
+                const sup = findSupplier(name, settings);
+                const licVal = sup?.license || '';
+                const coVal  = sup?.companyName || '';
+                const addrVal = sup?.address || '';
+                const count = countMap[name] || 0;
+
+                // 表記ゆれ提案
+                const resolvedLic = _resolveLicense({ purchaseStore: name }, settings);
+                const tidied = tidyLicense(resolvedLic);
+                const showTidyBtn = resolvedLic && resolvedLic !== tidied;
+
+                // 商品N件上書きボタン
+                const diffItems = (data.inventory || []).filter(item => {
+                  const sn = item.purchaseStore || item.storeName;
+                  return sn === name && item.sellerLicense && item.sellerLicense !== licVal;
+                });
+
+                return (
+                  <div key={name} style={{marginBottom:14,paddingBottom:12,borderBottom:'1px solid #f0f0f0'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                      <span style={{fontWeight:700,fontSize:13,color:'#333',flex:1}}>{name}</span>
+                      <span style={{fontSize:11,color:'#fff',background:'#6b7280',borderRadius:99,padding:'1px 7px',flexShrink:0}}>{count}件</span>
+                    </div>
+                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                      <input className="input-field" style={{flex:'2 1 160px',marginBottom:0,fontSize:12}}
+                        value={licVal}
+                        onChange={e => upsertSupplier(name, { license: e.target.value })}
+                        placeholder="例: 愛知県公安委員会 第541162001000号"/>
+                      <input className="input-field" style={{flex:'1 1 120px',marginBottom:0,fontSize:12}}
+                        value={coVal}
+                        onChange={e => upsertSupplier(name, { companyName: e.target.value })}
+                        placeholder="例: 株式会社〇〇"/>
+                      <input className="input-field" style={{flex:'2 1 160px',marginBottom:0,fontSize:12}}
+                        value={addrVal}
+                        onChange={e => upsertSupplier(name, { address: e.target.value })}
+                        placeholder="例: 愛知県名古屋市..."/>
+                    </div>
+                    {showTidyBtn && (
+                      <div style={{marginTop:6,fontSize:11,color:'#b45309',display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                        <span>表記ゆれ候補: {tidied}</span>
+                        <button onClick={() => upsertSupplier(name, { license: tidied })}
+                          style={{padding:'2px 10px',borderRadius:8,border:'1px solid #b45309',background:'#fffbeb',color:'#b45309',fontSize:11,cursor:'pointer',fontWeight:700}}>
+                          表記を直す
+                        </button>
+                      </div>
+                    )}
+                    {licVal && diffItems.length > 0 && (
+                      <div style={{marginTop:6}}>
+                        <button onClick={() => {
+                          if (!window.confirm('過去の古物台帳の出力内容が変わります。よろしいですか？')) return;
+                          const now = new Date().toISOString();
+                          const newInventory = (data.inventory || []).map(item => {
+                            const sn = item.purchaseStore || item.storeName;
+                            if (sn === name && item.sellerLicense && item.sellerLicense !== licVal) {
+                              return { ...item, sellerLicense: licVal, updatedAt: now };
+                            }
+                            return item;
+                          });
+                          setData({ ...data, inventory: newInventory });
+                        }}
+                          style={{padding:'4px 12px',borderRadius:8,border:'1px solid #dc2626',background:'#fff1f2',color:'#dc2626',fontSize:11,cursor:'pointer',fontWeight:700}}>
+                          商品{diffItems.length}件の許可証を上書き
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+
+              return (
+                <div className="card" style={{padding:16,marginBottom:12}}>
+                  <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>🏬 仕入先の整備</div>
+                  <div style={{fontSize:12,color:'#999',marginBottom:10}}>仕入れ実績のある店舗の許可証・法人名・住所をまとめて管理できます</div>
+                  <input className="input-field" style={{fontSize:13,marginBottom:12}}
+                    value={supplierSearch}
+                    onChange={e => setSupplierSearch(e.target.value)}
+                    placeholder="店名で絞り込み"/>
+
+                  {missingNames.length > 0 && (
+                    <div>
+                      <div style={{fontWeight:700,fontSize:12,color:'#b45309',marginBottom:8}}>⚠️ 未入力（{missingNames.length}件）</div>
+                      {missingNames.slice(0, supplierShowLimit).map(name => renderSupplierRow(name))}
+                      {missingNames.length > supplierShowLimit && (
+                        <button onClick={() => setSupplierShowLimit(v => v + 20)}
+                          style={{width:'100%',padding:'8px 0',borderRadius:8,border:'1px dashed #d1d5db',background:'#fafafa',color:'#6b7280',fontSize:12,cursor:'pointer',fontWeight:700,marginBottom:10}}>
+                          あと{missingNames.length - supplierShowLimit}件を表示
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {completedNames.length > 0 && (
+                    <div>
+                      <button onClick={() => setSupplierCompletedOpen(v => !v)}
+                        style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'#16a34a',fontWeight:700,padding:'4px 0',marginBottom:6,display:'flex',alignItems:'center',gap:4}}>
+                        <span>✅ 入力済み（{completedNames.length}件）</span>
+                        <span style={{fontSize:11,color:'#999'}}>{supplierCompletedOpen ? '▾' : '▸'}</span>
+                      </button>
+                      {supplierCompletedOpen && completedNames.map(name => renderSupplierRow(name))}
+                    </div>
+                  )}
+
+                  {allNames.length === 0 && (
+                    <div style={{fontSize:12,color:'#aaa',textAlign:'center',padding:'16px 0'}}>仕入れ実績のある店舗がまだありません</div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* ── 仕入先 古物商許可証番号管理（通常店舗） ── */}
             <div className="card" style={{padding:16,marginBottom:12}}>
