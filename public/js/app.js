@@ -5531,6 +5531,8 @@ const InventoryTab = () => {
   const [bundleShipOpen, setBundleShipOpen] = React.useState(null);   // 編集中の bundleGroup
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
+  const [groupBundles, setGroupBundles] = React.useState(() => localStorage.getItem('nobushop_group_bundles') !== '0');
+  const [openBundles, setOpenBundles] = React.useState(() => new Set());
 
   // ★ マウント時: pending値をクリア & スクロール位置を復元
   // filter は useState 初期化で既に正しい値になっているため、setFilter は不要
@@ -5976,6 +5978,28 @@ const InventoryTab = () => {
         </div>
       )}
 
+      {/* まとめ買いグループ化トグル */}
+      {!bulkMode && filter !== 'bundle' && (data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
+        <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
+          <button
+            onClick={() => { const v = !groupBundles; setGroupBundles(v); localStorage.setItem('nobushop_group_bundles', v ? '1' : '0'); }}
+            style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:99,border:'none',cursor:'pointer',
+              fontSize:11,fontWeight:700,
+              background: groupBundles ? '#eef2ff' : '#f3f4f6',
+              color: groupBundles ? '#4338ca' : '#9ca3af',
+              WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
+            <span style={{fontSize:13,lineHeight:1}}>📦</span>
+            まとめ買いをまとめて表示
+            <span style={{width:28,height:16,borderRadius:99,display:'inline-flex',alignItems:'center',
+              background: groupBundles ? '#4338ca' : '#d1d5db',
+              position:'relative',transition:'background 0.15s',flexShrink:0}}>
+              <span style={{width:12,height:12,borderRadius:'50%',background:'white',position:'absolute',
+                left: groupBundles ? 14 : 2,transition:'left 0.15s'}}/>
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* ストアで絞り込み */}
       {!bulkMode && storeOptions.length > 0 && (
         <div style={{padding:'8px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
@@ -6096,162 +6120,367 @@ const InventoryTab = () => {
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
-            {sorted.map(item => {
-              const isChecked = checkedIds.has(item.id);
-              const alert = alertLevel(item);
-              /* 見込み利益は手数料・送料を引いた実額（利益順ソートと同じ計算）*/
-              const estFees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
-              const estProfit = calcProfit(item.listPrice||0, item.purchasePrice||0,
-                estFees[item.platform] ?? estFees['メルカリ'] ?? 0.10, CONFIG.ESTIMATED_SHIPPING);
-              const isSold = item.status === 'sold';
-              const saleRecord = isSold ? (data.sales||[]).find(s => s.inventoryId === item.id) : null;
-              const soldProfit = saleRecord?.profit ?? null;
-              const soldPP = (saleRecord?.purchasePrice||0) > 0 ? saleRecord.purchasePrice : (item.purchasePrice||0);
-              const isProfitable = soldProfit !== null ? soldProfit >= 0 : null;
-              return (
-                <div key={item.id} className="card"
-                  style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
-                    background: isChecked ? '#fef2f2'
-                              : isSold ? '#f8f8f8'
-                              : alert?.level==='danger' ? '#fff8f8' : 'white',
-                    border: isChecked ? '1.5px solid #fca5a5'
-                          : isSold ? '1.5px solid #e0e0e0'
-                          : alert?.level==='danger' ? '1.5px solid #fecaca'
-                          : alert?.level==='warn'   ? '1.5px solid #fde68a'
-                          : '1.5px solid transparent',
-                    borderLeft: isSold ? '4px solid #7c3aed' : undefined,
-                    opacity: isSold ? 0.85 : 1,
-                    transition:'all 0.15s'}}
-                  onClick={bulkMode ? (e) => toggleCheck(item.id, e) : () => setSelected(item)}>
-                  {bulkMode && (
-                    <input type="checkbox" checked={isChecked}
-                      onChange={e => toggleCheck(item.id, e)}
-                      onClick={e => e.stopPropagation()}
-                      style={{width:22,height:22,flexShrink:0,cursor:'pointer',accentColor:'var(--color-primary)'}} />
-                  )}
-                  <div style={{position:'relative',flexShrink:0}}>
-                    <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
-                    {/* 売却済はサムネイル上にオーバーレイ */}
-                    {isSold && (
-                      <div style={{position:'absolute',inset:0,borderRadius:10,
-                        background:'rgba(124,58,237,0.15)',
-                        display:'flex',alignItems:'center',justifyContent:'center'}}>
-                        <span style={{fontSize:9,fontWeight:800,color:'white',
-                          background:'#7c3aed',borderRadius:4,padding:'2px 5px',letterSpacing:'0.04em'}}>
-                          SOLD
-                        </span>
-                      </div>
-                    )}
-                    {!isSold && (
-                      <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
-                        style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
-                        {statusLabel[item.status] || '未出品'}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
-                    <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
-                    <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
-                      {item.priceUnconfirmed && (
-                        <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
-                          background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
-                          💰 金額未確定
-                        </span>
-                      )}
-                      {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
-                        <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
-                          background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
-                          📦 まとめ{bundleCounts[item.bundleGroup]}点
-                        </span>
-                      )}
-                      {conditionTag(item.condition)}
-                      {/* 売却済バッジ＋売却日 */}
-                      {isSold && (
-                        <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
-                          background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe'}}>
-                          ✅ 売却済{saleRecord?.saleDate ? ` ${saleRecord.saleDate.slice(5)}` : ''}
-                        </span>
-                      )}
-                      {/* 出品準備度バッジ（未出品のみ） */}
-                      {item.status === 'unlisted' && (() => {
-                        const done = [
-                          (item.photos||[]).length > 0,
-                          !!item.productName,
-                          (item.listPrice||0) > 0,
-                          !!item.listDate,
-                          !!item.descriptionText,
-                          !!item.englishTitle,
-                        ].filter(Boolean).length;
-                        const total = 6;
-                        if (done === total) return (
-                          <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
-                            background:'#f0fdf4',color:'#16a34a',border:'1px solid #bbf7d0'}}>
-                            ✅ 出品準備OK
-                          </span>
-                        );
-                        return (
-                          <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
-                            background:'#fafafa',color:'#9ca3af',border:'1px solid #e5e7eb'}}>
-                            準備 {done}/{total}
-                          </span>
-                        );
-                      })()}
-                      {/* 経過日数・アラートバッジ */}
-                      {alert && !isSold && (
-                        <span style={{
-                          fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
-                          background:'#f0fdf4',
-                          color:'#6b7280',
-                          border:'1px solid #e5e7eb',
+            {(() => {
+              // グループ化条件を満たす場合は描画用配列を組み立てる
+              const useGrouping = groupBundles && !bulkMode && filter !== 'bundle';
+              const displayRows = [];
+              if (useGrouping) {
+                const seenBundles = new Set();
+                sorted.forEach(item => {
+                  if (item.bundleGroup && bundleCounts[item.bundleGroup] > 1) {
+                    if (!seenBundles.has(item.bundleGroup)) {
+                      seenBundles.add(item.bundleGroup);
+                      // sortedの中でこのbundleGroupに属するメンバーを集める
+                      const members = sorted.filter(x => x.bundleGroup === item.bundleGroup);
+                      displayRows.push({ type: 'bundle', bundleGroup: item.bundleGroup, members });
+                    }
+                    // 2件目以降はスキップ（まとめカードに内包）
+                  } else {
+                    displayRows.push({ type: 'single', item });
+                  }
+                });
+              } else {
+                sorted.forEach(item => displayRows.push({ type: 'single', item }));
+              }
+
+              return displayRows.map(row => {
+                if (row.type === 'bundle') {
+                  // ===== まとめカード =====
+                  const { bundleGroup, members } = row;
+                  const isOpen = openBundles.has(bundleGroup);
+                  const { grandTotal } = bundleTotals(members);
+                  const soldMembers = members.map(m => {
+                    const sr = (data.sales||[]).find(s => s.inventoryId === m.id);
+                    return { item: m, sale: sr };
+                  });
+                  const soldCount = soldMembers.filter(x => x.sale).length;
+                  const totalSalePrice = soldMembers.reduce((s, x) => s + (x.sale ? (x.sale.salePrice||0) : 0), 0);
+                  const totalProfit = soldMembers.reduce((s, x) => s + (x.sale ? (x.sale.profit||0) : 0), 0);
+                  const hasSold = soldCount > 0;
+                  const isProfitPos = totalProfit >= 0;
+                  const unconfirmedCount = members.filter(m => m.priceUnconfirmed).length;
+                  const brands = [...new Set(members.map(m => m.brand).filter(Boolean))];
+                  const brandSummary = brands.length === 0 ? '' :
+                    brands.length <= 3 ? brands.join('・') :
+                    brands.slice(0, 3).join('・') + ' ほか';
+                  const firstItem = members[0];
+                  const restCount = members.length - 1;
+
+                  return (
+                    <React.Fragment key={`bundle-${bundleGroup}`}>
+                      {/* まとめカード本体 */}
+                      <div className="card"
+                        style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
+                          background:'white',
+                          border:'1.5px solid #c7d2fe',
+                          borderLeft:'4px solid #4338ca',
+                          transition:'all 0.15s'}}
+                        onClick={() => {
+                          setOpenBundles(prev => {
+                            const next = new Set(prev);
+                            if (next.has(bundleGroup)) next.delete(bundleGroup); else next.add(bundleGroup);
+                            return next;
+                          });
                         }}>
-                          {alert.days}日
+                        {/* サムネイル＋残り件数バッジ */}
+                        <div style={{position:'relative',flexShrink:0}}>
+                          <ItemThumbnail thumbId={firstItem.photos?.[0]?.thumbId} thumbDataUrl={firstItem.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
+                          {restCount > 0 && (
+                            <span style={{position:'absolute',bottom:-4,right:-4,fontSize:9,fontWeight:800,
+                              background:'#4338ca',color:'white',borderRadius:99,padding:'1px 5px',
+                              border:'1.5px solid white',lineHeight:1.5}}>
+                              +{restCount}
+                            </span>
+                          )}
+                        </div>
+                        {/* テキスト情報 */}
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap',marginBottom:3}}>
+                            <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                              background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
+                              📦 まとめ買い {members.length}点
+                            </span>
+                            {unconfirmedCount > 0 && (
+                              <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
+                                background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
+                                💰 金額未確定 {unconfirmedCount}点
+                              </span>
+                            )}
+                            <span style={{fontSize:11,color:'#9ca3af',fontWeight:600}}>
+                              {firstItem.purchaseStore || ''}{firstItem.purchaseDate ? `　${firstItem.purchaseDate.replace(/-/g, '/')}` : ''}
+                            </span>
+                          </div>
+                          {brandSummary ? (
+                            <div style={{fontSize:12,color:'#555',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:3}}>
+                              {brandSummary}
+                            </div>
+                          ) : null}
+                          <div style={{display:'flex',alignItems:'baseline',gap:6,flexWrap:'wrap'}}>
+                            <span style={{fontSize:10,color:'#bbb'}}>仕入れ合計</span>
+                            <span style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(grandTotal)}</span>
+                            <span style={{fontSize:10,color:'#9ca3af'}}>売却 {soldCount}/{members.length}点</span>
+                            {hasSold && (
+                              <>
+                                <span style={{fontSize:12,fontWeight:700,color:'#111827'}}>売上合計 ¥{formatMoney(totalSalePrice)}</span>
+                                <span style={{fontSize:12,fontWeight:800,
+                                  color: isProfitPos ? '#16a34a' : '#dc2626',
+                                  background: isProfitPos ? '#f0fdf4' : '#fef2f2',
+                                  borderRadius:6,padding:'1px 6px'}}>
+                                  {isProfitPos?'+':''}¥{formatMoney(totalProfit)}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {/* 展開インジケータ */}
+                        <div style={{flexShrink:0,fontSize:16,color:'#6b7280',lineHeight:1}}>{isOpen ? '▴' : '▾'}</div>
+                      </div>
+
+                      {/* 展開パネル */}
+                      {isOpen && (
+                        <div style={{background:'#fafafa',borderRadius:10,border:'1px solid #e0e7ff',
+                          overflow:'hidden',marginTop:-8}}>
+                          {soldMembers.map(({ item: m, sale: sr }) => {
+                            const mIsSold = m.status === 'sold';
+                            const mPP = (sr?.purchasePrice||0) > 0 ? sr.purchasePrice : (m.purchasePrice||0);
+                            const mProfit = sr?.profit ?? null;
+                            const mProfitPos = mProfit !== null ? mProfit >= 0 : null;
+                            return (
+                              <div key={m.id}
+                                style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',
+                                  borderBottom:'1px solid #f0f0f0',cursor:'pointer'}}
+                                onClick={e => { e.stopPropagation(); setSelected(m); }}>
+                                {/* サムネイル */}
+                                <div style={{position:'relative',flexShrink:0}}>
+                                  <ItemThumbnail thumbId={m.photos?.[0]?.thumbId} thumbDataUrl={m.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                                  {mIsSold && (
+                                    <div style={{position:'absolute',inset:0,borderRadius:8,
+                                      background:'rgba(124,58,237,0.15)',
+                                      display:'flex',alignItems:'center',justifyContent:'center'}}>
+                                      <span style={{fontSize:8,fontWeight:800,color:'white',
+                                        background:'#7c3aed',borderRadius:3,padding:'1px 4px',letterSpacing:'0.04em'}}>
+                                        SOLD
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                {/* 商品名・ステータス */}
+                                <div style={{flex:1,minWidth:0}}>
+                                  <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.03em',textTransform:'uppercase',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                    {m.brand}
+                                  </div>
+                                  <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: mIsSold ? '#555' : '#111'}}>
+                                    {m.productName}
+                                  </div>
+                                  <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:2}}>
+                                    {mIsSold ? (
+                                      <span style={{fontSize:9,fontWeight:700,borderRadius:5,padding:'1px 6px',
+                                        background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe'}}>
+                                        ✅ 売却済{sr?.saleDate ? ` ${sr.saleDate.slice(5)}` : ''}
+                                      </span>
+                                    ) : (
+                                      <span className={`tag ${statusClass[m.status] || 'tag-unlisted'}`}
+                                        style={{fontSize:9,padding:'1px 6px'}}>
+                                        {statusLabel[m.status] || '未出品'}
+                                      </span>
+                                    )}
+                                    {conditionTag(m.condition)}
+                                  </div>
+                                </div>
+                                {/* 金額：仕入れ → 売価 → 利益 */}
+                                <div style={{textAlign:'right',flexShrink:0}}>
+                                  <div style={{fontSize:10,color:'#bbb',marginBottom:1}}>仕入れ</div>
+                                  <div style={{fontSize:12,fontWeight:700,color:'#555'}}>
+                                    ¥{formatMoney(mPP)}
+                                  </div>
+                                  {mIsSold && sr ? (
+                                    <>
+                                      <div style={{fontSize:12,fontWeight:700,color:'#111827',marginTop:1}}>
+                                        売価 ¥{formatMoney(sr.salePrice)}
+                                      </div>
+                                      {mProfit !== null && (
+                                        <div style={{fontSize:11,fontWeight:800,marginTop:1,
+                                          color: mProfitPos ? '#16a34a' : '#dc2626',
+                                          background: mProfitPos ? '#f0fdf4' : '#fef2f2',
+                                          borderRadius:5,padding:'1px 5px',display:'inline-block'}}>
+                                          {mProfitPos?'+':''}¥{formatMoney(mProfit)}
+                                        </div>
+                                      )}
+                                    </>
+                                  ) : m.status === 'listed' && m.listPrice > 0 ? (
+                                    <div style={{fontSize:11,fontWeight:700,color:'var(--color-primary)',marginTop:1}}>
+                                      出品 ¥{formatMoney(m.listPrice)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div style={{fontSize:10,color:'#ccc',flexShrink:0}}>→</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                }
+
+                // ===== 単独カード（従来と同一）=====
+                const item = row.item;
+                const isChecked = checkedIds.has(item.id);
+                const alert = alertLevel(item);
+                /* 見込み利益は手数料・送料を引いた実額（利益順ソートと同じ計算）*/
+                const estFees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+                const estProfit = calcProfit(item.listPrice||0, item.purchasePrice||0,
+                  estFees[item.platform] ?? estFees['メルカリ'] ?? 0.10, CONFIG.ESTIMATED_SHIPPING);
+                const isSold = item.status === 'sold';
+                const saleRecord = isSold ? (data.sales||[]).find(s => s.inventoryId === item.id) : null;
+                const soldProfit = saleRecord?.profit ?? null;
+                const soldPP = (saleRecord?.purchasePrice||0) > 0 ? saleRecord.purchasePrice : (item.purchasePrice||0);
+                const isProfitable = soldProfit !== null ? soldProfit >= 0 : null;
+                return (
+                  <div key={item.id} className="card"
+                    style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
+                      background: isChecked ? '#fef2f2'
+                                : isSold ? '#f8f8f8'
+                                : alert?.level==='danger' ? '#fff8f8' : 'white',
+                      border: isChecked ? '1.5px solid #fca5a5'
+                            : isSold ? '1.5px solid #e0e0e0'
+                            : alert?.level==='danger' ? '1.5px solid #fecaca'
+                            : alert?.level==='warn'   ? '1.5px solid #fde68a'
+                            : '1.5px solid transparent',
+                      borderLeft: isSold ? '4px solid #7c3aed' : undefined,
+                      opacity: isSold ? 0.85 : 1,
+                      transition:'all 0.15s'}}
+                    onClick={bulkMode ? (e) => toggleCheck(item.id, e) : () => setSelected(item)}>
+                    {bulkMode && (
+                      <input type="checkbox" checked={isChecked}
+                        onChange={e => toggleCheck(item.id, e)}
+                        onClick={e => e.stopPropagation()}
+                        style={{width:22,height:22,flexShrink:0,cursor:'pointer',accentColor:'var(--color-primary)'}} />
+                    )}
+                    <div style={{position:'relative',flexShrink:0}}>
+                      <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
+                      {/* 売却済はサムネイル上にオーバーレイ */}
+                      {isSold && (
+                        <div style={{position:'absolute',inset:0,borderRadius:10,
+                          background:'rgba(124,58,237,0.15)',
+                          display:'flex',alignItems:'center',justifyContent:'center'}}>
+                          <span style={{fontSize:9,fontWeight:800,color:'white',
+                            background:'#7c3aed',borderRadius:4,padding:'2px 5px',letterSpacing:'0.04em'}}>
+                            SOLD
+                          </span>
+                        </div>
+                      )}
+                      {!isSold && (
+                        <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
+                          style={{position:'absolute',bottom:-6,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:10,padding:'2px 7px'}}>
+                          {statusLabel[item.status] || '未出品'}
                         </span>
                       )}
                     </div>
-                  </div>
-                  <div style={{textAlign:'right',flexShrink:0}}>
-                    {/* 売却済・未売却で並び順を統一：仕入 → 売価 → 利益 */}
-                    <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入れ値</div>
-                    <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
-                      ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
-                    </div>
-                    {isSold ? (
-                      /* 売却済：実績の売上・利益 */
-                      <>
-                        <div style={{fontSize:14,fontWeight:800,color:'#111827',marginTop:2}}>
-                          {saleRecord ? `¥${formatMoney(saleRecord.salePrice)}` : '−'}
-                        </div>
-                        {soldProfit !== null && (
-                          <div style={{
-                            fontSize:12,fontWeight:800,marginTop:3,
-                            color: isProfitable ? '#16a34a' : '#dc2626',
-                            background: isProfitable ? '#f0fdf4' : '#fef2f2',
-                            borderRadius:6,padding:'2px 6px',display:'inline-block',
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
+                      <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
+                      <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
+                        {item.priceUnconfirmed && (
+                          <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
+                            background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
+                            💰 金額未確定
+                          </span>
+                        )}
+                        {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
+                          <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                            background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
+                            📦 まとめ{bundleCounts[item.bundleGroup]}点
+                          </span>
+                        )}
+                        {conditionTag(item.condition)}
+                        {/* 売却済バッジ＋売却日 */}
+                        {isSold && (
+                          <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                            background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe'}}>
+                            ✅ 売却済{saleRecord?.saleDate ? ` ${saleRecord.saleDate.slice(5)}` : ''}
+                          </span>
+                        )}
+                        {/* 出品準備度バッジ（未出品のみ） */}
+                        {item.status === 'unlisted' && (() => {
+                          const done = [
+                            (item.photos||[]).length > 0,
+                            !!item.productName,
+                            (item.listPrice||0) > 0,
+                            !!item.listDate,
+                            !!item.descriptionText,
+                            !!item.englishTitle,
+                          ].filter(Boolean).length;
+                          const total = 6;
+                          if (done === total) return (
+                            <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                              background:'#f0fdf4',color:'#16a34a',border:'1px solid #bbf7d0'}}>
+                              ✅ 出品準備OK
+                            </span>
+                          );
+                          return (
+                            <span style={{fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                              background:'#fafafa',color:'#9ca3af',border:'1px solid #e5e7eb'}}>
+                              準備 {done}/{total}
+                            </span>
+                          );
+                        })()}
+                        {/* 経過日数・アラートバッジ */}
+                        {alert && !isSold && (
+                          <span style={{
+                            fontSize:10,fontWeight:700,borderRadius:6,padding:'2px 7px',
+                            background:'#f0fdf4',
+                            color:'#6b7280',
+                            border:'1px solid #e5e7eb',
                           }}>
-                            {isProfitable?'+':''}¥{formatMoney(soldProfit)}
+                            {alert.days}日
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{textAlign:'right',flexShrink:0}}>
+                      {/* 売却済・未売却で並び順を統一：仕入 → 売価 → 利益 */}
+                      <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入れ値</div>
+                      <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
+                        ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
+                      </div>
+                      {isSold ? (
+                        /* 売却済：実績の売上・利益 */
+                        <>
+                          <div style={{fontSize:14,fontWeight:800,color:'#111827',marginTop:2}}>
+                            {saleRecord ? `¥${formatMoney(saleRecord.salePrice)}` : '−'}
                           </div>
-                        )}
-                      </>
-                    ) : (
-                      /* 未出品・出品中：出品価格＋推定利益 */
-                      <>
-                        {item.listPrice > 0 && (
-                          <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
-                        )}
-                        {estProfit !== 0 && (
-                          <div style={{fontSize:10,fontWeight:700,marginTop:2,
-                            color: estProfit > 0 ? '#16a34a' : '#dc2626'}}>
-                            {estProfit > 0 ? '+' : ''}¥{formatMoney(estProfit)}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
+                          {soldProfit !== null && (
+                            <div style={{
+                              fontSize:12,fontWeight:800,marginTop:3,
+                              color: isProfitable ? '#16a34a' : '#dc2626',
+                              background: isProfitable ? '#f0fdf4' : '#fef2f2',
+                              borderRadius:6,padding:'2px 6px',display:'inline-block',
+                            }}>
+                              {isProfitable?'+':''}¥{formatMoney(soldProfit)}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        /* 未出品・出品中：出品価格＋推定利益 */
+                        <>
+                          {item.listPrice > 0 && (
+                            <div style={{fontSize:12,fontWeight:700,color:'var(--color-primary)',marginTop:2}}>¥{formatMoney(item.listPrice)}</div>
+                          )}
+                          {estProfit !== 0 && (
+                            <div style={{fontSize:10,fontWeight:700,marginTop:2,
+                              color: estProfit > 0 ? '#16a34a' : '#dc2626'}}>
+                              {estProfit > 0 ? '+' : ''}¥{formatMoney(estProfit)}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              });
+            })()}
           </div>
         )}
       </div>
