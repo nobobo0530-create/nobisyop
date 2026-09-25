@@ -882,6 +882,18 @@ const findDuplicatePurchase = (cand, items) => {
   return best;
 };
 
+// 重複相手の在庫を、確認画面に出す用の最小限の形にする
+const describeDupTarget = (inv) => {
+  if (!inv) return null;
+  return {
+    productName: inv.productName || '',
+    brand: inv.brand || '',
+    price: Number(inv.purchaseCost?.itemPriceTaxIn ?? inv.itemPriceTaxIn) || 0,
+    purchaseDate: inv.purchaseDate || '',
+    purchaseStore: inv.purchaseStore || inv.storeName || '',
+  };
+};
+
 // まとめ買いグループの金額を集計する。
 // 旧形式のまとめ仕入れは「グループ全体の送料」を全メンバーに同じ値でコピーしているため、
 // そのまま足すと多重計上になる。1点ずつの内訳を持っているかを判定して切り替える。
@@ -1380,7 +1392,7 @@ const YAHOO_WON_LIST_PROMPT = `ヤフオクのマイオク「落札分」一覧�
   }
 ]
 注意事項：
-- auctionId: オークションID（英数字）。画面に見つからなければ ""
+- auctionId: オークションID（英数字。例 w1234567890 / m98765432）。二重登録を防ぐ一番大事な項目なので、小さい文字やURLの一部でも見えていれば必ず拾う。どうしても見つからなければ ""。似たIDを推測で作らない
 - purchasePrice: 落札価格。カンマを除いた数値のみ。円マーク不要。送料・手数料は含めない
 - purchaseDate: 落札日/終了日時。YYYY-MM-DD形式の西暦4桁。年の表記がなければ今年とみなし、未来日になる場合は前年とする
 - imageIndex: この商品が何枚目のスクリーンショットに写っているか（1始まり）。画像1枚のみなら全件1
@@ -12292,6 +12304,10 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       const totalImages = yahooListFiles.length;
       const perImageCount = totalImages > 1 ? Math.ceil(parsed.length / totalImages) : parsed.length;
       const rows = [];
+      // スクショを2枚以上まとめて読ませると同じ商品が写り込むことがあるため、
+      // このバッチ内で既に見た商品も重複として扱う
+      const seenAuctionIds = new Set();
+      const batchCands = [];
       for (let i = 0; i < parsed.length; i++) {
         const item = parsed[i];
         const purchaseDate = parsePurchaseDate(item.purchaseDate) || todayStr();
@@ -12306,33 +12322,63 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           ? Number(item.indexInImage)
           : (perImageCount > 0 ? (i % perImageCount) + 1 : i + 1);
 
-        // 重複判定1: オークションID一致
+        // 重複判定
+        // オークションIDはヤフオク側で一意なので、IDがある行はIDだけで判定する。
+        // IDが一致しなければ確実に別の商品なので、類似判定にはかけない
+        // （同じ店で同じ値段の似た商品を続けて買うことが多く、類似判定だと新規まで弾かれてしまう）
+        // IDが読み取れなかった行だけ、類似候補を探して「要確認」として見せる
         let skip = false;
+        let dupKind = '';   // 'exact'（確実に重複）| 'similar'（似ているだけ）| ''
         let dupReason = '';
+        let dupWhere = '';  // 重複相手がどこにいるか
+        let dupItem = null; // 重複相手の表示用データ
         const auctionId = (item.auctionId || '').trim();
-        if (auctionId) {
-          const idHit = (data.inventory || []).find(inv => (inv.yahooAuctionId || '') === auctionId);
-          if (idHit) {
-            skip = true;
-            dupReason = 'オークションID一致';
-          }
-        }
+        const auctionKey = auctionId.toLowerCase();
+        const dupCand = {
+          productName: item.productName || '',
+          brand: item.brand || '',
+          purchasePrice,
+          purchaseDate,
+          purchaseStore: storeInfo.purchaseStore,
+        };
 
-        // 重複判定2: findDuplicatePurchase
-        if (!skip) {
-          const dupCand = {
-            productName: item.productName || '',
-            brand: item.brand || '',
-            purchasePrice,
-            purchaseDate,
-            purchaseStore: storeInfo.purchaseStore,
-          };
-          const simHit = findDuplicatePurchase(dupCand, data.inventory || []);
-          if (simHit) {
+        if (auctionId) {
+          if (seenAuctionIds.has(auctionKey)) {
             skip = true;
-            dupReason = `類似の仕入れが既にあります（${simHit.item.productName || ''}）`;
+            dupKind = 'exact';
+            dupWhere = 'このスクショ内';
+            dupReason = '同じオークションIDが2回読み取られています';
+          } else {
+            const idHit = (data.inventory || []).find(inv =>
+              String(inv.yahooAuctionId || '').trim().toLowerCase() === auctionKey);
+            if (idHit) {
+              skip = true;
+              dupKind = 'exact';
+              dupWhere = '登録済みの在庫';
+              dupReason = 'オークションIDが一致しています';
+              dupItem = describeDupTarget(idHit);
+            }
+          }
+          seenAuctionIds.add(auctionKey);
+        } else {
+          const invHit = findDuplicatePurchase(dupCand, data.inventory || []);
+          const batchHit = invHit ? null : findDuplicatePurchase(dupCand, batchCands);
+          const hit = invHit || batchHit;
+          if (hit) {
+            skip = true;
+            dupKind = 'similar';
+            dupWhere = invHit ? '登録済みの在庫' : 'このスクショ内';
+            dupReason = hit.reason;
+            dupItem = describeDupTarget(hit.item);
           }
         }
+        batchCands.push({
+          productName: dupCand.productName,
+          brand: dupCand.brand,
+          itemPriceTaxIn: purchasePrice,
+          purchaseDate,
+          purchaseStore: storeInfo.purchaseStore,
+        });
 
         rows.push({
           id: `ylist_${Date.now()}_${i}`,
@@ -12346,7 +12392,10 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           paymentMethod: 'PayPay',
           ...storeInfo,
           skip,
+          dupKind,
           dupReason,
+          dupWhere,
+          dupItem,
           imageIndex,
           indexInImage,
           cropDataUrl: null,
@@ -12371,6 +12420,19 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
       if (field === 'purchaseStore') {
         const storeInfo = resolveYahooStore(value);
         return { ...updated, ...storeInfo, purchaseStore: value };
+      }
+      // オークションIDを手で入れ直したら重複判定をやり直す。
+      // IDはヤフオク側で一意なので、在庫に無いIDなら「類似あり」の判定は取り下げる
+      if (field === 'auctionId') {
+        const key = String(value || '').trim().toLowerCase();
+        if (!key) return updated;
+        const idHit = (data.inventory || []).find(inv =>
+          String(inv.yahooAuctionId || '').trim().toLowerCase() === key);
+        if (idHit) {
+          return { ...updated, skip: true, dupKind: 'exact', dupWhere: '登録済みの在庫',
+            dupReason: 'オークションIDが一致しています', dupItem: describeDupTarget(idHit) };
+        }
+        return { ...updated, skip: false, dupKind: '', dupWhere: '', dupReason: '', dupItem: null };
       }
       return updated;
     }));
@@ -12834,9 +12896,11 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   };
 
   if (step === 'review_yahoo') {
-    const skipCount = yahooListRows.filter(r => r.skip).length;
     const activeCount = yahooListRows.filter(r => !r.skip).length;
     const croppedCount = yahooListRows.filter(r => r.cropDataUrl).length;
+    const exactRows = yahooListRows.filter(r => r.dupKind === 'exact');
+    const similarRows = yahooListRows.filter(r => r.dupKind === 'similar');
+    const similarSkipped = similarRows.filter(r => r.skip).length;
 
     const handleCropConfirm = (allCrops) => {
       // allCrops: { rowId: dataUrl }
@@ -12845,6 +12909,36 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         return du ? { ...r, cropDataUrl: du } : r;
       }));
       setShowCropModal(false);
+    };
+
+    // 類似としてまとめられた行を一括でスキップ/登録に切り替える
+    const setSimilarSkip = (nextSkip) => {
+      setYahooListRows(prev => prev.map(r =>
+        r.dupKind === 'similar' ? { ...r, skip: nextSkip } : r
+      ));
+    };
+
+    const clearRowCrop = (rowId) => {
+      setYahooListRows(prev => prev.map(r =>
+        r.id === rowId ? { ...r, cropDataUrl: null } : r
+      ));
+    };
+
+    // 重複相手の中身を出して、本当に同じ商品かユーザーが判断できるようにする
+    const renderDupTarget = (row) => {
+      const t = row.dupItem;
+      if (!t) return null;
+      return (
+        <div style={{fontSize:11,color:'#374151',background:'#fff',border:'1px dashed #d1d5db',borderRadius:6,padding:'6px 8px',marginTop:6}}>
+          <div style={{fontWeight:700,marginBottom:2}}>{row.dupWhere}のデータ</div>
+          <div>{[t.brand, t.productName].filter(Boolean).join(' ') || '（名称なし）'}</div>
+          <div style={{color:'#6b7280',marginTop:2}}>
+            {t.price ? `¥${formatMoney(t.price)}` : '金額なし'}
+            {t.purchaseDate ? ` · ${t.purchaseDate}` : ''}
+            {t.purchaseStore ? ` · ${t.purchaseStore}` : ''}
+          </div>
+        </div>
+      );
     };
 
     return (
@@ -12866,9 +12960,30 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           🖼 商品画像を切り出す{croppedCount > 0 ? `（${croppedCount}件設定済み）` : ''}
         </button>
 
-        {skipCount > 0 && (
+        {exactRows.length > 0 && (
           <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',border:'1px solid #fecaca',borderRadius:8,padding:'8px 10px',marginBottom:10,fontWeight:600}}>
-            ⚠️ {skipCount}件は登録済みのためスキップします（手動でチェックを入れると登録できます）
+            🚫 {exactRows.length}件はオークションIDが同じなので、登録済みとしてスキップします
+          </div>
+        )}
+
+        {similarRows.length > 0 && (
+          <div style={{fontSize:12,color:'#92400e',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,padding:'8px 10px',marginBottom:10}}>
+            <div style={{fontWeight:700,marginBottom:4}}>
+              ⚠️ {similarRows.length}件は似ている仕入れが見つかりました（{similarSkipped}件スキップ中）
+            </div>
+            <div style={{marginBottom:6}}>
+              オークションIDが読み取れなかった行です。似ているだけで別の商品かもしれないので、各カードの中身を見て決めてください。
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button onClick={() => setSimilarSkip(false)}
+                style={{flex:1,fontSize:11,padding:'6px 0',border:'1px solid #fbbf24',borderRadius:8,background:'#fff',color:'#92400e',fontWeight:700,cursor:'pointer'}}>
+                すべて登録する
+              </button>
+              <button onClick={() => setSimilarSkip(true)}
+                style={{flex:1,fontSize:11,padding:'6px 0',border:'1px solid #fbbf24',borderRadius:8,background:'#fff',color:'#92400e',fontWeight:700,cursor:'pointer'}}>
+                すべてスキップ
+              </button>
+            </div>
           </div>
         )}
 
@@ -12882,14 +12997,21 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
                 display:'flex',alignItems:'center',justifyContent:'center',
               }}>
                 {row.cropDataUrl
-                  ? <img src={row.cropDataUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                  ? <img src={row.cropDataUrl} alt="" onClick={() => clearRowCrop(row.id)}
+                      title="タップで画像を外す"
+                      style={{width:'100%',height:'100%',objectFit:'cover',cursor:'pointer'}}/>
                   : <span style={{fontSize:18,opacity:0.3}}>🖼</span>
                 }
               </div>
               <div style={{fontWeight:700,fontSize:13,flex:1}}>#{idx + 1} {row.productName || '（名称なし）'}</div>
-              {row.dupReason && (
+              {row.dupKind === 'exact' && (
                 <span style={{fontSize:10,background:'#fee2e2',color:'#991b1b',padding:'2px 7px',borderRadius:99,fontWeight:600,flexShrink:0}}>
-                  ⚠️ 重複
+                  🚫 登録済み
+                </span>
+              )}
+              {row.dupKind === 'similar' && (
+                <span style={{fontSize:10,background:'#fef3c7',color:'#92400e',padding:'2px 7px',borderRadius:99,fontWeight:600,flexShrink:0}}>
+                  ⚠️ 類似あり
                 </span>
               )}
               {row.licenseUnconfirmed && (
@@ -12907,8 +13029,18 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
             </div>
 
             {row.dupReason && (
-              <div style={{fontSize:11,color:'#991b1b',background:'#fee2e2',borderRadius:8,padding:'6px 10px',marginBottom:8}}>
-                {row.dupReason}（スキップを解除すると重複して登録されます）
+              <div style={{
+                fontSize:11,marginBottom:8,borderRadius:8,padding:'6px 10px',
+                color: row.dupKind === 'similar' ? '#92400e' : '#991b1b',
+                background: row.dupKind === 'similar' ? '#fef3c7' : '#fee2e2',
+              }}>
+                <div style={{fontWeight:700}}>{row.dupReason}</div>
+                <div style={{marginTop:2}}>
+                  {row.dupKind === 'similar'
+                    ? '別の商品なら「スキップ中」を押して登録できます'
+                    : 'スキップを解除すると二重に登録されます'}
+                </div>
+                {renderDupTarget(row)}
               </div>
             )}
 
