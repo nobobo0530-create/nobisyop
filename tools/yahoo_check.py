@@ -20,10 +20,12 @@ import sys, os, json, glob, re, urllib.request
 
 OUT_DIR = '/tmp/yahoo_check'
 API_URL = 'https://nobisyop.vercel.app/api/data'
-# 1商品あたり、上から何pxぶんを残せば「商品名・価格・日付・商品ID」が入るか
-HEAD_PX = 390
+# 1商品ぶんの高さのうち、上から何割を残せば「商品名・価格・日付・商品ID」が入るか
+HEAD_RATIO = 0.65
 # 1枚の見開きに詰める商品数
 PER_SHEET = 3
+# 画面を縮小して撮ると文字が小さくなるので、1商品これくらいの高さまで拡大して読む
+TARGET_ITEM_PX = 390
 
 
 def newest_screenshot():
@@ -73,6 +75,20 @@ def find_separators(im):
     return cleaned
 
 
+def content_left(im, sep_y):
+    """切れ目の線が始まるxを返す。＝一覧本体の左端。左のメニュー欄をここで落とす"""
+    W = im.size[0]
+    px = im.load()
+    # 線の上にいる点から左へたどり、線が途切れたところが一覧の左端
+    x = int(W * 0.90)
+    while x > 0:
+        r, g, b = px[x - 1, sep_y]
+        if not (195 <= r <= 243 and abs(r - g) < 8 and abs(g - b) < 8):
+            return x
+        x -= 1
+    return int(W * 0.33)
+
+
 def cmd_slice(path):
     from PIL import Image
     im = Image.open(path).convert('RGB')
@@ -81,8 +97,15 @@ def cmd_slice(path):
     if len(seps) < 2:
         sys.exit(f'商品の切れ目が見つかりませんでした（画像 {W}x{H}）。別の撮り方を試してください')
 
-    # 一覧の左端＝サムネイルが始まるあたり。左のメニュー欄を落とす
-    x0 = int(W * 0.33)
+    # 1商品ぶんの高さ。画面を縮小して撮ると小さくなるので毎回測る
+    pitches = sorted(seps[i + 1] - seps[i] for i in range(len(seps) - 1))
+    pitch = pitches[len(pitches) // 2]
+    head_px = max(120, int(pitch * HEAD_RATIO))
+    # 縮小して撮った画像はそのままでは文字が読めないので拡大する
+    zoom = min(3.0, max(1.0, TARGET_ITEM_PX / head_px))
+
+    # 一覧の左端。縮小率で位置が変わるので線の始まりから割り出す
+    x0 = min(content_left(im, y) for y in seps[:5])
     os.makedirs(OUT_DIR, exist_ok=True)
     for f in glob.glob(os.path.join(OUT_DIR, '*.png')):
         os.remove(f)
@@ -91,18 +114,21 @@ def cmd_slice(path):
     sheets = 0
     for i in range(0, len(tops), PER_SHEET):
         chunk = tops[i:i + PER_SHEET]
-        parts = [im.crop((x0, t, W, min(t + HEAD_PX, H))) for t in chunk]
+        parts = [im.crop((x0, t, W, min(t + head_px, H))) for t in chunk]
         sheet = Image.new('RGB', (W - x0, sum(p.height for p in parts)), 'white')
         y = 0
         for p in parts:
             sheet.paste(p, (0, y))
             y += p.height
+        if zoom > 1.05:
+            sheet = sheet.resize((int(sheet.width * zoom), int(sheet.height * zoom)), Image.LANCZOS)
         sheets += 1
         sheet.save(os.path.join(OUT_DIR, 'sheet_%02d.png' % sheets))
 
     print(f'画像: {path}')
     print(f'サイズ: {W}x{H}')
     print(f'商品の切れ目: {len(seps)}本 → 読み取れる商品 {len(tops)}件')
+    print(f'1商品の高さ: {pitch}px → 切り出し {head_px}px / 拡大 {zoom:.2f}倍 / 左端 x={x0}')
     print(f'見開き {sheets}枚を {OUT_DIR}/ に出しました')
     if H >= 16384:
         print('⚠️ 高さが16384pxちょうど＝フルページ撮影の上限に当たっています。')
