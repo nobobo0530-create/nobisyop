@@ -5525,7 +5525,7 @@ const MercariPrepPanel = ({ item, onClose, toast }) => {
 const InventoryTab = () => {
   const { data, setData, setTab, setEditingItem, setPendingSaleItemId, setPendingReturnTab,
           pendingInventoryFilter, setPendingInventoryFilter,
-          pendingInventoryScrollY, setPendingInventoryScrollY } = React.useContext(AppContext);
+          pendingInventoryScrollY, setPendingInventoryScrollY, currentUser } = React.useContext(AppContext);
   const toast = useToast();
   // ★ 編集から戻った時: useState の初期化関数で正しいタブを「最初から」設定する
   // useEffect で後から setFilter() すると「未出品で描画 → 出品中に切り替え」という2段階になり
@@ -5547,6 +5547,14 @@ const InventoryTab = () => {
   const [bulkPriceSplitTotal, setBulkPriceSplitTotal] = React.useState('');
   const [bulkCouponTotal, setBulkCouponTotal] = React.useState('');  // まとめて差し引くクーポン合計
   const [bulkCouponDraft, setBulkCouponDraft] = React.useState({});  // { [itemId]: クーポン按分額 }
+  const [bulkShipDraft, setBulkShipDraft]   = React.useState({});  // { [itemId]: 仕入れ送料 }
+  const [bulkStoreDraft, setBulkStoreDraft] = React.useState({});  // { [itemId]: 仕入れ先 }
+  const [bulkSaleDraft, setBulkSaleDraft]   = React.useState({});  // { [itemId]: 売れた金額 }
+  const [bulkStoreAll, setBulkStoreAll]     = React.useState('');  // 仕入れ先をまとめて指定
+  const [bulkShipAll, setBulkShipAll]       = React.useState('');  // 仕入れ送料をまとめて指定
+  const [bulkSalePlatform, setBulkSalePlatform] = React.useState(''); // ''=商品の出品先を使う
+  const [bulkSaleDate, setBulkSaleDate]     = React.useState(today());
+  const [bulkSaleShipping, setBulkSaleShipping] = React.useState(String(CONFIG.ESTIMATED_SHIPPING));
   const [bundleShipOpen, setBundleShipOpen] = React.useState(null);   // 編集中の bundleGroup
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
@@ -5823,38 +5831,112 @@ const InventoryTab = () => {
     toast(`✅ ${members.length}点の内訳を更新しました`);
   };
 
-  const saveBulkPrices = () => {
-    const updates = {};
+  // まとめ確定の入力を1行ぶんにまとめる（商品代が入っている行だけが対象）
+  const bulkRows = () => {
+    const rows = {};
     Object.entries(bulkPriceDraft).forEach(([id, v]) => {
-      const n = Number(v);
-      if (v !== '' && !isNaN(n) && n > 0) updates[id] = n;
+      const itemPrice = Number(v);
+      if (v === '' || isNaN(itemPrice) || itemPrice <= 0) return;
+      const ship = Math.max(0, Number(bulkShipDraft[id]) || 0);
+      const sale = Number(bulkSaleDraft[id]);
+      rows[id] = {
+        itemPrice, ship, total: itemPrice + ship,
+        store: (bulkStoreDraft[id] || '').trim(),
+        salePrice: (bulkSaleDraft[id] !== '' && !isNaN(sale) && sale > 0) ? sale : 0,
+      };
     });
-    const n = Object.keys(updates).length;
+    return rows;
+  };
+
+  const saveBulkPrices = () => {
+    const rows = bulkRows();
+    const n = Object.keys(rows).length;
     if (n === 0) return;
+    const nowIso = new Date().toISOString();
+    const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+    const saleShip = Math.max(0, Number(bulkSaleShipping) || 0);
+    const saleDate = bulkSaleDate || today();
+
+    // 売上を入力した商品のうち、まだ売上レコードが無いものだけ新規作成する
+    const newSales = [];
+    const ts = Date.now();
+    data.inventory.forEach(i => {
+      const r = rows[i.id];
+      if (!r || r.salePrice <= 0) return;
+      if ((data.sales || []).some(s => s.inventoryId === i.id)) return;
+      const platform = bulkSalePlatform || i.platform || 'メルカリ';
+      const feeRate = fees[platform] ?? 0.10;
+      const listDate = i.listDate || '';
+      newSales.push({
+        id: `sale_${ts}_${newSales.length}_${Math.random().toString(36).slice(2,7)}`,
+        inventoryId: i.id, userId: currentUser,
+        platform, salePrice: r.salePrice, feeRate, shipping: saleShip,
+        saleDate, listDate,
+        turnoverDays: listDate
+          ? Math.max(0, Math.floor((new Date(saleDate) - new Date(listDate)) / 86400000))
+          : null,
+        purchasePrice: r.total,
+        purchaseDate: i.purchaseDate || '',
+        purchaseStore: r.store || i.purchaseStore || '',
+        profit: Math.round(r.salePrice * (1 - feeRate) - saleShip - r.total),
+        platformId: '',
+        productName: i.productName || '', brand: i.brand || '',
+        createdAt: nowIso,
+      });
+    });
+
     setData({
       ...data,
       inventory: data.inventory.map(i => {
-        if (updates[i.id] == null) return i;
+        const r = rows[i.id];
+        if (!r) return i;
         const coupon = Number(bulkCouponDraft[i.id]) || 0;
         return {
           ...i,
-          purchasePrice: updates[i.id],
+          // 送料は仕入れ値に足し込む
+          purchasePrice: r.total,
+          itemPriceTaxIn: r.itemPrice,
+          shippingTaxIn: r.ship,
           priceUnconfirmed: false,
+          ...(r.store ? { purchaseStore: r.store } : {}),
+          ...(r.salePrice > 0 ? { status: 'sold', soldAt: i.soldAt || nowIso } : {}),
           purchaseCost: {
             ...(i.purchaseCost||{}),
-            totalTaxIn: updates[i.id],
-            totalTaxEx: updates[i.id],
+            itemPriceTaxIn: r.itemPrice,
+            itemTaxRate: i.purchaseCost?.itemTaxRate ?? 10,
+            shippingTaxIn: r.ship,
+            shippingTaxRate: i.purchaseCost?.shippingTaxRate ?? 10,
+            totalTaxIn: r.total,
+            totalTaxEx: r.total,
             ...(coupon > 0 ? { couponTaxIn: coupon, couponNote: i.purchaseCost?.couponNote || 'クーポン値引き' } : {}),
           },
         };
       }),
+      // 既にある売上は、変わった仕入れ値ぶんだけ利益を直す
+      sales: [
+        ...(data.sales || []).map(s => {
+          const r = rows[s.inventoryId];
+          if (!r) return s;
+          const delta = r.total - (Number(s.purchasePrice) || 0);
+          if (delta === 0) return s;
+          return { ...s, purchasePrice: r.total, profit: (Number(s.profit) || 0) - delta };
+        }),
+        ...newSales,
+      ],
     });
     setBulkPriceOpen(false);
     setBulkPriceDraft({});
+    setBulkShipDraft({});
+    setBulkStoreDraft({});
+    setBulkSaleDraft({});
+    setBulkStoreAll('');
+    setBulkShipAll('');
     setBulkPriceSplitTotal('');
     setBulkCouponTotal('');
     setBulkCouponDraft({});
-    toast(`✅ ${n}件の仕入額を確定しました`);
+    toast(newSales.length > 0
+      ? `✅ ${n}件の仕入額を確定・売上${newSales.length}件を記録しました`
+      : `✅ ${n}件の仕入額を確定しました`);
   };
 
   const deleteItem = (item) => {
@@ -6136,10 +6218,25 @@ const InventoryTab = () => {
       <div style={{padding:'12px 16px', paddingBottom: bulkMode && checkedIds.size > 0 ? 100 : 12}}>
         {filter === 'priceUnconfirmed' && sorted.length > 0 && (
           <button onClick={() => {
-              const d = {};
-              // 落札価格などが既に入っていれば初期値として出す（クーポン分を引くだけで済むように）
-              sorted.forEach(i => { d[i.id] = (i.purchasePrice || 0) > 0 ? String(i.purchasePrice) : ''; });
+              const d = {}, ship = {}, store = {};
+              sorted.forEach(i => {
+                const s = Math.max(0, Number(i.purchaseCost?.shippingTaxIn ?? i.shippingTaxIn) || 0);
+                // 落札価格などが既に入っていれば初期値として出す（クーポン分を引くだけで済むように）
+                // purchasePrice は送料込みなので、送料が判っているぶんは引いて商品代に戻す
+                const total = Number(i.purchasePrice) || 0;
+                d[i.id] = total > 0 ? String(Math.max(0, total - s)) : '';
+                ship[i.id] = s > 0 ? String(s) : '';
+                store[i.id] = i.purchaseStore || '';
+              });
               setBulkPriceDraft(d);
+              setBulkShipDraft(ship);
+              setBulkStoreDraft(store);
+              setBulkSaleDraft({});
+              setBulkStoreAll('');
+              setBulkShipAll('');
+              setBulkSalePlatform('');
+              setBulkSaleDate(today());
+              setBulkSaleShipping(String(CONFIG.ESTIMATED_SHIPPING));
               setBulkPriceSplitTotal('');
               setBulkCouponTotal('');
               setBulkCouponDraft({});
@@ -7099,7 +7196,7 @@ const InventoryTab = () => {
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
               <div>
                 <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>💰 仕入額をまとめて確定</div>
-                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>決済後の最終金額に直してください。クーポンは下でまとめて差し引けます</div>
+                <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>商品代・送料・仕入れ先・売上をこの画面で入れられます</div>
               </div>
               <button onClick={() => setBulkPriceOpen(false)}
                 style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
@@ -7182,36 +7279,170 @@ const InventoryTab = () => {
               </div>
             </div>
 
+            {/* 送料・仕入れ先をまとめて指定 */}
+            <div style={{background:'#f3f4f6',border:'1px solid #e5e7eb',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:8}}>📦 送料・仕入れ先を全部に入れる</div>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+                <input className="input-field" type="number" inputMode="numeric" placeholder="送料（1点あたり）"
+                  value={bulkShipAll}
+                  onChange={e => setBulkShipAll(e.target.value)}
+                  style={{flex:1,textAlign:'right'}}/>
+                <button
+                  onClick={() => {
+                    const v = Number(bulkShipAll);
+                    if (!(v >= 0) || bulkShipAll === '') return;
+                    const next = {};
+                    sorted.forEach(i => { next[i.id] = String(v); });
+                    setBulkShipDraft(next);
+                    toast(`📦 送料 ¥${v.toLocaleString()} を${sorted.length}件に入れました`);
+                  }}
+                  style={{flexShrink:0,padding:'12px 14px',borderRadius:10,border:'none',
+                    background:'#4b5563',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',
+                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  全部に入れる
+                </button>
+              </div>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <input className="input-field" type="text" list="bulkStoreOptions" placeholder="仕入れ先"
+                  value={bulkStoreAll}
+                  onChange={e => setBulkStoreAll(e.target.value)}
+                  style={{flex:1}}/>
+                <button
+                  onClick={() => {
+                    const v = bulkStoreAll.trim();
+                    if (!v) return;
+                    const next = {};
+                    sorted.forEach(i => { next[i.id] = v; });
+                    setBulkStoreDraft(next);
+                    toast(`🏪 仕入れ先「${v}」を${sorted.length}件に入れました`);
+                  }}
+                  style={{flexShrink:0,padding:'12px 14px',borderRadius:10,border:'none',
+                    background:'#4b5563',color:'white',fontWeight:700,fontSize:13,cursor:'pointer',
+                    touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  全部に入れる
+                </button>
+              </div>
+              <div style={{fontSize:11,color:'#6b7280',marginTop:6}}>
+                送料は各商品の仕入れ値に足されます（商品代 ＋ 送料 ＝ 仕入れ値）
+              </div>
+            </div>
+
+            {/* 売上を入れる場合の共通設定 */}
+            <div style={{background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#047857',marginBottom:8}}>💵 売上も入れる場合の共通設定</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                <div>
+                  <label style={{fontSize:10,color:'#047857',fontWeight:700,marginBottom:3,display:'block'}}>販売先</label>
+                  <select className="input-field" value={bulkSalePlatform}
+                    onChange={e => setBulkSalePlatform(e.target.value)}
+                    style={{width:'100%',padding:'9px 10px',fontSize:14}}>
+                    <option value="">商品の出品先を使う</option>
+                    {Object.keys(data.settings?.platformFees || CONFIG.PLATFORM_FEES).map(p =>
+                      <option key={p} value={p}>{p}</option>
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:'#047857',fontWeight:700,marginBottom:3,display:'block'}}>売却日</label>
+                  <input className="input-field" type="date" value={bulkSaleDate}
+                    onChange={e => setBulkSaleDate(e.target.value)}
+                    style={{width:'100%',padding:'9px 10px',fontSize:14}}/>
+                </div>
+                <div>
+                  <label style={{fontSize:10,color:'#047857',fontWeight:700,marginBottom:3,display:'block'}}>発送送料（1点あたり）</label>
+                  <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                    value={bulkSaleShipping}
+                    onChange={e => setBulkSaleShipping(e.target.value)}
+                    style={{width:'100%',padding:'9px 10px',fontSize:14,textAlign:'right'}}/>
+                </div>
+              </div>
+              <div style={{fontSize:11,color:'#047857',marginTop:6,opacity:0.9}}>
+                「売れた金額」を入れた商品だけ売却済みにして売上を記録します。空欄のままなら在庫に残ります
+              </div>
+            </div>
+
             {/* 商品ごとの入力行 */}
             <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
+              <datalist id="bulkStoreOptions">
+                {storeOptions.map(s => <option key={s} value={s}/>)}
+              </datalist>
               {sorted.map(item => {
                 const bgCount = bundleCounts[item.bundleGroup];
+                const itemPrice = Math.max(0, Number(bulkPriceDraft[item.id]) || 0);
+                const ship = Math.max(0, Number(bulkShipDraft[item.id]) || 0);
+                const salePrice = Math.max(0, Number(bulkSaleDraft[item.id]) || 0);
+                const hasSale = (data.sales || []).some(s => s.inventoryId === item.id);
+                const plat = bulkSalePlatform || item.platform || 'メルカリ';
+                const feeRate = (data.settings?.platformFees || CONFIG.PLATFORM_FEES)[plat] ?? 0.10;
+                const profit = Math.round(salePrice * (1 - feeRate) - (Number(bulkSaleShipping) || 0) - (itemPrice + ship));
+                const lbl = {fontSize:10,color:'#6b7280',fontWeight:700,marginBottom:3,display:'block'};
+                const fld = {width:'100%',textAlign:'right',padding:'9px 10px',fontSize:14};
                 return (
                   <div key={item.id}
-                    style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',
-                      background:'#f9fafb',borderRadius:12,border:'1px solid #e5e7eb'}}>
-                    <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
-                    <div style={{flex:1,minWidth:0}}>
-                      {item.brand && (
-                        <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:1}}>{item.brand}</div>
-                      )}
-                      <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111'}}>{item.productName || '(名称未設定)'}</div>
-                      {item.bundleGroup && bgCount > 1 && (
-                        <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:99,
-                          background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',marginTop:2,display:'inline-block'}}>
-                          📦 まとめ{bgCount}点
+                    style={{padding:'10px 12px',background:'#f9fafb',borderRadius:12,border:'1px solid #e5e7eb'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10}}>
+                      <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                      <div style={{flex:1,minWidth:0}}>
+                        {item.brand && (
+                          <div style={{fontSize:10,color:'#9ca3af',fontWeight:600,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:1}}>{item.brand}</div>
+                        )}
+                        <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111'}}>{item.productName || '(名称未設定)'}</div>
+                        {item.bundleGroup && bgCount > 1 && (
+                          <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:99,
+                            background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',marginTop:2,display:'inline-block'}}>
+                            📦 まとめ{bgCount}点
+                          </span>
+                        )}
+                        {(Number(bulkCouponDraft[item.id]) || 0) > 0 && (
+                          <div style={{fontSize:10,fontWeight:700,color:'#1d4ed8',marginTop:2}}>
+                            🎟️ クーポン −¥{Number(bulkCouponDraft[item.id]).toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:8}}>
+                      <div>
+                        <label style={lbl}>商品代</label>
+                        <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                          value={bulkPriceDraft[item.id] ?? ''}
+                          onChange={e => setBulkPriceDraft(p => ({...p, [item.id]: e.target.value}))}
+                          style={fld}/>
+                      </div>
+                      <div>
+                        <label style={lbl}>送料（仕入れ）</label>
+                        <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                          value={bulkShipDraft[item.id] ?? ''}
+                          onChange={e => setBulkShipDraft(p => ({...p, [item.id]: e.target.value}))}
+                          style={fld}/>
+                      </div>
+                      <div>
+                        <label style={lbl}>仕入れ先</label>
+                        <input className="input-field" type="text" list="bulkStoreOptions" placeholder="店名・出品者"
+                          value={bulkStoreDraft[item.id] ?? ''}
+                          onChange={e => setBulkStoreDraft(p => ({...p, [item.id]: e.target.value}))}
+                          style={{...fld,textAlign:'left'}}/>
+                      </div>
+                      <div>
+                        <label style={lbl}>{hasSale ? '売上（記録済み）' : '売れた金額'}</label>
+                        <input className="input-field" type="number" inputMode="numeric"
+                          placeholder={hasSale ? '記録済み' : '未売却なら空欄'}
+                          disabled={hasSale}
+                          value={hasSale ? '' : (bulkSaleDraft[item.id] ?? '')}
+                          onChange={e => setBulkSaleDraft(p => ({...p, [item.id]: e.target.value}))}
+                          style={{...fld,...(hasSale ? {background:'#f3f4f6',color:'#9ca3af'} : {})}}/>
+                      </div>
+                    </div>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:7,fontSize:11,fontWeight:700}}>
+                      <span style={{color:'#92400e'}}>
+                        仕入れ計 ¥{(itemPrice + ship).toLocaleString()}
+                        {ship > 0 && <span style={{color:'#9ca3af',fontWeight:600}}>（送料込み）</span>}
+                      </span>
+                      {salePrice > 0 && !hasSale && (
+                        <span style={{color: profit >= 0 ? '#059669' : '#dc2626'}}>
+                          {plat} 利益 {profit >= 0 ? '+' : '−'}¥{Math.abs(profit).toLocaleString()}
                         </span>
                       )}
-                      {(Number(bulkCouponDraft[item.id]) || 0) > 0 && (
-                        <div style={{fontSize:10,fontWeight:700,color:'#1d4ed8',marginTop:2}}>
-                          🎟️ クーポン −¥{Number(bulkCouponDraft[item.id]).toLocaleString()}
-                        </div>
-                      )}
                     </div>
-                    <input className="input-field" type="number" inputMode="numeric" placeholder="0"
-                      value={bulkPriceDraft[item.id] ?? ''}
-                      onChange={e => setBulkPriceDraft(p => ({...p, [item.id]: e.target.value}))}
-                      style={{width:110,flexShrink:0,textAlign:'right'}}/>
                   </div>
                 );
               })}
@@ -7219,11 +7450,19 @@ const InventoryTab = () => {
 
             {/* スティッキーフッター */}
             {(() => {
-              const readyCnt = Object.entries(bulkPriceDraft).filter(([,v]) => {
-                const n = Number(v); return v !== '' && !isNaN(n) && n > 0;
-              }).length;
+              const rows = bulkRows();
+              const readyCnt = Object.keys(rows).length;
+              const soldCnt = Object.entries(rows).filter(([id, r]) =>
+                r.salePrice > 0 && !(data.sales || []).some(s => s.inventoryId === id)).length;
+              const sumTotal = Object.values(rows).reduce((a, r) => a + r.total, 0);
               return (
                 <div style={{position:'sticky',bottom:0,background:'white',paddingTop:10,paddingBottom:'calc(10px + env(safe-area-inset-bottom))',marginTop:-10}}>
+                  {readyCnt > 0 && (
+                    <div style={{fontSize:11,color:'#6b7280',fontWeight:700,textAlign:'center',marginBottom:7}}>
+                      仕入れ合計 ¥{sumTotal.toLocaleString()}
+                      {soldCnt > 0 && <span style={{color:'#059669'}}> ／ 売上 {soldCnt}件を記録</span>}
+                    </div>
+                  )}
                   <button
                     onClick={saveBulkPrices}
                     disabled={readyCnt === 0}
