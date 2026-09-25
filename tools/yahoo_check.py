@@ -20,8 +20,6 @@ import sys, os, json, glob, re, urllib.request
 
 OUT_DIR = '/tmp/yahoo_check'
 API_URL = 'https://nobisyop.vercel.app/api/data'
-# 1商品ぶんの高さのうち、上から何割を残せば「商品名・価格・日付・商品ID」が入るか
-HEAD_RATIO = 0.65
 # 1枚の見開きに詰める商品数
 PER_SHEET = 3
 # 画面を縮小して撮ると文字が小さくなるので、1商品これくらいの高さまで拡大して読む
@@ -38,27 +36,43 @@ def newest_screenshot():
     return max(cands, key=os.path.getmtime)
 
 
-def find_separators(im):
-    """商品と商品の切れ目（薄いグレーの横線）のyを返す"""
+def is_line(c):
+    """白でもなく暗くもない＝引かれた線の色"""
+    r, g, b = c
+    return 190 <= r <= 245 and abs(r - g) < 10 and abs(g - b) < 10
+
+
+def card_band(im):
+    """一覧の白いカードが占めるxの範囲。縮小して撮ると背景が薄いグレーになり、
+    カードの外にも線と同じ色が広がるので、まず白い帯を見つけて中だけを見る"""
     W, H = im.size
     px = im.load()
-    # 線は一覧の右側の余白を横切るので、右寄りの3点で判定する
-    xs = [int(W * 0.90), int(W * 0.93), int(W * 0.96)]
+    step = max(1, W // 360)
+    ys = range(0, H, 7)
+    cols = []
+    for x in range(0, W, step):
+        n = sum(1 for y in ys if min(px[x, y]) >= 249)
+        cols.append((x, n))
+    top = max(n for _, n in cols)
+    if top == 0:
+        return 0, W - 1
+    xs = [x for x, n in cols if n >= top * 0.6]
+    return min(xs), max(xs)
+
+
+def scan_lines(px, H, xs, need):
+    """横一直線に線の色が並ぶyを拾い、太さぶんをまとめて1本にする"""
     ys = []
     for y in range(H):
-        ok = True
+        n = 0
         for x in xs:
-            r, g, b = px[x, y]
-            # 白でもなく暗くもない＝引かれた線
-            if not (195 <= r <= 243 and abs(r - g) < 8 and abs(g - b) < 8):
-                ok = False
-                break
-        if ok:
+            if is_line(px[x, y]):
+                n += 1
+        if n >= need:
             ys.append(y)
-    # 太さ数pxの線は1本にまとめる
     groups = []
     for y in ys:
-        if groups and y - groups[-1][-1] <= 3:
+        if groups and y - groups[-1][-1] <= 4:
             groups[-1].append(y)
         else:
             groups.append([y])
@@ -75,47 +89,101 @@ def find_separators(im):
     return cleaned
 
 
-def content_left(im, sep_y):
-    """切れ目の線が始まるxを返す。＝一覧本体の左端。左のメニュー欄をここで落とす"""
+def regularity(seps):
+    """間隔がどれだけ揃っているか。商品の切れ目なら等間隔に近くなる"""
+    if len(seps) < 5:
+        return 0.0
+    gaps = [seps[i + 1] - seps[i] for i in range(len(seps) - 1)]
+    med = sorted(gaps)[len(gaps) // 2]
+    if med <= 0:
+        return 0.0
+    return sum(1 for g in gaps if abs(g - med) <= med * 0.15) / len(gaps)
+
+
+def find_separators(im):
+    """商品と商品の切れ目（薄いグレーの横線）のyを返す"""
+    W, H = im.size
+    px = im.load()
+    L, R = card_band(im)
+    # 撮り方で線の見え方が変わるので2通り試し、間隔が揃っている方を採る
+    # ① 等倍撮影: 一覧の右側の余白を線が横切る
+    # ② 縮小撮影: カードの中を線が端から端まで横切る
+    inner = list(range(L + 20, max(L + 21, R - 20), 12)) or [L]
+    cands = [
+        (scan_lines(px, H, [int(W * 0.90), int(W * 0.93), int(W * 0.96)], 3), 0, W - 1),
+        (scan_lines(px, H, inner, max(1, int(len(inner) * 0.85))), L, R),
+    ]
+    best = max(cands, key=lambda c: (regularity(c[0]), len(c[0])))
+    return best[0], best[1], best[2]
+
+
+def content_left(im, seps, band_left, band_right):
+    """一覧本体の左端。左のメニュー欄や外側の余白をここで落とす"""
     W = im.size[0]
     px = im.load()
-    # 線の上にいる点から左へたどり、線が途切れたところが一覧の左端
-    x = int(W * 0.90)
-    while x > 0:
-        r, g, b = px[x - 1, sep_y]
-        if not (195 <= r <= 243 and abs(r - g) < 8 and abs(g - b) < 8):
-            return x
-        x -= 1
-    return int(W * 0.33)
+    starts = []
+    for y in seps[:5]:
+        # 線の右端から左へたどり、途切れたところが一覧の左端
+        # 左のメニュー欄との境目はわずかな色差しかないので、ここだけ厳しめに見る
+        strict = lambda c: 195 <= c[0] <= 243 and abs(c[0] - c[1]) < 8 and abs(c[1] - c[2]) < 8
+        x = min(W - 3, band_right - 2)
+        while x > band_left and not strict(px[x, y]):
+            x -= 1
+        while x > band_left and strict(px[x - 1, y]):
+            x -= 1
+        starts.append(x)
+    if not starts:
+        return band_left
+    # 見出し用の線など、一覧より広く引かれた線が混ざるので真ん中の値を採る
+    starts.sort()
+    return max(band_left, starts[len(starts) // 2])
+
+
+def trim_bottom(part):
+    """1商品ぶんの下にある余白を削る。見開きを詰めて文字を大きく見せるため"""
+    w, h = part.size
+    px = part.load()
+    xs = range(0, w, 3)
+    last = h - 1
+    while last > h // 3:
+        # 文字も線もない＝薄い色ばかりの行なら削ってよい
+        if any(min(px[x, last]) < 190 for x in xs):
+            break
+        last -= 1
+    return part.crop((0, 0, w, min(h, last + 4)))
 
 
 def cmd_slice(path):
     from PIL import Image
     im = Image.open(path).convert('RGB')
     W, H = im.size
-    seps = find_separators(im)
+    seps, band_left, band_right = find_separators(im)
     if len(seps) < 2:
         sys.exit(f'商品の切れ目が見つかりませんでした（画像 {W}x{H}）。別の撮り方を試してください')
 
     # 1商品ぶんの高さ。画面を縮小して撮ると小さくなるので毎回測る
     pitches = sorted(seps[i + 1] - seps[i] for i in range(len(seps) - 1))
     pitch = pitches[len(pitches) // 2]
-    head_px = max(120, int(pitch * HEAD_RATIO))
+    # 1商品ぶんを丸ごと取ってから、下にある余白だけを削る。
+    # 行の高さは撮り方で変わるので、割合で決め打ちすると日付や商品IDが切れる
     # 縮小して撮った画像はそのままでは文字が読めないので拡大する
-    zoom = min(3.0, max(1.0, TARGET_ITEM_PX / head_px))
+    zoom = min(3.0, max(1.0, TARGET_ITEM_PX / pitch))
 
     # 一覧の左端。縮小率で位置が変わるので線の始まりから割り出す
-    x0 = min(content_left(im, y) for y in seps[:5])
+    x0 = content_left(im, seps, band_left, band_right)
+    x1 = min(W, band_right + 1)
     os.makedirs(OUT_DIR, exist_ok=True)
     for f in glob.glob(os.path.join(OUT_DIR, '*.png')):
         os.remove(f)
 
-    tops = seps[:-1]  # 最後の線から下は商品が途中で切れているので使わない
+    # 最後の線から下は商品が途中で切れているので使わない。
+    # まとめ買いの注記がある行だけ高さが違うので、次の線までを1商品ぶんとする
+    tops = [(seps[i], seps[i + 1]) for i in range(len(seps) - 1)]
     sheets = 0
     for i in range(0, len(tops), PER_SHEET):
         chunk = tops[i:i + PER_SHEET]
-        parts = [im.crop((x0, t, W, min(t + head_px, H))) for t in chunk]
-        sheet = Image.new('RGB', (W - x0, sum(p.height for p in parts)), 'white')
+        parts = [trim_bottom(im.crop((x0, t, x1, min(b, H)))) for t, b in chunk]
+        sheet = Image.new('RGB', (x1 - x0, sum(p.height for p in parts)), 'white')
         y = 0
         for p in parts:
             sheet.paste(p, (0, y))
@@ -128,7 +196,7 @@ def cmd_slice(path):
     print(f'画像: {path}')
     print(f'サイズ: {W}x{H}')
     print(f'商品の切れ目: {len(seps)}本 → 読み取れる商品 {len(tops)}件')
-    print(f'1商品の高さ: {pitch}px → 切り出し {head_px}px / 拡大 {zoom:.2f}倍 / 左端 x={x0}')
+    print(f'1商品の高さ: {pitch}px → 拡大 {zoom:.2f}倍 / 左端 x={x0}')
     print(f'見開き {sheets}枚を {OUT_DIR}/ に出しました')
     if H >= 16384:
         print('⚠️ 高さが16384pxちょうど＝フルページ撮影の上限に当たっています。')
