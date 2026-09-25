@@ -1374,13 +1374,17 @@ const YAHOO_WON_LIST_PROMPT = `ヤフオクのマイオク「落札分」一覧�
     "purchasePrice": 3800,
     "purchaseDate": "2026-09-10",
     "sellerName": "出品者名またはストア名（そのまま）",
-    "quantity": 1
+    "quantity": 1,
+    "imageIndex": 1,
+    "indexInImage": 1
   }
 ]
 注意事項：
 - auctionId: オークションID（英数字）。画面に見つからなければ ""
 - purchasePrice: 落札価格。カンマを除いた数値のみ。円マーク不要。送料・手数料は含めない
 - purchaseDate: 落札日/終了日時。YYYY-MM-DD形式の西暦4桁。年の表記がなければ今年とみなし、未来日になる場合は前年とする
+- imageIndex: この商品が何枚目のスクリーンショットに写っているか（1始まり）。画像1枚のみなら全件1
+- indexInImage: そのスクリーンショットの中で上から何番目の行に表示されているか（1始まり）
 - 読み取れない項目は空文字か0にする。推測で埋めない`;
 
 // ============================================================
@@ -11697,6 +11701,406 @@ const runRemoveBg = async (file, apiKey) => {
 };
 
 // ============================================================
+// ヤフオク落札一覧 サムネイル切り出しキャリブレーションモーダル
+// ============================================================
+
+// 切り出し枠の縦横比を保ったまま長辺を200pxに収める
+const cropOutputSize = (w, h) => {
+  const MAX = 200;
+  if (!w || !h) return { w: MAX, h: MAX };
+  const r = MAX / Math.max(w, h);
+  return { w: Math.max(1, Math.round(w * r)), h: Math.max(1, Math.round(h * r)) };
+};
+
+const YahooListCropModal = ({ files, rows, onClose, onConfirm }) => {
+  // files: [{id, file, url}]
+  // rows: [{id, imageIndex, indexInImage, ...}]
+
+  // ── 画像ごとの設定 ──
+  // perImageSettings[imgIdx] = { box: {x,y,w,h}, pitch, tapMode }
+  // box・pitch は実ピクセル座標
+  const [imgIdx, setImgIdx] = React.useState(0); // 0始まり
+  const [perImage, setPerImage] = React.useState(() =>
+    files.map(() => ({ box: null, pitch: null, tapMode: false }))
+  );
+
+  const imgRef = React.useRef(null);
+  const containerRef = React.useRef(null);
+  // 画像を切り替えたとき、新しい画像の読み込み完了を待ってプレビューを作り直すためのカウンタ
+  const [imgLoadTick, setImgLoadTick] = React.useState(0);
+
+  // ── 現在の画像の自然サイズと表示サイズの比率を返す ──
+  const getScale = React.useCallback(() => {
+    const el = imgRef.current;
+    if (!el || !el.naturalWidth || !el.clientWidth) return 1;
+    return el.naturalWidth / el.clientWidth;
+  }, []);
+
+  // ── 現在の画像が読み込まれたときに初期boxを設定 ──
+  const handleImgLoad = React.useCallback(() => {
+    const el = imgRef.current;
+    if (!el) return;
+    setImgLoadTick(t => t + 1);
+    setPerImage(prev => {
+      const arr = [...prev];
+      if (!arr[imgIdx].box) {
+        const nw = el.naturalWidth;
+        const nh = el.naturalHeight;
+        arr[imgIdx] = {
+          ...arr[imgIdx],
+          box: {
+            x: Math.round(nw * 0.05),
+            y: Math.round(nh * 0.15),
+            w: Math.round(nw * 0.25),
+            h: Math.round(nw * 0.25),
+          },
+        };
+      }
+      return arr;
+    });
+  }, [imgIdx]);
+
+  // ── 現在の設定 ──
+  const cur = perImage[imgIdx] || { box: null, pitch: null, tapMode: false };
+  const box = cur.box;
+  const pitch = cur.pitch;
+  const tapMode = cur.tapMode;
+
+  const updateCur = (patch) => {
+    setPerImage(prev => {
+      const arr = [...prev];
+      arr[imgIdx] = { ...arr[imgIdx], ...patch };
+      return arr;
+    });
+  };
+
+  // ── ドラッグ状態 ──
+  const dragRef = React.useRef(null);
+  // dragRef.current = { type: 'move'|'resize', startX, startY, origBox }
+
+  const getClientPos = (e) => {
+    if (e.touches && e.touches.length > 0) {
+      return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
+    return { x: e.clientX, y: e.clientY };
+  };
+
+  const onDragStart = (e, type) => {
+    if (!box) return;
+    e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+    const pos = getClientPos(e);
+    const scale = getScale();
+    dragRef.current = { type, startX: pos.x, startY: pos.y, origBox: { ...box }, scale, _imgIdx: imgIdx };
+  };
+
+  const onDragMove = React.useCallback((e) => {
+    if (!dragRef.current) return;
+    if (e.cancelable) e.preventDefault();
+    const pos = getClientPos(e);
+    const { type, startX, startY, origBox, scale, _imgIdx } = dragRef.current;
+    const dx = (pos.x - startX) * scale;
+    const dy = (pos.y - startY) * scale;
+    setPerImage(prev => {
+      if (_imgIdx === undefined || !prev[_imgIdx]) return prev;
+      const curBox = prev[_imgIdx].box;
+      if (!curBox) return prev;
+      let newBox;
+      if (type === 'move') {
+        newBox = { ...curBox, x: Math.round(origBox.x + dx), y: Math.round(origBox.y + dy) };
+      } else if (type === 'resize') {
+        newBox = { ...curBox, w: Math.max(20, Math.round(origBox.w + dx)), h: Math.max(20, Math.round(origBox.h + dy)) };
+      } else {
+        return prev;
+      }
+      const arr = [...prev];
+      arr[_imgIdx] = { ...arr[_imgIdx], box: newBox };
+      return arr;
+    });
+  }, []);
+
+  const onDragEnd = React.useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  // グローバルイベント登録（touchmove / mousemove）
+  React.useEffect(() => {
+    const moveH = (e) => onDragMove(e);
+    const endH = () => onDragEnd();
+    document.addEventListener('mousemove', moveH);
+    document.addEventListener('mouseup', endH);
+    document.addEventListener('touchmove', moveH, { passive: false });
+    document.addEventListener('touchend', endH);
+    return () => {
+      document.removeEventListener('mousemove', moveH);
+      document.removeEventListener('mouseup', endH);
+      document.removeEventListener('touchmove', moveH);
+      document.removeEventListener('touchend', endH);
+    };
+  }, [onDragMove, onDragEnd]);
+
+  // ── 2件目タップ → pitch 算出 ──
+  const handleImageTap = (e) => {
+    if (!tapMode || !box) return;
+    const el = imgRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const scale = getScale();
+    const tapRealY = (clientY - rect.top) * scale;
+    // 枠の中心と、タップされた2件目の中心との距離が行間隔になる
+    const newPitch = Math.round(tapRealY - (box.y + box.h / 2));
+    updateCur({ pitch: newPitch > 0 ? newPitch : Math.abs(newPitch) || 80, tapMode: false });
+  };
+
+  // ── 前の画像の設定を引き継ぐ ──
+  const copyFromPrev = () => {
+    if (imgIdx === 0) return;
+    const prev = perImage[imgIdx - 1];
+    if (!prev.box) return;
+    setPerImage(arr => {
+      const next = [...arr];
+      next[imgIdx] = {
+        ...next[imgIdx],
+        box: { ...prev.box, y: prev.box.y }, // Y座標もそのまま引き継ぐ（あとで調整）
+        pitch: prev.pitch,
+        tapMode: false,
+      };
+      return next;
+    });
+  };
+
+  // ── 切り出しプレビュー生成 ──
+  const [previews, setPreviews] = React.useState([]); // [{ rowId, dataUrl }]
+  React.useEffect(() => {
+    if (!box) { setPreviews([]); return; }
+    let cancelled = false;
+    const generate = async () => {
+      const el = imgRef.current;
+      if (!el || !el.naturalWidth) return;
+      const effectivePitch = pitch || box.h;
+
+      // 現在の画像インデックス (0始まり → imageIndex は 1始まり)
+      const curImageIndex = imgIdx + 1;
+      const relevantRows = rows.filter(r => r.imageIndex === curImageIndex);
+
+      const results = [];
+      for (const row of relevantRows) {
+        const rowY = box.y + (row.indexInImage - 1) * effectivePitch;
+        const canvas = document.createElement('canvas');
+        const out = cropOutputSize(box.w, box.h);
+        canvas.width = out.w;
+        canvas.height = out.h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(el, box.x, rowY, box.w, box.h, 0, 0, out.w, out.h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        if (!cancelled) results.push({ rowId: row.id, dataUrl });
+      }
+      if (!cancelled) setPreviews(results);
+    };
+    generate().catch(console.warn);
+    return () => { cancelled = true; };
+  }, [box, pitch, imgIdx, rows, imgLoadTick]);
+
+  // ── 確定: 全画像の全行を切り出して onConfirm に渡す ──
+  const handleConfirm = async () => {
+    const allCrops = {}; // rowId → dataUrl
+    for (let i = 0; i < files.length; i++) {
+      const settings = perImage[i];
+      if (!settings.box) continue;
+      const effectivePitch = settings.pitch || settings.box.h;
+      const curImageIndex = i + 1;
+      const relevantRows = rows.filter(r => r.imageIndex === curImageIndex);
+      if (relevantRows.length === 0) continue;
+
+      // 対象画像を <img> で読み込む
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = files[i].url;
+      });
+      for (const row of relevantRows) {
+        const rowY = settings.box.y + (row.indexInImage - 1) * effectivePitch;
+        const canvas = document.createElement('canvas');
+        const out = cropOutputSize(settings.box.w, settings.box.h);
+        canvas.width = out.w;
+        canvas.height = out.h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, settings.box.x, rowY, settings.box.w, settings.box.h, 0, 0, out.w, out.h);
+        allCrops[row.id] = canvas.toDataURL('image/jpeg', 0.8);
+      }
+    }
+    onConfirm(allCrops);
+  };
+
+  // ── オーバーレイの表示座標計算（実px → 表示px） ──
+  const getDisplayBox = () => {
+    const el = imgRef.current;
+    if (!el || !box) return null;
+    const scale = getScale();
+    if (scale === 0) return null;
+    return {
+      left: box.x / scale,
+      top: box.y / scale,
+      width: box.w / scale,
+      height: box.h / scale,
+    };
+  };
+
+  const displayBox = getDisplayBox();
+
+  return (
+    <div className="modal-overlay" onClick={onClose} style={{zIndex:2000}}>
+      <div className="modal-content slide-up" onClick={e => e.stopPropagation()}
+        style={{maxWidth:500,width:'100%',maxHeight:'90vh',overflowY:'auto',padding:'16px 14px 24px'}}>
+        <div className="modal-handle"/>
+        <div style={{fontWeight:700,fontSize:16,marginBottom:10}}>🖼 商品サムネイルの切り出し設定</div>
+
+        {/* 画像ナビゲーション */}
+        {files.length > 1 && (
+          <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10}}>
+            <button className="btn-secondary" style={{padding:'4px 12px',fontSize:12}}
+              disabled={imgIdx === 0} onClick={() => setImgIdx(i => i - 1)}>◀</button>
+            <div style={{flex:1,textAlign:'center',fontSize:13,fontWeight:600}}>
+              {imgIdx + 1} / {files.length} 枚目
+            </div>
+            <button className="btn-secondary" style={{padding:'4px 12px',fontSize:12}}
+              disabled={imgIdx === files.length - 1} onClick={() => setImgIdx(i => i + 1)}>▶</button>
+          </div>
+        )}
+
+        {/* 前の画像設定を引き継ぐボタン */}
+        {imgIdx > 0 && (
+          <button className="btn-secondary" style={{width:'100%',fontSize:12,marginBottom:8,padding:'6px 0'}}
+            onClick={copyFromPrev}>
+            1枚前と同じ設定を使う（Y座標は後で調整）
+          </button>
+        )}
+
+        {/* 画像 + オーバーレイ */}
+        <div ref={containerRef} style={{position:'relative',userSelect:'none',marginBottom:8}}>
+          <img
+            ref={imgRef}
+            src={files[imgIdx]?.url}
+            alt=""
+            onLoad={handleImgLoad}
+            onClick={tapMode ? handleImageTap : undefined}
+            onTouchStart={tapMode ? handleImageTap : undefined}
+            style={{width:'100%',display:'block',borderRadius:8,
+              cursor: tapMode ? 'crosshair' : 'default',
+              border: tapMode ? '2px solid #ef4444' : '1px solid #e5e7eb'}}
+          />
+
+          {/* 1件目のボックスオーバーレイ */}
+          {displayBox && !tapMode && (
+            <div style={{
+              position:'absolute',
+              left: displayBox.left,
+              top: displayBox.top,
+              width: displayBox.width,
+              height: displayBox.height,
+              border: '2px solid #3b82f6',
+              background: 'rgba(59,130,246,0.15)',
+              boxSizing:'border-box',
+              touchAction:'none',
+              cursor:'move',
+            }}
+              onMouseDown={e => onDragStart(e, 'move')}
+              onTouchStart={e => onDragStart(e, 'move')}
+            >
+              {/* 右下リサイズハンドル */}
+              <div style={{
+                position:'absolute',right:-8,bottom:-8,
+                width:20,height:20,
+                background:'#3b82f6',borderRadius:4,
+                cursor:'se-resize',
+                display:'flex',alignItems:'center',justifyContent:'center',
+                color:'white',fontSize:10,fontWeight:700,
+                touchAction:'none',
+              }}
+                onMouseDown={e => onDragStart(e, 'resize')}
+                onTouchStart={e => onDragStart(e, 'resize')}
+              >⤡</div>
+            </div>
+          )}
+
+          {/* タップモード用のオーバーレイ案内 */}
+          {tapMode && (
+            <div style={{
+              position:'absolute',top:0,left:0,right:0,
+              background:'rgba(239,68,68,0.8)',
+              color:'white',fontWeight:700,fontSize:13,
+              padding:'8px 12px',textAlign:'center',borderRadius:'8px 8px 0 0',
+            }}>
+              2件目のサムネイルの中心をタップしてください
+            </div>
+          )}
+        </div>
+
+        {/* 説明 */}
+        {!tapMode && (
+          <div style={{fontSize:11,color:'#666',marginBottom:10}}>
+            青い枠を1件目のサムネイルに合わせてください（ドラッグで移動・右下ハンドルでリサイズ）
+          </div>
+        )}
+
+        {/* 行間隔（pitch）コントロール */}
+        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:10}}>
+          <button className="btn-secondary" style={{padding:'4px 12px',fontSize:12,flexShrink:0}}
+            disabled={tapMode}
+            onClick={() => updateCur({ tapMode: true })}>
+            2件目をタップして行間隔を設定
+          </button>
+          {pitch !== null && (
+            <>
+              <button className="btn-secondary" style={{padding:'4px 10px',fontSize:14,lineHeight:1}}
+                onClick={() => updateCur({ pitch: Math.max(10, (pitch || 80) - 2) })}>−</button>
+              <span style={{fontSize:12,minWidth:60,textAlign:'center',fontWeight:600}}>
+                間隔 {pitch}px
+              </span>
+              <button className="btn-secondary" style={{padding:'4px 10px',fontSize:14,lineHeight:1}}
+                onClick={() => updateCur({ pitch: (pitch || 80) + 2 })}>＋</button>
+            </>
+          )}
+          {tapMode && (
+            <button className="btn-secondary" style={{padding:'4px 10px',fontSize:11}}
+              onClick={() => updateCur({ tapMode: false })}>キャンセル</button>
+          )}
+        </div>
+
+        {/* 切り出しプレビュー */}
+        {previews.length > 0 && (
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:'#666',marginBottom:4}}>
+              切り出しプレビュー（この画像の{previews.length}件）
+            </div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {previews.map((p, i) => (
+                <div key={p.rowId} style={{textAlign:'center'}}>
+                  <img src={p.dataUrl} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:4,border:'1px solid #e5e7eb'}}/>
+                  <div style={{fontSize:9,color:'#999'}}>{i+1}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* アクションボタン */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:8}}>
+          <button className="btn-secondary" style={{padding:'10px 0'}} onClick={onClose}>
+            キャンセル
+          </button>
+          <button className="btn-primary" style={{padding:'10px 0'}} onClick={handleConfirm}>
+            この内容で切り出す
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
 // 一括仕入れパネル
 // ============================================================
 const BatchPurchasePanel = ({ data, setData, toast }) => {
@@ -11720,6 +12124,8 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   const [yahooListAnalyzing, setYahooListAnalyzing] = React.useState(false);
   const [yahooListRegistering, setYahooListRegistering] = React.useState(false);
   const yahooListFileInputRef = React.useRef();
+  // ── キャリブレーションモーダル用state ──
+  const [showCropModal, setShowCropModal] = React.useState(false);
 
   const apiKey = (data?.settings?.apiKey || '').trim();
   const [keyStatus, setKeyStatus] = React.useState(null); // null | 'ok' | 'error'
@@ -11880,12 +12286,25 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         return;
       }
 
+      // imageIndex / indexInImage のフォールバック推定:
+      // AIが返さなかった場合は全体の並び順から1枚目・1始まりで推定する
+      // （複数枚スクショがある場合は1枚目扱いになるが登録フローは壊れない）
+      const totalImages = yahooListFiles.length;
+      const perImageCount = totalImages > 1 ? Math.ceil(parsed.length / totalImages) : parsed.length;
       const rows = [];
       for (let i = 0; i < parsed.length; i++) {
         const item = parsed[i];
         const purchaseDate = parsePurchaseDate(item.purchaseDate) || todayStr();
         const purchasePrice = Number(item.purchasePrice) || 0;
         const storeInfo = resolveYahooStore(item.sellerName || '');
+
+        // imageIndex / indexInImage: AIが返した値を優先、なければ順番から推定
+        const imageIndex = (Number(item.imageIndex) >= 1)
+          ? Number(item.imageIndex)
+          : (perImageCount > 0 ? Math.floor(i / perImageCount) + 1 : 1);
+        const indexInImage = (Number(item.indexInImage) >= 1)
+          ? Number(item.indexInImage)
+          : (perImageCount > 0 ? (i % perImageCount) + 1 : i + 1);
 
         // 重複判定1: オークションID一致
         let skip = false;
@@ -11928,6 +12347,9 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           ...storeInfo,
           skip,
           dupReason,
+          imageIndex,
+          indexInImage,
+          cropDataUrl: null,
         });
       }
 
@@ -11970,6 +12392,28 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     for (const row of targets) {
       const id = Date.now().toString() + '_ylist_' + count;
       const purchasePrice = Number(row.purchasePrice) || 0;
+
+      // cropDataUrl がある場合は写真として添付（証拠保存用）
+      let rowPhotos = [];
+      if (row.cropDataUrl) {
+        const photoId = `${Date.now()}_${count}_crop`;
+        rowPhotos = [{
+          id: photoId,
+          thumbId: photoId,
+          thumbDataUrl: row.cropDataUrl,
+          medDataUrl: row.cropDataUrl,
+          source: 'yahoo_list',
+        }];
+        // IndexedDB にも保存（既存の savePhoto と同じ手順）
+        try {
+          const res = await fetch(row.cropDataUrl);
+          const blob = await res.blob();
+          await savePhoto(photoId, blob);
+        } catch(e) {
+          console.warn('[YahooList] cropDataUrl のIndexedDB保存に失敗:', e);
+        }
+      }
+
       const newItem = {
         id,
         userId: currentUser,
@@ -12011,7 +12455,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         aiTypeDetection: null,
         size: '',
         listPrice: 0,
-        photos: [],
+        photos: rowPhotos,
         mgmtNo: '',
         status: 'unlisted',
         profit: 0,
@@ -12386,11 +12830,23 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     yahooListFiles.forEach(f => URL.revokeObjectURL(f.url));
     setYahooListFiles([]);
     setYahooListRows([]);
+    setShowCropModal(false);
   };
 
   if (step === 'review_yahoo') {
     const skipCount = yahooListRows.filter(r => r.skip).length;
     const activeCount = yahooListRows.filter(r => !r.skip).length;
+    const croppedCount = yahooListRows.filter(r => r.cropDataUrl).length;
+
+    const handleCropConfirm = (allCrops) => {
+      // allCrops: { rowId: dataUrl }
+      setYahooListRows(prev => prev.map(r => {
+        const du = allCrops[r.id];
+        return du ? { ...r, cropDataUrl: du } : r;
+      }));
+      setShowCropModal(false);
+    };
+
     return (
       <div className="fade-in">
         <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
@@ -12399,6 +12855,16 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
             ← 戻る
           </button>
         </div>
+
+        {/* 切り出しボタン */}
+        <button
+          className="btn-secondary"
+          style={{width:'100%',padding:'10px 0',marginBottom:10,fontSize:13,fontWeight:700,
+            border:'1.5px solid #3b82f6',color:'#3b82f6',borderRadius:10}}
+          onClick={() => setShowCropModal(true)}
+        >
+          🖼 商品画像を切り出す{croppedCount > 0 ? `（${croppedCount}件設定済み）` : ''}
+        </button>
 
         {skipCount > 0 && (
           <div style={{fontSize:12,color:'#991b1b',background:'#fee2e2',border:'1px solid #fecaca',borderRadius:8,padding:'8px 10px',marginBottom:10,fontWeight:600}}>
@@ -12409,6 +12875,17 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
         {yahooListRows.map((row, idx) => (
           <div key={row.id} className="card" style={{marginBottom:10,padding:12,opacity: row.skip ? 0.45 : 1}}>
             <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8}}>
+              {/* サムネイル（切り出し済みなら表示、未切り出しはプレースホルダ） */}
+              <div style={{
+                width:48,height:48,flexShrink:0,borderRadius:6,overflow:'hidden',
+                border:'1px solid #e5e7eb',background:'#f3f4f6',
+                display:'flex',alignItems:'center',justifyContent:'center',
+              }}>
+                {row.cropDataUrl
+                  ? <img src={row.cropDataUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                  : <span style={{fontSize:18,opacity:0.3}}>🖼</span>
+                }
+              </div>
               <div style={{fontWeight:700,fontSize:13,flex:1}}>#{idx + 1} {row.productName || '（名称なし）'}</div>
               {row.dupReason && (
                 <span style={{fontSize:10,background:'#fee2e2',color:'#991b1b',padding:'2px 7px',borderRadius:99,fontWeight:600,flexShrink:0}}>
@@ -12495,6 +12972,16 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           onClick={handleRegisterYahooList}>
           {yahooListRegistering ? '登録中...' : `✅ ${activeCount}件をまとめて登録`}
         </button>
+
+        {/* キャリブレーションモーダル */}
+        {showCropModal && (
+          <YahooListCropModal
+            files={yahooListFiles}
+            rows={yahooListRows}
+            onClose={() => setShowCropModal(false)}
+            onConfirm={handleCropConfirm}
+          />
+        )}
       </div>
     );
   }
