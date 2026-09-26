@@ -5555,6 +5555,8 @@ const InventoryTab = () => {
   const [bulkSalePlatform, setBulkSalePlatform] = React.useState(''); // ''=商品の出品先を使う
   const [bulkSaleDate, setBulkSaleDate]     = React.useState(today());
   const [bulkSaleShipping, setBulkSaleShipping] = React.useState(String(CONFIG.ESTIMATED_SHIPPING));
+  const [inlineEditId, setInlineEditId] = React.useState(null);  // 一覧の中で直接編集中の商品
+  const [inlineDraft, setInlineDraft] = React.useState({ price:'', ship:'', store:'', sale:'' });
   const [bundleShipOpen, setBundleShipOpen] = React.useState(null);   // 編集中の bundleGroup
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
@@ -5939,6 +5941,94 @@ const InventoryTab = () => {
       : `✅ ${n}件の仕入額を確定しました`);
   };
 
+  // ── 一覧の中で直接入力（タップ1回で金額・送料・仕入れ先・売上を直す）──
+  const openInlineEdit = (item) => {
+    const ship = Math.max(0, Number(item.purchaseCost?.shippingTaxIn ?? item.shippingTaxIn) || 0);
+    const total = Number(item.purchasePrice) || 0;
+    setInlineDraft({
+      // 表示上の仕入れ値は送料込みなので、送料が判っているぶんは引いて商品代に戻す
+      price: total > 0 ? String(Math.max(0, total - ship)) : '',
+      ship:  ship > 0 ? String(ship) : '',
+      store: item.purchaseStore || '',
+      sale:  '',
+    });
+    setInlineEditId(item.id);
+  };
+
+  const saveInlineEdit = (item) => {
+    const itemPrice = Number(inlineDraft.price);
+    if (inlineDraft.price === '' || isNaN(itemPrice) || itemPrice < 0) { toast('❌ 商品代を入力してください'); return; }
+    const ship = Math.max(0, Number(inlineDraft.ship) || 0);
+    const total = itemPrice + ship;
+    const store = (inlineDraft.store || '').trim();
+    const saleN = Number(inlineDraft.sale);
+    const salePrice = (inlineDraft.sale !== '' && !isNaN(saleN) && saleN > 0) ? saleN : 0;
+    const hasSale = (data.sales || []).some(s => s.inventoryId === item.id);
+    const nowIso = new Date().toISOString();
+
+    const newSales = [];
+    if (salePrice > 0 && !hasSale) {
+      const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
+      const platform = item.platform || 'メルカリ';
+      const feeRate = fees[platform] ?? 0.10;
+      const saleShip = CONFIG.ESTIMATED_SHIPPING;
+      const listDate = item.listDate || '';
+      const saleDate = today();
+      newSales.push({
+        id: `sale_${Date.now()}_${Math.random().toString(36).slice(2,7)}`,
+        inventoryId: item.id, userId: currentUser,
+        platform, salePrice, feeRate, shipping: saleShip,
+        saleDate, listDate,
+        turnoverDays: listDate
+          ? Math.max(0, Math.floor((new Date(saleDate) - new Date(listDate)) / 86400000))
+          : null,
+        purchasePrice: total,
+        purchaseDate: item.purchaseDate || '',
+        purchaseStore: store || item.purchaseStore || '',
+        profit: Math.round(salePrice * (1 - feeRate) - saleShip - total),
+        platformId: '',
+        productName: item.productName || '', brand: item.brand || '',
+        createdAt: nowIso,
+      });
+    }
+
+    setData({
+      ...data,
+      inventory: data.inventory.map(i => {
+        if (i.id !== item.id) return i;
+        return {
+          ...i,
+          purchasePrice: total,          // 送料を足し込んだ額が仕入れ値
+          itemPriceTaxIn: itemPrice,
+          shippingTaxIn: ship,
+          priceUnconfirmed: false,
+          ...(store ? { purchaseStore: store } : {}),
+          ...(newSales.length > 0 ? { status: 'sold', soldAt: i.soldAt || nowIso } : {}),
+          purchaseCost: {
+            ...(i.purchaseCost || {}),
+            itemPriceTaxIn: itemPrice,
+            itemTaxRate: i.purchaseCost?.itemTaxRate ?? 10,
+            shippingTaxIn: ship,
+            shippingTaxRate: i.purchaseCost?.shippingTaxRate ?? 10,
+            totalTaxIn: total,
+            totalTaxEx: total,
+          },
+        };
+      }),
+      sales: [
+        ...(data.sales || []).map(s => {
+          if (s.inventoryId !== item.id) return s;
+          const delta = total - (Number(s.purchasePrice) || 0);
+          if (delta === 0) return s;
+          return { ...s, purchasePrice: total, profit: (Number(s.profit) || 0) - delta };
+        }),
+        ...newSales,
+      ],
+    });
+    setInlineEditId(null);
+    toast(newSales.length > 0 ? '✅ 保存して売上も記録しました' : '✅ 保存しました');
+  };
+
   const deleteItem = (item) => {
     if (!confirm('この商品を削除しますか？')) return;
     const now = new Date().toISOString();
@@ -6216,6 +6306,10 @@ const InventoryTab = () => {
       )}
 
       <div style={{padding:'12px 16px', paddingBottom: bulkMode && checkedIds.size > 0 ? 100 : 12}}>
+        {/* 仕入れ先の入力候補（一覧の直接入力とまとめ確定の両方で使う）*/}
+        <datalist id="bulkStoreOptions">
+          {storeOptions.map(s => <option key={s} value={s}/>)}
+        </datalist>
         {filter === 'priceUnconfirmed' && sorted.length > 0 && (
           <button onClick={() => {
               const d = {}, ship = {}, store = {};
@@ -6537,8 +6631,10 @@ const InventoryTab = () => {
                 const soldProfit = saleRecord?.profit ?? null;
                 const soldPP = (saleRecord?.purchasePrice||0) > 0 ? saleRecord.purchasePrice : (item.purchasePrice||0);
                 const isProfitable = soldProfit !== null ? soldProfit >= 0 : null;
+                const isInline = inlineEditId === item.id;
                 return (
-                  <div key={item.id} className="card"
+                  <React.Fragment key={item.id}>
+                  <div className="card"
                     style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
                       background: isChecked ? '#fef2f2'
                                 : isSold ? '#f8f8f8'
@@ -6642,9 +6738,21 @@ const InventoryTab = () => {
                     <div style={{textAlign:'right',flexShrink:0}}>
                       {/* 売却済・未売却で並び順を統一：仕入 → 売価 → 利益 */}
                       <div style={{fontSize:11,color:'#bbb',marginBottom:2}}>仕入れ値</div>
-                      <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
-                        ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
-                      </div>
+                      {bulkMode ? (
+                        <div style={{fontSize:13,fontWeight:700,color:'#555'}}>
+                          ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
+                        </div>
+                      ) : (
+                        /* タップ1回でそのままキーボードが開く */
+                        <input type="number" inputMode="numeric" placeholder="0"
+                          value={isInline ? inlineDraft.price : String(isSold ? soldPP : (item.purchasePrice||0))}
+                          onClick={e => e.stopPropagation()}
+                          onFocus={e => { e.stopPropagation(); if (!isInline) openInlineEdit(item); }}
+                          onChange={e => setInlineDraft(d => ({...d, price: e.target.value}))}
+                          style={{width:96,textAlign:'right',fontSize:13,fontWeight:700,color:'#555',
+                            padding:'5px 7px',borderRadius:8,background:'#fff',
+                            border: isInline ? '1.5px solid #b45309' : '1px solid #e5e7eb'}}/>
+                      )}
                       {isSold ? (
                         /* 売却済：実績の売上・利益 */
                         <>
@@ -6679,6 +6787,77 @@ const InventoryTab = () => {
                       {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                     </div>
                   </div>
+                  {isInline && (() => {
+                    const ip = Math.max(0, Number(inlineDraft.price) || 0);
+                    const sp = Math.max(0, Number(inlineDraft.ship) || 0);
+                    const sale = Math.max(0, Number(inlineDraft.sale) || 0);
+                    const hasSale = (data.sales||[]).some(s => s.inventoryId === item.id);
+                    const plat = item.platform || 'メルカリ';
+                    const feeRate = (data.settings?.platformFees || CONFIG.PLATFORM_FEES)[plat] ?? 0.10;
+                    const prof = Math.round(sale * (1 - feeRate) - CONFIG.ESTIMATED_SHIPPING - (ip + sp));
+                    const lbl = {fontSize:10,color:'#92400e',fontWeight:700,marginBottom:3,display:'block'};
+                    const fld = {width:'100%',padding:'9px 10px',fontSize:14,textAlign:'right'};
+                    return (
+                      <div style={{background:'#fffbeb',border:'1.5px solid #fcd34d',borderTop:'none',
+                        borderRadius:'0 0 12px 12px',padding:'12px 14px',marginTop:-8,marginBottom:8}}>
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                          <div>
+                            <label style={lbl}>商品代</label>
+                            <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                              value={inlineDraft.price}
+                              onChange={e => setInlineDraft(d => ({...d, price: e.target.value}))}
+                              style={fld}/>
+                          </div>
+                          <div>
+                            <label style={lbl}>送料（仕入れ）</label>
+                            <input className="input-field" type="number" inputMode="numeric" placeholder="0"
+                              value={inlineDraft.ship}
+                              onChange={e => setInlineDraft(d => ({...d, ship: e.target.value}))}
+                              style={fld}/>
+                          </div>
+                          <div>
+                            <label style={lbl}>仕入れ先</label>
+                            <input className="input-field" type="text" list="bulkStoreOptions" placeholder="店名・出品者"
+                              value={inlineDraft.store}
+                              onChange={e => setInlineDraft(d => ({...d, store: e.target.value}))}
+                              style={{...fld,textAlign:'left'}}/>
+                          </div>
+                          <div>
+                            <label style={lbl}>{hasSale ? '売上（記録済み）' : '売れた金額'}</label>
+                            <input className="input-field" type="number" inputMode="numeric"
+                              placeholder={hasSale ? '記録済み' : '未売却なら空欄'}
+                              disabled={hasSale}
+                              value={hasSale ? '' : inlineDraft.sale}
+                              onChange={e => setInlineDraft(d => ({...d, sale: e.target.value}))}
+                              style={{...fld,...(hasSale ? {background:'#f3f4f6',color:'#9ca3af'} : {})}}/>
+                          </div>
+                        </div>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',margin:'8px 0',fontSize:12,fontWeight:800}}>
+                          <span style={{color:'#92400e'}}>仕入れ値 ¥{(ip + sp).toLocaleString()}</span>
+                          {sale > 0 && !hasSale && (
+                            <span style={{color: prof >= 0 ? '#059669' : '#dc2626'}}>
+                              {plat} 利益 {prof >= 0 ? '+' : '−'}¥{Math.abs(prof).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{display:'flex',gap:8}}>
+                          <button onClick={() => setInlineEditId(null)}
+                            style={{flex:1,padding:'11px',borderRadius:10,border:'1.5px solid #e5e7eb',
+                              background:'#fff',color:'#666',fontWeight:700,fontSize:13,cursor:'pointer',
+                              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                            やめる
+                          </button>
+                          <button onClick={() => saveInlineEdit(item)}
+                            style={{flex:2,padding:'11px',borderRadius:10,border:'none',
+                              background:'#b45309',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer',
+                              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                            保存する
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                  </React.Fragment>
                 );
               });
             })()}
@@ -7363,9 +7542,6 @@ const InventoryTab = () => {
 
             {/* 商品ごとの入力行 */}
             <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:80}}>
-              <datalist id="bulkStoreOptions">
-                {storeOptions.map(s => <option key={s} value={s}/>)}
-              </datalist>
               {sorted.map(item => {
                 const bgCount = bundleCounts[item.bundleGroup];
                 const itemPrice = Math.max(0, Number(bulkPriceDraft[item.id]) || 0);
