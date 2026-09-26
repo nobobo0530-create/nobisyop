@@ -29,15 +29,22 @@ async function sbFetch(path, options = {}) {
 // 在庫869点を一度にSELECTすると写真base64で30MBになり、Supabase側が
 // statement timeout (57014) で落ちて「同期失敗」になる。
 // 200件ずつに割って取得すれば1クエリが軽くなり落ちない。
-async function sbFetchPaged(path, pageSize = 200) {
+// 1クエリを軽くしたうえで、ページ取得をまとめて並列に投げる（逐次だと13〜17秒かかる）
+async function sbFetchPaged(path, pageSize = 200, concurrency = 6) {
   const sep = path.includes('?') ? '&' : '?';
   const all = [];
-  for (let offset = 0; ; offset += pageSize) {
-    const page = await sbFetch(`${path}${sep}limit=${pageSize}&offset=${offset}`);
-    if (!Array.isArray(page) || page.length === 0) break;
-    all.push(...page);
-    if (page.length < pageSize) break;
-    if (offset > 100000) break; // 無限ループ防止
+  for (let wave = 0; wave < 50; wave++) {
+    const offsets = Array.from({ length: concurrency }, (_, i) => (wave * concurrency + i) * pageSize);
+    const pages = await Promise.all(offsets.map(o =>
+      sbFetch(`${path}${sep}limit=${pageSize}&offset=${o}`)
+    ));
+    let done = false;
+    for (const page of pages) {
+      if (!Array.isArray(page) || page.length === 0) { done = true; break; }
+      all.push(...page);
+      if (page.length < pageSize) { done = true; break; }
+    }
+    if (done) break;
   }
   return all;
 }
