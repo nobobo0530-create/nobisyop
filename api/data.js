@@ -30,7 +30,8 @@ async function sbFetch(path, options = {}) {
 // statement timeout (57014) で落ちて「同期失敗」になる。
 // 200件ずつに割って取得すれば1クエリが軽くなり落ちない。
 // ★ 逐次で回すこと。並列に投げるとSupabase側が競合して statement timeout (57014) になる
-async function sbFetchPaged(path, pageSize = 150) {
+// pageSize=200 が実測で最速（150だと往復が増えて遅く、無制限だとtimeoutする）
+async function sbFetchPaged(path, pageSize = 200) {
   const sep = path.includes('?') ? '&' : '?';
   const all = [];
   for (let offset = 0; offset <= 100000; offset += pageSize) {
