@@ -6743,9 +6743,12 @@ const InventoryTab = () => {
                           ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
                         </div>
                       ) : (
-                        /* タップ1回でそのままキーボードが開く */
-                        <input type="number" inputMode="numeric" placeholder="0"
-                          value={isInline ? inlineDraft.price : String(isSold ? soldPP : (item.purchasePrice||0))}
+                        /* タップ1回でそのままキーボードが開く。金額未確定のものは
+                           0ではなく空欄で出して、消す手間をなくす */
+                        <input type="number" inputMode="numeric" placeholder="未入力"
+                          value={isInline ? inlineDraft.price
+                            : (() => { const p = isSold ? soldPP : (item.purchasePrice||0);
+                                       return p > 0 ? String(p) : ''; })()}
                           onClick={e => e.stopPropagation()}
                           onFocus={e => { e.stopPropagation(); if (!isInline) openInlineEdit(item); }}
                           onChange={e => setInlineDraft(d => ({...d, price: e.target.value}))}
