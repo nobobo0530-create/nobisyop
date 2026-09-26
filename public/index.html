@@ -386,7 +386,7 @@
   </script>
   <script>
   // ★ アプリバージョンをグローバルに公開（app.jsのヘッダー表示で参照）
-  window._APP_VERSION = 'v20260613a';
+  window._APP_VERSION = 'v20260926a';
   </script>
 
   <script>
@@ -437,13 +437,58 @@
       return 'nobushop_compiled_' + versionTag;
     }
 
+    // ★ コンパイル済みJS(3〜4MB)は Cache API に置く。
+    // 以前は localStorage に入れていたが、在庫データ(2.6MB)と合わせて
+    // iOS Safariの上限(約5MB)を超え、保存失敗 →「同期失敗・更新できない」の原因になっていた。
+    var JS_CACHE  = 'nobushop-compiled-v1';
+    var hasCaches = (typeof caches !== 'undefined' && !!caches.open);
+    function cacheUrl(key) { return '/__compiled__/' + key; }
+
+    function cacheGet(key) {
+      if (!hasCaches) return Promise.resolve(null);
+      return caches.open(JS_CACHE)
+        .then(function(c) { return c.match(cacheUrl(key)); })
+        .then(function(r) { return r ? r.text() : null; })
+        .catch(function() { return null; });
+    }
+
+    function cachePut(key, code) {
+      if (!hasCaches) return Promise.resolve();
+      return caches.open(JS_CACHE)
+        .then(function(c) {
+          return c.put(cacheUrl(key), new Response(code, {
+            headers: { 'Content-Type': 'application/javascript' },
+          }));
+        })
+        .catch(function(e) { console.warn('[SalesLog] キャッシュ保存失敗:', e.message); });
+    }
+
+    // バージョン問わず何か1つ取り出す（オフライン起動の最後の手段）
+    function cacheGetAny() {
+      if (!hasCaches) return Promise.resolve(null);
+      return caches.open(JS_CACHE).then(function(c) {
+        return c.keys().then(function(reqs) {
+          if (!reqs.length) return null;
+          return c.match(reqs[0]).then(function(r) { return r ? r.text() : null; });
+        });
+      }).catch(function() { return null; });
+    }
+
     // 古いバージョンのキャッシュを削除
     function purgeOldCaches(currentKey) {
+      if (hasCaches) {
+        caches.open(JS_CACHE).then(function(c) {
+          c.keys().then(function(reqs) {
+            reqs.forEach(function(rq) {
+              if (rq.url.indexOf(cacheUrl(currentKey)) === -1) c.delete(rq);
+            });
+          });
+        }).catch(function() {});
+      }
+      // 旧バージョンが localStorage に残したコンパイルキャッシュを削除して在庫データに容量を返す
       try {
         Object.keys(localStorage).forEach(function(k) {
-          if (k.indexOf('nobushop_compiled_') === 0 && k !== currentKey) {
-            localStorage.removeItem(k);
-          }
+          if (k.indexOf('nobushop_compiled_') === 0) localStorage.removeItem(k);
         });
       } catch(e) {}
     }
@@ -471,8 +516,7 @@
         setStatus('コンパイルエラー。再読込してください。');
         return;
       }
-      try { localStorage.setItem(cacheKey, compiled); }
-      catch(e) { console.warn('[SalesLog] キャッシュ保存失敗:', e.message); }
+      cachePut(cacheKey, compiled);
       setStatus('');
       execCode(compiled);
     }
@@ -490,15 +534,14 @@
           .catch(function(err) {
             console.error('[SalesLog] fetch エラー:', err);
             // フェッチ失敗 → 何かキャッシュがあれば最後の手段として使う
-            try {
-              var anyKey = Object.keys(localStorage).filter(function(k) { return k.indexOf('nobushop_compiled_') === 0; })[0];
-              if (anyKey) {
+            cacheGetAny().then(function(any) {
+              if (any) {
                 console.warn('[SalesLog] フォールバック: 既存キャッシュを使用');
-                execCode(localStorage.getItem(anyKey));
+                execCode(any);
                 return;
               }
-            } catch(e) {}
-            setStatus('読込エラー。ネット接続を確認して再読込してください。');
+              setStatus('読込エラー。ネット接続を確認して再読込してください。');
+            });
           });
       };
       if (typeof Babel !== 'undefined') doFetch();
@@ -518,33 +561,31 @@
           purgeOldCaches(cacheKey);
 
           // このバージョンのコンパイル済みキャッシュがあるか
-          var cached = null;
-          try { cached = localStorage.getItem(cacheKey); } catch(e) {}
-
-          if (cached) {
-            // 同一バージョン → 高速パス（即実行）
-            setStatus('');
-            execCode(cached);
-          } else {
-            // 新バージョンまたは初回 → フェッチ・コンパイル
-            console.log('[SalesLog] 新バージョン検出 → 自動更新します:', versionTag);
-            fetchAndCompile(cacheKey);
-          }
+          return cacheGet(cacheKey).then(function(cached) {
+            if (cached) {
+              // 同一バージョン → 高速パス（即実行）
+              setStatus('');
+              execCode(cached);
+            } else {
+              // 新バージョンまたは初回 → フェッチ・コンパイル
+              console.log('[SalesLog] 新バージョン検出 → 自動更新します:', versionTag);
+              fetchAndCompile(cacheKey);
+            }
+          });
         })
         .catch(function(err) {
           // オフライン or HEAD失敗 → 既存キャッシュを使ってオフライン起動
           console.warn('[SalesLog] 更新チェック失敗 (オフライン?):', err.message);
-          try {
-            var anyKey = Object.keys(localStorage).filter(function(k) { return k.indexOf('nobushop_compiled_') === 0; })[0];
-            if (anyKey) {
+          cacheGetAny().then(function(any) {
+            if (any) {
               setStatus('');
-              execCode(localStorage.getItem(anyKey));
+              execCode(any);
               return;
             }
-          } catch(e) {}
-          // キャッシュもなければ初回起動を試みる（オンラインに戻ったとき）
-          setStatus('初回セットアップ中...');
-          fetchAndCompile(makeCacheKey(FALLBACK_VERSION));
+            // キャッシュもなければ初回起動を試みる（オンラインに戻ったとき）
+            setStatus('初回セットアップ中...');
+            fetchAndCompile(makeCacheKey(FALLBACK_VERSION));
+          });
         });
     }
     startup();

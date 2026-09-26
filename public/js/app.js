@@ -444,21 +444,30 @@ const STORAGE_KEY = 'nobushop_data';
 // ★ thumbDataUrl専用の別キー（メインデータとは分離してlocalStorage容量問題を回避）
 const THUMBS_KEY  = 'nobushop_thumbs_v1';
 
-// thumbDataUrl を { photoId: dataUrl } マップとして保存（IndexedDB消失時の復元用）
-const saveThumbMap = (data) => {
+// ★ localStorageへのサムネイル保存は廃止した
+// 在庫が増えてサムネイルマップが21MBになり、iOS Safariの上限(約5MB)には
+// どうやっても入らない。毎回 JSON.stringify して失敗するだけで、失敗すると
+// 在庫データ本体(2.6MB)の保存まで巻き込んで「同期失敗・更新できない」の原因になっていた。
+// サムネイル本体は IndexedDB とクラウド(Supabase)にあるので消えても安全。
+const saveThumbMap = () => {
+  // 過去バージョンが書き込んだ分が残っていれば削除して空きを作る
+  try { if (localStorage.getItem(THUMBS_KEY) !== null) localStorage.removeItem(THUMBS_KEY); } catch(_) {}
+};
+
+// ★ 大きなバックアップは Cache API に置く（localStorageの5MB枠は在庫データ本体に残す）
+// localStorageに3世代持っていたため 2.6MB×3 = 7.8MB を要求して常に容量超過していた
+const BACKUP_CACHE = 'nobushop-backup-v1';
+const saveBigBackup = async (name, text) => {
   try {
-    const map = {};
-    (data.inventory || []).forEach(item => {
-      (item.photos || []).forEach(p => {
-        if (p.id && p.thumbDataUrl) map[p.id] = p.thumbDataUrl;
-      });
-    });
-    localStorage.setItem(THUMBS_KEY, JSON.stringify(map));
+    if (typeof caches === 'undefined' || !caches.open) return;
+    const c = await caches.open(BACKUP_CACHE);
+    // 1世代だけ持つ。先に古い分を消してから書く
+    for (const req of await c.keys()) await c.delete(req);
+    await c.put(`/__backup__/${name}`, new Response(text, {
+      headers: { 'Content-Type': 'application/json' },
+    }));
   } catch(e) {
-    // 容量超過時はスキップし、古い保険コピーも削除して空きを確保する
-    // （サムネイル本体は IndexedDB とクラウドにあるため消えても安全・自動再生成される）
-    console.warn('[saveThumbMap] 容量超過、保険コピーを削除して空きを確保:', e.message);
-    try { localStorage.removeItem(THUMBS_KEY); } catch(_) {}
+    console.warn('[Backup] 保存失敗:', e.message);
   }
 };
 
@@ -702,20 +711,35 @@ const initSupabase = (url, key) => {
 };
 
 // 全データ取得（/api/data GET）
-const fetchSupabaseData = async () => {
-  const resp = await fetch(`${_API_BASE}/api/data`, { cache: 'no-store', headers: authHeaders() });
-  const json = await resp.json();
-  if (!resp.ok || !json.ok) {
-    const msg = json.error || `HTTP ${resp.status}`;
-    console.error('[Cloud] fetch error:', msg);
-    return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
+// ★ 既定は light=1（写真のbase64を除外）。在庫869点でフル取得すると30MB・23秒かかり
+//   iPhoneの回線では途中で切れて「同期失敗」になっていた。
+//   サムネイルはIndexedDBにあるので通常起動には不要。写真復元時のみ light:false で取り直す。
+const fetchSupabaseData = async ({ light = true } = {}) => {
+  const url = `${_API_BASE}/api/data` + (light ? '?light=1' : '');
+  // ★ リトライ付き（最大3回）: Supabaseのstatement timeoutなど一時的な500で
+  //   いきなり「同期失敗」にせず、少し待って取り直す
+  let msg = '通信エラー';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resp = await fetch(url, { cache: 'no-store', headers: authHeaders() });
+      const json = await resp.json();
+      if (resp.ok && json.ok) {
+        return {
+          inventory: json.inventory || [],
+          sales:     json.sales     || [],
+          settings:  json.settings  || getInitialData().settings,
+          receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
+        };
+      }
+      msg = json.error || `HTTP ${resp.status}`;
+    } catch(e) {
+      msg = e?.message || String(e);
+    }
+    console.warn(`[Cloud] fetch attempt ${attempt + 1} failed:`, msg);
+    if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
   }
-  return {
-    inventory: json.inventory || [],
-    sales:     json.sales     || [],
-    settings:  json.settings  || getInitialData().settings,
-    receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
-  };
+  console.error('[Cloud] fetch error:', msg);
+  return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
 };
 
 // ローカルデータを一括移行（/api/data POST）
@@ -13220,13 +13244,8 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
           thumbDataUrl,
           medDataUrl,
         }];
-        // ★ 即座にthumbMapに追記保存（setData/saveDataのsetTimeout(0)より先に確実に保存）
-        // アプリが強制終了される前でも写真が復元できるようにする
-        try {
-          const tMap = loadThumbMap();
-          tMap[id + '_p0'] = thumbDataUrl;
-          localStorage.setItem(THUMBS_KEY, JSON.stringify(tMap));
-        } catch(_) {}
+        // ★ 写真は IndexedDB(savePhoto) と クラウド(thumbDataUrl/medDataUrl) に保存済み。
+        // localStorageのthumbMapは容量上限に入らないため使わない（saveThumbMap のコメント参照）
       } catch (_) {
         photoRefs = [];
       }
@@ -16425,13 +16444,33 @@ const App = () => {
       try {
         const existingIds = new Set(await getAllPhotoIds());
         const inventory = dataRef.current.inventory || [];
+        const isMissing = (p) => !existingIds.has(p.id) && !(p.thumbId && existingIds.has(p.thumbId));
+
+        // ★ IndexedDBに無い写真が1枚もなければ、ここで終わり（フル取得しない）
+        const missing = inventory.some(it => (it.photos || []).some(isMissing));
+        if (!missing) return;
+
+        // 復元が必要なときだけ、base64込みのフルデータを取り直す
+        // （通常起動は light=1 なので手元のデータにbase64が無い）
+        let base64Map = new Map();
+        try {
+          const full = await fetchSupabaseData({ light: false });
+          for (const it of (full.inventory || [])) {
+            for (const p of (it.photos || [])) {
+              if (p?.id && (p.medDataUrl || p.thumbDataUrl)) base64Map.set(p.id, p);
+            }
+          }
+        } catch(e) {
+          console.warn('[PhotoRestore] フルデータ取得失敗:', e?.message || e);
+        }
+
         let restoredCount = 0;
         for (const item of inventory) {
-          for (const photo of (item.photos || [])) {
+          for (const ref of (item.photos || [])) {
             // フル写真がIndexedDBになく、medDataUrlまたはthumbDataUrlがある場合に復元
-            const hasFullInDB = existingIds.has(photo.id);
-            const hasThumbInDB = photo.thumbId ? existingIds.has(photo.thumbId) : false;
-            if (!hasFullInDB && !hasThumbInDB) {
+            if (isMissing(ref)) {
+              const src = base64Map.get(ref.id) || {};
+              const photo = { ...ref, medDataUrl: ref.medDataUrl || src.medDataUrl, thumbDataUrl: ref.thumbDataUrl || src.thumbDataUrl };
               const dataUrl = photo.medDataUrl || photo.thumbDataUrl;
               if (!dataUrl) continue;
               try {
@@ -16536,17 +16575,15 @@ const App = () => {
       : 0;
     if (Date.now() - last < 86400000) return;
 
-    // バックアップ退避（直近3つまで保持）
+    // バックアップ退避（Cache APIに1世代だけ。localStorageは在庫データ本体に使う）
     try {
-      const stripped = stripPhotosForStorage(fullData);
-      localStorage.setItem(
-        `nobushop_integrity_backup_${Date.now()}`,
-        JSON.stringify(stripped)
-      );
-      const keys = Object.keys(localStorage)
+      saveBigBackup(`integrity_${Date.now()}`, JSON.stringify(stripPhotosForStorage(fullData)));
+    } catch(_) {}
+    // 旧バージョンが localStorage に残したバックアップを削除して空きを返す
+    try {
+      Object.keys(localStorage)
         .filter(k => k.startsWith('nobushop_integrity_backup_'))
-        .sort();
-      while (keys.length > 3) localStorage.removeItem(keys.shift());
+        .forEach(k => localStorage.removeItem(k));
     } catch(_) {}
 
     const salesByInv = new Map();
