@@ -777,8 +777,12 @@ const stripItemPhotos = (item) => ({
 // _onSyncStatus({ status: 'syncing'|'ok'|'error', time?: number, error?: string })
 let _onSyncStatus = null;
 
-const syncToSupabase = async (oldData, newData) => {
+const syncToSupabase = async (oldData, newData, opts) => {
   if (!_cloudEnabled) return;
+  // ★ サーバーの古い書き込みガードは updatedAt/createdAt で新旧を判定する。
+  //   updatedAt を更新しない編集経路（ステータス変更など）でも新しい書き込みとして通るよう、
+  //   送信する行にだけ現在時刻を刻む（opts.noStamp=true は写真バックアップ用：内容を変えないので刻まない）
+  const _stampNow = (opts && opts.noStamp) ? null : new Date().toISOString();
 
   _onSyncStatus?.({ status: 'syncing' });
 
@@ -794,11 +798,11 @@ const syncToSupabase = async (oldData, newData) => {
     const invUpsert = [], invDelete = [], salesUpsert = [], salesDelete = [];
     for (const [id, item] of invNew) {
       // ★ 比較はstrip版、書き込みはfull版（thumbDataUrlをSupabaseに保存）
-      if (JSON.stringify(invOld.get(id)) !== JSON.stringify(item)) invUpsert.push({ id, data: invNewFull.get(id) });
+      if (JSON.stringify(invOld.get(id)) !== JSON.stringify(item)) invUpsert.push({ id, data: _stampNow ? { ...invNewFull.get(id), updatedAt: _stampNow } : invNewFull.get(id) });
     }
     for (const id of invOld.keys()) { if (!invNew.has(id)) invDelete.push(id); }
     for (const [id, sale] of salesNew) {
-      if (JSON.stringify(salesOld.get(id)) !== JSON.stringify(sale)) salesUpsert.push({ id, data: sale });
+      if (JSON.stringify(salesOld.get(id)) !== JSON.stringify(sale)) salesUpsert.push({ id, data: _stampNow ? { ...sale, updatedAt: _stampNow } : sale });
     }
     for (const id of salesOld.keys()) { if (!salesNew.has(id)) salesDelete.push(id); }
     const settingsChanged = JSON.stringify(oldData?.settings) !== JSON.stringify(newData?.settings);
@@ -16593,45 +16597,44 @@ const App = () => {
       salesByInv.get(s.inventoryId).push(s);
     });
 
-    // 在庫の status 補正：sale があるのに sold でない → sold へ
-    const fixedInv = (fullData.inventory || []).map(inv => {
+    // ★ 修正対象のidだけをここで決める（mountクロージャの古い fullData を丸ごと書き戻さない）
+    const soldFixIds = new Set();
+    (fullData.inventory || []).forEach(inv => {
       const sales = salesByInv.get(inv.id);
-      if (sales && sales.length > 0 && inv.status !== 'sold') {
-        return { ...inv, status: 'sold', _autoFixedAt: new Date().toISOString() };
-      }
-      return inv;
+      if (sales && sales.length > 0 && inv.status !== 'sold') soldFixIds.add(inv.id);
     });
-
     // 重複売上にフラグだけ付ける（削除しない・最古のものを正とする）
-    const flaggedSales = (fullData.sales || []).map(s => {
+    const dupFlagIds = new Set();
+    (fullData.sales || []).forEach(s => {
       const arr = salesByInv.get(s.inventoryId);
       if (arr && arr.length > 1) {
         const sorted = [...arr].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
-        if (s.id !== sorted[0].id) return { ...s, _duplicate: true };
+        if (s.id !== sorted[0].id) dupFlagIds.add(s.id);
       }
-      return s;
     });
 
-    const invChanged   = fixedInv.some((i, idx) => i !== (fullData.inventory || [])[idx]);
-    const salesChanged = flaggedSales.some((s, idx) => s !== (fullData.sales || [])[idx]);
-
     setFullDataRaw(prev => {
+      // ★ 最新の prev に対して修正を適用する（対象idの項目だけ差し替え）
+      const nowIso = new Date().toISOString();
+      const invChanged = (prev.inventory || []).some(i => soldFixIds.has(i.id) && i.status !== 'sold');
+      const salesChanged = (prev.sales || []).some(s => dupFlagIds.has(s.id) && !s._duplicate);
       const nf = {
         ...prev,
-        inventory: invChanged   ? fixedInv     : prev.inventory,
-        sales:     salesChanged ? flaggedSales : prev.sales,
-        settings:  { ...prev.settings, _integrityCheckedAt: new Date().toISOString() },
+        inventory: invChanged
+          ? (prev.inventory || []).map(i => (soldFixIds.has(i.id) && i.status !== 'sold') ? { ...i, status: 'sold', _autoFixedAt: nowIso } : i)
+          : prev.inventory,
+        sales: salesChanged
+          ? (prev.sales || []).map(s => (dupFlagIds.has(s.id) && !s._duplicate) ? { ...s, _duplicate: true } : s)
+          : prev.sales,
+        settings:  { ...prev.settings, _integrityCheckedAt: nowIso },
       };
       dataRef.current = nf;
       saveData(nf);
+      if (invChanged || salesChanged) {
+        console.log('[integrity] auto-fixed:', soldFixIds.size, 'inv items,', dupFlagIds.size, 'dup flags');
+      }
       return nf;
     });
-
-    if (invChanged || salesChanged) {
-      console.log('[integrity] auto-fixed:',
-        fixedInv.filter(i => i._autoFixedAt).length, 'inv items,',
-        flaggedSales.filter(s => s._duplicate).length, 'dup flags');
-    }
   }, []);  // 初回マウント時のみ
 
   // ── 写真自動クラウドバックアップ（毎回起動 + アプリ復帰時・バックグラウンド）──
@@ -16712,8 +16715,22 @@ const App = () => {
 
         if (updatedItems.length > 0) {
           const updatedMap = new Map(updatedItems.map(i => [i.id, i]));
+          // ★ 写真id → 生成したbase64（写真のbase64以外は一切上書きしない）
+          const backupPhotoById = new Map();
+          updatedItems.forEach(it => (it.photos || []).forEach(p => { if (p && p.id) backupPhotoById.set(p.id, p); }));
           setFullDataRaw(prev => {
-            const newInv = (prev.inventory || []).map(i => updatedMap.get(i.id) || i);
+            // ★ 圧縮待ちの間に取ったスナップショットは古い可能性がある。
+            //   最新の prev の商品に、写真のbase64だけを足す（他のフィールドは prev のまま・updatedAtも触らない）
+            const newInv = (prev.inventory || []).map(i => {
+              if (!updatedMap.has(i.id)) return i;
+              return {
+                ...i,
+                photos: (i.photos || []).map(p => {
+                  const u = p && backupPhotoById.get(p.id);
+                  return u ? { ...p, thumbDataUrl: p.thumbDataUrl || u.thumbDataUrl, medDataUrl: p.medDataUrl || u.medDataUrl } : p;
+                }),
+              };
+            });
             const nf = {
               ...prev,
               inventory: newInv,
@@ -16722,12 +16739,13 @@ const App = () => {
             dataRef.current = nf;
             saveData(nf);
             // 変更があった写真アイテムのみ差分 upsert（全件送信を避ける）
-            // updatedItems は写真が変化したアイテムのリスト（nf.inventory に反映済み）
+            // ★ settings は端末内だけの記録（_autoPhotoBackupAt）なのでクラウドへは送らない
+            //   → partialOld.settings = nf.settings にして settingsChanged=false にする
             const prevInvWithoutUpdated = (prev.inventory || []).filter(
               i => !updatedMap.has(i.id)
             );
-            const partialOld = { ...prev, inventory: prevInvWithoutUpdated };
-            setTimeout(function() { syncToSupabase(partialOld, nf); }, 500);
+            const partialOld = { ...prev, inventory: prevInvWithoutUpdated, settings: nf.settings };
+            setTimeout(function() { syncToSupabase(partialOld, nf, { noStamp: true }); }, 500);
             return nf;
           });
           console.log('[AutoPhotoBackup] ' + updatedItems.length + ' 件の写真をクラウドにバックアップしました');

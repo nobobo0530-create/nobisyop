@@ -87,6 +87,64 @@ async function preservePhotoData(rows) {
   });
 }
 
+// ★ 古い書き込みガード用の補助関数
+// 時刻を数値化（updatedAt → createdAt の順・不正値は0）
+function tsOf(x) {
+  const v = x && (x.updatedAt || x.createdAt);
+  const t = v ? Date.parse(v) : NaN;
+  return Number.isNaN(t) ? 0 : t;
+}
+
+// 保存済み行の updatedAt/createdAt だけを軽量に取得（写真base64は取らない）
+// ids は分割して問い合わせる（URLが長くなりすぎないように）
+async function fetchStoredStamps(table, ids) {
+  const map = new Map();
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100).map(id => `"${id}"`).join(',');
+    const rows = await sbFetch(`${table}?select=id,updatedAt:data->>updatedAt,createdAt:data->>createdAt&id=in.(${chunk})`);
+    for (const r of (Array.isArray(rows) ? rows : [])) map.set(r.id, { updatedAt: r.updatedAt, createdAt: r.createdAt });
+  }
+  return map;
+}
+
+// 保存済みの墓標（削除済みID → 削除時刻）を取得
+async function fetchStoredTombstones() {
+  const rows = await sbFetch('app_settings?select=d:data->_deletedIds&id=eq.default');
+  const d = Array.isArray(rows) && rows[0] ? rows[0].d : null;
+  return (d && typeof d === 'object' && !Array.isArray(d)) ? d : {};
+}
+
+// 墓標を和集合にする（同じIDは新しい時刻を採用）
+function mergeTombstones(a, b) {
+  const out = { ...(a || {}) };
+  for (const [id, t] of Object.entries(b || {})) {
+    const cur = out[id];
+    if (!cur || (Date.parse(t) || 0) > (Date.parse(cur) || 0)) out[id] = t;
+  }
+  return out;
+}
+
+// ★ 古い端末の状態でクラウドの新しいデータを上書きしないためのガード
+// - 保存済みより古い（updatedAt/createdAt が小さい）行は書かない
+// - 墓標（削除済み）にあるIDは書かない
+// 戻り値: { rows: 書いてよい行, skipped: 破棄したID }
+// ガード自体が失敗したら全件書く（保存をブロックしない）
+async function guardRows(table, rows, tombstones, skipped) {
+  if (!rows?.length) return rows;
+  try {
+    const stored = await fetchStoredStamps(table, rows.map(r => r.id));
+    return rows.filter(r => {
+      if (tombstones && Object.prototype.hasOwnProperty.call(tombstones, r.id)) { skipped.push(r.id); return false; }
+      const st = stored.get(r.id);
+      if (st && tsOf(r.data) < tsOf(st)) { skipped.push(r.id); return false; }
+      return true;
+    });
+  } catch(e) {
+    console.warn(`[api/data] ${table} の古い書き込みガードに失敗（全件保存します）:`, e.message);
+    return rows;
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -144,11 +202,24 @@ export default async function handler(req, res) {
       const { invUpsert, invDelete, salesUpsert, salesDelete, settings, receipts } = req.body || {};
       const ops = [];
 
+      const skipped = [];
+
+      // ★ 古い書き込みガード（墓標 + updatedAt 比較）
+      // 取得に失敗したら従来どおり全件書く
+      let tombstones = null;
+      if (invUpsert?.length || salesUpsert?.length || settings !== undefined) {
+        try { tombstones = await fetchStoredTombstones(); }
+        catch(e) { console.warn('[api/data] 墓標の取得に失敗（ガードなしで続行）:', e.message); }
+      }
+      const guardedInv   = await guardRows('inventory', invUpsert, tombstones, skipped);
+      const guardedSales = await guardRows('sales', salesUpsert, tombstones, skipped);
+
       // ★ 写真base64の消失防止
       // light モードで受け取ったデータをそのまま書き戻すと、保存済みの
       // thumbDataUrl / medDataUrl（写真の3重バックアップの1つ）が消えてしまう。
       // base64が欠けている写真は、保存済みの値をサーバー側で埋め直す。
-      const invRows = await preservePhotoData(invUpsert);
+      const invRows = await preservePhotoData(guardedInv);
+      const salesRows = guardedSales;
 
       if (invRows?.length)
         ops.push(sbFetch('inventory', {
@@ -160,22 +231,30 @@ export default async function handler(req, res) {
         const ids = invDelete.map(id => `"${id}"`).join(',');
         ops.push(sbFetch(`inventory?id=in.(${ids})`, { method: 'DELETE' }));
       }
-      if (salesUpsert?.length)
+      if (salesRows?.length)
         ops.push(sbFetch('sales', {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify(salesUpsert),
+          body: JSON.stringify(salesRows),
         }));
       if (salesDelete?.length) {
         const ids = salesDelete.map(id => `"${id}"`).join(',');
         ops.push(sbFetch(`sales?id=in.(${ids})`, { method: 'DELETE' }));
       }
-      if (settings !== undefined)
+      if (settings !== undefined) {
+        // ★ 墓標(_deletedIds)は保存済みと送信分の和集合にする（クライアントが消せないように）
+        // 墓標を取得できなかった場合は従来どおりそのまま書く
+        let settingsData = settings;
+        if (tombstones && settings && typeof settings === 'object') {
+          const merged = mergeTombstones(tombstones, settings._deletedIds);
+          if (Object.keys(merged).length) settingsData = { ...settings, _deletedIds: merged };
+        }
         ops.push(sbFetch('app_settings', {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify([{ id: 'default', data: settings }]),
+          body: JSON.stringify([{ id: 'default', data: settingsData }]),
         }));
+      }
       // ★ レシートを保存（list 全体を上書き保存）
       if (receipts !== undefined)
         ops.push(sbFetch('app_settings', {
@@ -185,7 +264,8 @@ export default async function handler(req, res) {
         }));
 
       await Promise.all(ops);
-      res.json({ ok: true });
+      if (skipped.length) console.warn(`[api/data] 古い/削除済みの書き込みを ${skipped.length} 件スキップ:`, skipped.slice(0, 20).join(','));
+      res.json({ ok: true, skipped });
 
     } else {
       res.status(405).json({ error: 'Method not allowed' });
