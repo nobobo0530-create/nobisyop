@@ -779,10 +779,11 @@ let _onSyncStatus = null;
 
 const syncToSupabase = async (oldData, newData, opts) => {
   if (!_cloudEnabled) return;
-  // ★ サーバーの古い書き込みガードは updatedAt/createdAt で新旧を判定する。
-  //   updatedAt を更新しない編集経路（ステータス変更など）でも新しい書き込みとして通るよう、
-  //   送信する行にだけ現在時刻を刻む（opts.noStamp=true は写真バックアップ用：内容を変えないので刻まない）
-  const _stampNow = (opts && opts.noStamp) ? null : new Date().toISOString();
+  // ★ 送信時に updatedAt を刻んではいけない。
+  //   取得してから時間が経った古い内容に「今」を刻むと、サーバーの古い書き込みガードを
+  //   すり抜けてクラウドの新しいデータを上書きする（2026-09-30 に約200点を巻き戻した）。
+  //   updatedAt はユーザーが編集した瞬間に setData で刻む（stampEdited 参照）
+  const _stampNow = null;
 
   _onSyncStatus?.({ status: 'syncing' });
 
@@ -16231,8 +16232,20 @@ const App = () => {
       const oldFull = dataRef.current;
       const otherInventory = (prev.inventory || []).filter(i => (i.userId || 'self') !== user);
       const otherSales     = (prev.sales     || []).filter(s => (s.userId || 'self') !== user);
-      const mergedInventory = [...otherInventory, ...newActiveData.inventory];
-      const mergedSales     = [...otherSales,     ...newActiveData.sales];
+      // ★ ユーザーが編集した行にだけ、編集した瞬間の updatedAt を刻む
+      //   （ステータス変更など updatedAt を付けない編集経路もサーバーのガードを通れるように）
+      const nowIso = new Date().toISOString();
+      const stampEdited = (prevArr, nextArr, strip) => {
+        const prevMap = new Map((prevArr || []).map(x => [x.id, x]));
+        return (nextArr || []).map(x => {
+          const p = prevMap.get(x.id);
+          if (p === x) return x;
+          if (p && JSON.stringify(strip(p)) === JSON.stringify(strip(x))) return x;
+          return { ...x, updatedAt: nowIso };
+        });
+      };
+      const mergedInventory = [...otherInventory, ...stampEdited(prev.inventory, newActiveData.inventory, stripItemPhotos)];
+      const mergedSales     = [...otherSales,     ...stampEdited(prev.sales,     newActiveData.sales,     s => s)];
       // 孤立売上の自動クリーンアップ（inventoryIdがあるが在庫に存在しない売上を削除）
       const allInvIds = new Set(mergedInventory.map(i => i.id));
       const cleanedSales = mergedSales.filter(s => !s.inventoryId || allInvIds.has(s.inventoryId));
