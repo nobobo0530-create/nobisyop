@@ -5640,10 +5640,15 @@ const InventoryTab = () => {
   // 表示・フィルター用に正規化した仕入れ先を返す（データ未修正でも正規名で扱う）
   const normalizedStore = (item) => normalizeStoreName(item.purchaseStore) || '';
 
+  // ★ 重複候補: 外部スクリプトが付けた dupCheck が未解決のものを「open」とする
+  const isDupOpen = (item) => !!(item.dupCheck && !item.dupCheck.resolved);
+  const dupGroupNo = (item) => String(item.dupCheck?.group || '').replace(/^dup_/, '');
+
   const filtered = data.inventory.filter(item => {
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
     if (filter === 'bundle') { if (!item.bundleGroup || (data.inventory||[]).filter(x => x.bundleGroup === item.bundleGroup).length < 2) return false; }
-    else if (filter !== 'all' && filter !== 'priceUnconfirmed' && item.status !== filter) return false;
+    if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
+    else if (filter !== 'all' && filter !== 'priceUnconfirmed' && filter !== 'bundle' && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -5671,6 +5676,13 @@ const InventoryTab = () => {
 
   // 並び替え
   const sorted = [...filtered].sort((a, b) => {
+    // ★ 重複候補モード: 通常の並び順は無視し、グループ→仕入日でメンバーを隣接させる
+    if (filter === 'dupCheck') {
+      const ga = a.dupCheck?.group || '', gb = b.dupCheck?.group || '';
+      if (ga !== gb) return ga < gb ? -1 : 1;
+      const da = a.purchaseDate || '', db = b.purchaseDate || '';
+      return da < db ? -1 : da > db ? 1 : 0;
+    }
     if (sort === 'new')    return (b.purchaseDate||'') > (a.purchaseDate||'') ? 1 : -1;
     if (sort === 'old')    return (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1;
     if (sort === 'profit') {
@@ -5685,6 +5697,15 @@ const InventoryTab = () => {
 
   const statusLabel = { unlisted: '未出品', listed: '出品中', sold: '売却済' };
   const statusClass = { unlisted: 'tag-unlisted', listed: 'tag-active', sold: 'tag-sold' };
+
+  // ★ 「重複ではない」: グループ全メンバーの dupCheck.resolved を true にして通常の setData で保存（クラウド同期される）
+  const resolveDupGroup = (group) => {
+    const now = new Date().toISOString();
+    const updated = data.inventory.map(i => (i.dupCheck && i.dupCheck.group === group && !i.dupCheck.resolved)
+      ? { ...i, dupCheck: { ...i.dupCheck, resolved: true, resolvedAt: now } } : i);
+    setData({ ...data, inventory: updated });
+    toast(`✅ グループ${String(group).replace(/^dup_/, '')}を重複ではないにしました`);
+  };
 
   const markAsSold = (item) => {
     const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'sold', soldAt: new Date().toISOString() } : i);
@@ -6220,6 +6241,29 @@ const InventoryTab = () => {
           );
         })()}
         {(() => {
+          // ★ 重複候補チップ（open な商品数）
+          const dcCnt = (data.inventory||[]).filter(isDupOpen).length;
+          if (dcCnt === 0 && filter !== 'dupCheck') return null;
+          const active = filter === 'dupCheck';
+          return (
+            <button onClick={() => { setFilter('dupCheck'); setCheckedIds(new Set()); }}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
+                background: active ? '#be185d' : '#fce7f3',
+                color: active ? 'white' : '#9d174d',
+                boxShadow: active ? '0 2px 8px rgba(190,24,93,0.3)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              🔁 重複候補
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#fbcfe8',
+                color: active ? 'white' : '#9d174d',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {dcCnt}
+              </span>
+            </button>
+          );
+        })()}
+        {(() => {
           const bgCnt = (data.inventory||[]).filter(i => i.bundleGroup && (data.inventory||[]).filter(x => x.bundleGroup === i.bundleGroup).length >= 2).length;
           if (bgCnt === 0 && filter !== 'bundle') return null;
           const active = filter === 'bundle';
@@ -6416,13 +6460,13 @@ const InventoryTab = () => {
         )}
         {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundle' ? 'まとめ買いの商品がありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundle' ? 'まとめ買いの商品がありません' : filter === 'dupCheck' ? '重複候補はありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
-              const useGrouping = groupBundles && !bulkMode && filter !== 'bundle';
+              const useGrouping = groupBundles && !bulkMode && filter !== 'bundle' && filter !== 'dupCheck';
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
@@ -6439,11 +6483,37 @@ const InventoryTab = () => {
                     displayRows.push({ type: 'single', item });
                   }
                 });
+              } else if (filter === 'dupCheck') {
+                // ★ 重複候補モード: グループごとにヘッダー行を挟んで個別表示
+                let lastGroup = null;
+                sorted.forEach(item => {
+                  const g = item.dupCheck?.group;
+                  if (g !== lastGroup) {
+                    lastGroup = g;
+                    displayRows.push({ type: 'dupHeader', group: g, count: sorted.filter(x => x.dupCheck?.group === g).length });
+                  }
+                  displayRows.push({ type: 'single', item });
+                });
               } else {
                 sorted.forEach(item => displayRows.push({ type: 'single', item }));
               }
 
               return displayRows.map(row => {
+                if (row.type === 'dupHeader') {
+                  return (
+                    <div key={`dup-${row.group}`} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,
+                      padding:'8px 12px',borderRadius:10,background:'#fce7f3',border:'1px solid #fbcfe8',marginTop:4}}>
+                      <span style={{fontSize:13,fontWeight:800,color:'#9d174d'}}>
+                        グループ {String(row.group||'').replace(/^dup_/, '')}（{row.count}点）
+                      </span>
+                      <button onClick={() => resolveDupGroup(row.group)}
+                        style={{padding:'6px 12px',borderRadius:99,border:'1px solid #f9a8d4',background:'white',color:'#9d174d',
+                          fontSize:12,fontWeight:700,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                        重複ではない
+                      </button>
+                    </div>
+                  );
+                }
                 if (row.type === 'bundle') {
                   // ===== まとめカード =====
                   const { bundleGroup, members } = row;
@@ -6706,7 +6776,16 @@ const InventoryTab = () => {
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
                       <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
+                      {filter === 'dupCheck' && item.dupCheck?.reason && (
+                        <div style={{fontSize:11,color:'#9ca3af',marginBottom:4,lineHeight:1.4}}>{item.dupCheck.reason}</div>
+                      )}
                       <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
+                        {isDupOpen(item) && (
+                          <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
+                            background:'#fce7f3',color:'#9d174d',border:'1px solid #fbcfe8'}}>
+                            🔁 重複候補 {dupGroupNo(item)}
+                          </span>
+                        )}
                         {item.priceUnconfirmed && (
                           <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
                             background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
