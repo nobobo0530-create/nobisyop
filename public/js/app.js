@@ -7157,8 +7157,8 @@ const InventoryTab = () => {
 
             {/* 写真スライド（IndexedDBから取得）＋ 写真の横に操作ボタン */}
             {(() => {
-              const cb = {width:'100%',padding:'6px 8px',borderRadius:9,fontSize:13,fontWeight:700,cursor:'pointer',
-                minHeight:32,lineHeight:1.2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',
+              const cb = {width:'100%',padding:'8px 6px',borderRadius:12,fontSize:14,fontWeight:700,cursor:'pointer',
+                minHeight:48,lineHeight:1.25,whiteSpace:'normal',wordBreak:'keep-all',overflowWrap:'anywhere',
                 WebkitTapHighlightColor:'transparent',touchAction:'manipulation',boxSizing:'border-box'};
               const hasPhoto = selected.photos?.length > 0;
               return (
@@ -7170,7 +7170,7 @@ const InventoryTab = () => {
                       ))}
                     </div>
                   )}
-                  <div style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',gap:6}}>
+                  <div style={{flex:1,minWidth:0,display:'grid',gridTemplateColumns:'repeat(2, minmax(0, 1fr))',gap:8,alignContent:'start'}}>
                     <button className="btn-secondary" style={cb} onClick={() => openEditFromDetail(selected)}>✏️ 編集</button>
                     {selected.status !== 'sold' && (
                       <button className="btn-primary" style={cb} onClick={() => markAsSold(selected)}>🎉 売れた！</button>
@@ -7180,7 +7180,7 @@ const InventoryTab = () => {
                         onClick={() => recordSaleFromDetail(selected)}>💰 売上を記録</button>
                     )}
                     {selected.status === 'unlisted' && (
-                      <button className="btn-secondary" style={cb} onClick={() => markAsListed(selected)}>📱 出品中にする</button>
+                      <button className="btn-secondary" style={cb} onClick={() => markAsListed(selected)}>📱 出品中に</button>
                     )}
                     {selected.status === 'listed' && (
                       <button className="btn-secondary" style={cb} onClick={() => markAsUnlisted(selected)}>📦 未出品に戻す</button>
@@ -7192,8 +7192,6 @@ const InventoryTab = () => {
                       <button style={{...cb,border:'1.5px solid #64748b',background:'#f8fafc',color:'#334155'}}
                         onClick={() => startSplitFromDetail(selected)}>✂️ 分割登録</button>
                     )}
-                    <button style={{...cb,minHeight:28,padding:'4px 8px',fontSize:12,fontWeight:600,border:'1px solid #fecaca',background:'#fef2f2',color:'#dc2626'}}
-                      onClick={() => deleteItem(selected)}>🗑️ 削除</button>
                   </div>
                 </div>
               );
@@ -7231,15 +7229,15 @@ const InventoryTab = () => {
                 <div>
                   <div style={{fontSize:12,color:'#999'}}>{label}</div>
                   <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    <span style={{position:'relative',display:'inline-block',...hint}}>
-                      {selected[key] || emptyNode}{pen}
+                    <span style={{position:'relative',display:'inline-flex',alignItems:'center',minHeight:44}}>
+                      <span style={hint}>{selected[key] || emptyNode}{pen}</span>
                       <input type="date" value={selected[key] || ''} style={overlay}
                         onClick={e => { try { e.target.showPicker && e.target.showPicker(); } catch(_e) {} }}
                         onChange={e => { const v = e.target.value; if ((v || '') !== (selected[key] || '') && (v || allowClear)) saveInlineField({ [key]: v }); }}/>
                     </span>
                     {allowClear && selected[key] && (
                       <button onClick={() => saveInlineField({ [key]: '' })}
-                        style={{border:'none',background:'#f3f4f6',borderRadius:99,width:20,height:20,fontSize:12,color:'#888',cursor:'pointer',padding:0,lineHeight:1}}>×</button>
+                        style={{border:'none',background:'#f3f4f6',borderRadius:99,width:32,height:32,fontSize:16,color:'#888',cursor:'pointer',padding:0,lineHeight:1}}>×</button>
                     )}
                   </div>
                 </div>
@@ -7252,9 +7250,9 @@ const InventoryTab = () => {
                       onChange={e => setDetailEditDraft(e.target.value)}
                       onBlur={() => commitInlinePrice(field)}
                       onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); else if (e.key === 'Escape') setDetailEditField(null); }}
-                      style={{width:'100%',boxSizing:'border-box',fontSize:16,fontWeight:600,padding:'2px 6px',border:'1.5px solid #E84040',borderRadius:6}}/>
+                      style={{width:'100%',boxSizing:'border-box',fontSize:16,fontWeight:600,padding:'10px 6px',minHeight:44,border:'1.5px solid #E84040',borderRadius:6}}/>
                   ) : (
-                    <div style={{fontWeight:600}}
+                    <div style={{fontWeight:600,minHeight:44,display:'flex',alignItems:'center',flexWrap:'wrap'}}
                       onClick={() => {
                         if (viaForm) { openEditFromDetail(selected); return; }
                         setDetailEditDraft(String(selected[field] || '')); setDetailEditField(field);
@@ -7278,8 +7276,8 @@ const InventoryTab = () => {
                   </div>
                   <div>
                     <div style={{fontSize:12,color:'#999'}}>状態</div>
-                    <span style={{position:'relative',display:'inline-block',...hint}}>
-                      {conditionTag(selected.condition)}{pen}
+                    <span style={{position:'relative',display:'inline-flex',alignItems:'center',minHeight:44}}>
+                      <span style={hint}>{conditionTag(selected.condition)}{pen}</span>
                       <select value={selected.condition || 'A'} style={overlay}
                         onChange={e => { const v = e.target.value; if (v !== selected.condition) saveInlineField({ condition: v }); }}>
                         {['S','A','B','C','D'].map(c => <option key={c} value={c}>{c}ランク</option>)}
