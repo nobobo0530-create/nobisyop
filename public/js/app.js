@@ -5641,7 +5641,15 @@ const InventoryTab = () => {
   const normalizedStore = (item) => normalizeStoreName(item.purchaseStore) || '';
 
   // ★ 重複候補: 外部スクリプトが付けた dupCheck が未解決のものを「open」とする
-  const isDupOpen = (item) => !!(item.dupCheck && !item.dupCheck.resolved);
+  // 片方が削除されて1点だけ残った「孤立」グループは候補から外す（グループ内の未解決メンバーが2点以上のときだけ open）
+  const dupOpenCounts = React.useMemo(() => {
+    const m = {};
+    (data.inventory || []).forEach(i => {
+      if (i.dupCheck && !i.dupCheck.resolved) m[i.dupCheck.group] = (m[i.dupCheck.group] || 0) + 1;
+    });
+    return m;
+  }, [data.inventory]);
+  const isDupOpen = (item) => !!(item.dupCheck && !item.dupCheck.resolved && (dupOpenCounts[item.dupCheck.group] || 0) >= 2);
   const dupGroupNo = (item) => String(item.dupCheck?.group || '').replace(/^dup_/, '');
   // ★ クーポン利用: 仕入れ時のクーポン値引き額(税込)が正のもの
   const couponAmt = (item) => Number(item.purchaseCost?.couponTaxIn) || 0;
@@ -5709,6 +5717,26 @@ const InventoryTab = () => {
       ? { ...i, dupCheck: { ...i.dupCheck, resolved: true, resolvedAt: now } } : i);
     setData({ ...data, inventory: updated });
     toast(`✅ グループ${String(group).replace(/^dup_/, '')}を重複ではないにしました`);
+  };
+
+  // ★ 「重複なので削除」: 通常の削除(deleteItem)と同じ墓標方式で1点削除し、残りが1点以下ならグループを解決済みにする
+  const deleteDupItem = (item) => {
+    const g = item.dupCheck?.group;
+    const price = Number(item.purchasePrice) || 0;
+    if (!confirm(`この商品を削除します。\n\n${item.productName || '(名称なし)'}\nオークションID: ${item.yahooAuctionId || '-'}\n仕入れ価格: ¥${price.toLocaleString()}\n\n※元に戻せません。よろしいですか？`)) return;
+    const now = new Date().toISOString();
+    const newDeletedIds = { ...(data.settings?._deletedIds || {}), [item.id]: now };
+    (data.sales||[]).filter(s => s.inventoryId === item.id).forEach(s => { newDeletedIds[s.id] = now; });
+    let newInv = data.inventory.filter(i => i.id !== item.id);
+    const newSales = (data.sales||[]).filter(s => s.inventoryId !== item.id);
+    const left = newInv.filter(i => i.dupCheck && i.dupCheck.group === g && !i.dupCheck.resolved);
+    const solved = left.length <= 1;
+    if (solved) {
+      newInv = newInv.map(i => (i.dupCheck && i.dupCheck.group === g && !i.dupCheck.resolved)
+        ? { ...i, updatedAt: now, dupCheck: { ...i.dupCheck, resolved: true, resolvedAt: now, resolution: 'duplicateDeleted' } } : i);
+    }
+    setData({ ...data, inventory: newInv, sales: newSales, settings: { ...data.settings, _deletedIds: newDeletedIds } });
+    toast(solved ? `✅ 重複分を削除しました（グループ${String(g||'').replace(/^dup_/, '')} 解決）` : '🗑️ 重複分を削除しました');
   };
 
   const markAsSold = (item) => {
@@ -6805,6 +6833,13 @@ const InventoryTab = () => {
                       <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
                       {filter === 'dupCheck' && item.dupCheck?.reason && (
                         <div style={{fontSize:11,color:'#9ca3af',marginBottom:4,lineHeight:1.4}}>{item.dupCheck.reason}</div>
+                      )}
+                      {filter === 'dupCheck' && !bulkMode && (
+                        <button onClick={(e) => { e.stopPropagation(); deleteDupItem(item); }}
+                          style={{padding:'5px 10px',borderRadius:99,border:'1px solid #fca5a5',background:'white',color:'#b91c1c',
+                            fontSize:11,fontWeight:700,cursor:'pointer',marginBottom:5,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                          🗑 重複なので削除
+                        </button>
                       )}
                       <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                         {isDupOpen(item) && (
