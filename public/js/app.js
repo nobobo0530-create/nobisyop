@@ -934,7 +934,9 @@ const bundleTotals = (members) => {
   // 1点ずつの内訳を持っている＝「商品代 + 送料 = 仕入れ値」が全員で成立している
   const perItem = list.length > 0 && list.every(m => {
     const ip = Number(m.purchaseCost?.itemPriceTaxIn ?? m.itemPriceTaxIn) || 0;
-    return ip + shipRaw(m) === priceOf(m);
+    const fee = Number(m.purchaseCost?.optionalFeeTaxIn ?? m.optionalFeeTaxIn) || 0;
+    const cp = Number(m.purchaseCost?.couponTaxIn ?? m.couponTaxIn) || 0;
+    return ip + shipRaw(m) + fee - cp === priceOf(m);
   });
   let shipSum = perItem
     ? list.reduce((s, m) => s + shipRaw(m), 0)
@@ -957,6 +959,98 @@ const bundleTotals = (members) => {
     grandTotal, shipSum, itemSum: grandTotal - shipSum, perItem,
     shipOf: m => shipById[m.id] || 0,
   };
+};
+
+// 整数 total を weights の比で配分する（最大剰余法）。合計は必ず total に一致する
+const allocLargestRemainder = (total, weights) => {
+  const n = weights.length;
+  const T = Math.round(Number(total) || 0);
+  if (n === 0) return [];
+  let w = weights.map(x => Math.max(0, Number(x) || 0));
+  let wsum = w.reduce((a, b) => a + b, 0);
+  if (wsum <= 0) { w = w.map(() => 1); wsum = n; }
+  const exact = w.map(x => T * x / wsum);
+  const out = exact.map(Math.floor);
+  let rest = T - out.reduce((a, b) => a + b, 0);
+  const order = exact.map((v, i) => ({ i, r: v - Math.floor(v) })).sort((a, b) => (b.r - a.r) || (a.i - b.i));
+  for (let k = 0; rest > 0 && k < order.length; k++, rest--) out[order[k].i] += 1;
+  return out;
+};
+
+// 分割登録：元の仕入れ内訳（商品代・送料・クーポン・手数料）を各商品に按分して子データを作る。
+// 各成分の合計が元と1円も違わないことを検証し、ずれる場合は error を返す（保存させない）。
+// 子の purchasePrice = 商品代 + 送料 + 手数料 − クーポン（= 入力された各商品の仕入れ値）
+const buildSplitChildren = (orig, splitInputs, ts) => {
+  const num = v => Number(v) || 0;
+  const pc = orig.purchaseCost || {};
+  const total = num(orig.purchasePrice);
+  let item = num(pc.itemPriceTaxIn ?? orig.itemPriceTaxIn);
+  let ship = num(pc.shippingTaxIn ?? orig.shippingTaxIn);
+  let fee = num(pc.optionalFeeTaxIn ?? orig.optionalFeeTaxIn);
+  let coupon = num(pc.couponTaxIn ?? orig.couponTaxIn);
+  const couponNote = pc.couponNote || orig.couponNote || '';
+  // 内訳が「商品代＋送料＋手数料−クーポン＝仕入れ値」を満たさない（壊れている／旧形式のコピー値）場合は
+  // 内訳を信用せず、全額を商品代として扱う（二重計上を避ける）
+  const reliable = item + ship + fee - coupon === total;
+  if (!reliable) { item = total; ship = 0; fee = 0; coupon = 0; }
+  const totals = splitInputs.map(si => Math.round(num(si.purchasePrice)));
+  const sumTotals = totals.reduce((a, b) => a + b, 0);
+  if (sumTotals !== total) return { error: `分割後の合計 ¥${sumTotals.toLocaleString()} が元の仕入れ値 ¥${total.toLocaleString()} と一致しません` };
+  const shipA = allocLargestRemainder(ship, totals);
+  const couponA = allocLargestRemainder(coupon, totals);
+  const feeA = allocLargestRemainder(fee, totals);
+  const itemA = totals.map((t, i) => t - shipA[i] - feeA[i] + couponA[i]);
+  if (itemA.some(v => v < 0)) return { error: '送料・クーポンを按分すると商品代がマイナスになる商品があります。金額の割り振りを見直してください' };
+  const sum = a => a.reduce((x, y) => x + y, 0);
+  if (sum(itemA) !== item || sum(shipA) !== ship || sum(couponA) !== coupon || sum(feeA) !== fee || sum(totals) !== total) {
+    return { error: '内訳の按分合計が元の金額と一致しません（保存を中止しました）' };
+  }
+  // 税抜は元の値があれば同じ最大剰余法で配分する（無ければ税込から計算）
+  const exOf = (origEx, inArr, rate) => Number.isFinite(Number(origEx)) && origEx !== '' && origEx != null
+    ? allocLargestRemainder(Number(origEx), inArr)
+    : inArr.map(v => (rate === 0 ? v : Math.round(v / (1 + rate / 100))));
+  const itemRate = pc.itemTaxRate != null ? Number(pc.itemTaxRate) : 10;
+  const shipRate = pc.shippingTaxRate != null ? Number(pc.shippingTaxRate) : 10;
+  const feeRate = pc.optionalTaxRate != null ? Number(pc.optionalTaxRate) : 10;
+  const itemEx = exOf(reliable ? pc.itemPriceTaxEx : null, itemA, itemRate);
+  const shipEx = exOf(reliable ? pc.shippingTaxEx : null, shipA, shipRate);
+  const feeEx = exOf(reliable ? pc.optionalFeeTaxEx : null, feeA, feeRate);
+  const totalEx = (Number.isFinite(Number(pc.totalTaxEx)) && pc.totalTaxEx != null && pc.totalTaxEx !== '')
+    ? allocLargestRemainder(Number(pc.totalTaxEx), totals) : totals.slice();
+  // 分割前スナップショット（情報表示専用。どの集計にも使わない。写真は参照IDのみ・base64は持たない）
+  const origin = {
+    id: orig.id,
+    splitAt: new Date(ts).toISOString(),
+    productName: orig.productName || '',
+    brand: orig.brand || '',
+    yahooAuctionId: orig.yahooAuctionId || '',
+    purchaseStore: orig.purchaseStore || '',
+    purchaseDate: orig.purchaseDate || '',
+    purchaseType: orig.purchaseType || '',
+    purchasePrice: total,
+    itemPriceTaxIn: item, shippingTaxIn: ship, optionalFeeTaxIn: fee, couponTaxIn: coupon, couponNote,
+    breakdownReliable: reliable,
+    purchaseCost: JSON.parse(JSON.stringify(pc)),
+    photos: (orig.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
+    ...(orig.splitOrigin ? { prev: { id: orig.splitOrigin.id, purchasePrice: orig.splitOrigin.purchasePrice, splitAt: orig.splitOrigin.splitAt } } : {}),
+  };
+  const children = splitInputs.map((si, idx) => ({
+    ...orig,
+    id: `${ts}_split_${idx}`,
+    productName: String(si.productName || '').trim(),
+    purchasePrice: totals[idx],
+    itemPriceTaxIn: itemA[idx], shippingTaxIn: shipA[idx], optionalFeeTaxIn: feeA[idx],
+    couponTaxIn: couponA[idx], couponNote: couponA[idx] > 0 ? couponNote : '',
+    purchaseCost: {
+      itemPriceTaxIn: itemA[idx], itemPriceTaxEx: itemEx[idx], itemTaxRate: itemRate,
+      shippingTaxIn: shipA[idx], shippingTaxEx: shipEx[idx], shippingTaxRate: shipRate,
+      optionalFeeTaxIn: feeA[idx], optionalFeeTaxEx: feeEx[idx], optionalTaxRate: feeRate,
+      ...(couponA[idx] > 0 ? { couponTaxIn: couponA[idx], couponNote } : {}),
+      totalTaxIn: totals[idx], totalTaxEx: totalEx[idx],
+    },
+    splitOrigin: origin,
+  }));
+  return { children, origin };
 };
 
 // 出品カテゴリー（説明文のハッシュタグ用・5種）
@@ -3411,8 +3505,17 @@ const PurchaseTab = () => {
             if (newPriceStr === undefined) return inv;
             const np = Math.max(0, Number(newPriceStr) || 0);
             if (np === (inv.purchasePrice || 0)) return inv;
+            // 内訳が整合している兄弟は、送料・クーポン・手数料を保ったまま商品代を合わせる（内訳と合計のズレ防止）
+            const _pc = inv.purchaseCost || {};
+            const _sh = Number(_pc.shippingTaxIn ?? inv.shippingTaxIn) || 0;
+            const _fe = Number(_pc.optionalFeeTaxIn ?? inv.optionalFeeTaxIn) || 0;
+            const _cp = Number(_pc.couponTaxIn ?? inv.couponTaxIn) || 0;
+            const _it = Number(_pc.itemPriceTaxIn ?? inv.itemPriceTaxIn) || 0;
+            const _okBreak = (_sh > 0 || _fe > 0 || _cp > 0) && _it + _sh + _fe - _cp === (Number(inv.purchasePrice) || 0) && np - _sh - _fe + _cp >= 0;
+            const _newIt = np - _sh - _fe + _cp;
             return { ...inv, purchasePrice: np,
-              purchaseCost: { ...inv.purchaseCost, totalTaxIn: np, totalTaxEx: np },
+              ...(_okBreak ? { itemPriceTaxIn: _newIt } : {}),
+              purchaseCost: { ..._pc, ...(_okBreak ? { itemPriceTaxIn: _newIt } : {}), totalTaxIn: np, totalTaxEx: np },
               updatedAt: new Date().toISOString() };
           });
         }
@@ -5590,6 +5693,7 @@ const InventoryTab = () => {
   const [inlineEditId, setInlineEditId] = React.useState(null);  // 一覧の中で直接編集中の商品
   const [inlineDraft, setInlineDraft] = React.useState({ price:'', ship:'', store:'', sale:'' });
   const [bundleShipOpen, setBundleShipOpen] = React.useState(null);   // 編集中の bundleGroup
+  const [splitOriginOpen, setSplitOriginOpen] = React.useState(null); // 「分割前のデータ」を表示中の bundleGroup
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
   const [groupBundles, setGroupBundles] = React.useState(() => localStorage.getItem('nobushop_group_bundles') !== '0');
@@ -5956,17 +6060,33 @@ const InventoryTab = () => {
         const newPrice = newItemPrice + newShip;
         const delta = newPrice - (Number(i.purchasePrice) || 0);
         deltaById[i.id] = delta;
+        // 入力欄の「商品代」はクーポン・手数料を含めた後の金額（= 仕入れ値 − 送料）。
+        // 内訳が整合している商品は、クーポン・手数料を保ったまま 商品代(税込・値引き前) を逆算して保存する
+        const _pc = i.purchaseCost || {};
+        const _fee = Number(_pc.optionalFeeTaxIn ?? i.optionalFeeTaxIn) || 0;
+        const _cp = Number(_pc.couponTaxIn ?? i.couponTaxIn) || 0;
+        const _oldItem = Number(_pc.itemPriceTaxIn ?? i.itemPriceTaxIn) || 0;
+        const _oldShip = Number(_pc.shippingTaxIn ?? i.shippingTaxIn) || 0;
+        const _consistent = (_fee > 0 || _cp > 0) && _oldItem + _oldShip + _fee - _cp === (Number(i.purchasePrice) || 0);
+        let storedItem = newItemPrice;
+        let storedFee = _fee;
+        if (_consistent) {
+          storedItem = newItemPrice - _fee + _cp;
+          if (storedItem < 0) { storedFee = Math.max(0, _fee + storedItem); storedItem = newItemPrice - storedFee + _cp; }
+        }
         return {
           ...i,
           bundleType: bundleTypeDraft,
           purchasePrice: newPrice,
-          itemPriceTaxIn: newItemPrice,
+          itemPriceTaxIn: storedItem,
           shippingTaxIn: newShip,
+          ...(_consistent ? { optionalFeeTaxIn: storedFee } : {}),
           priceUnconfirmed: newPrice > 0 ? false : i.priceUnconfirmed,
           purchaseCost: {
             ...(i.purchaseCost || {}),
-            itemPriceTaxIn: newItemPrice,
+            itemPriceTaxIn: storedItem,
             shippingTaxIn: newShip,
+            ...(_consistent ? { optionalFeeTaxIn: storedFee } : {}),
             shippingTaxRate: i.purchaseCost?.shippingTaxRate ?? 10,
             totalTaxIn: newPrice,
             totalTaxEx: newPrice,
@@ -6663,6 +6783,12 @@ const InventoryTab = () => {
                     brands.slice(0, 3).join('・') + ' ほか';
                   const firstItem = members[0];
                   const restCount = members.length - 1;
+                  // 分割登録されたグループ：分割前のスナップショット（情報表示専用）と、見出しに出す写真
+                  const originMember = members.find(m => m.splitOrigin);
+                  const splitOrigin = originMember ? originMember.splitOrigin : null;
+                  const headPhoto = (splitOrigin?.photos?.[0])
+                    || members.map(m => m.photos?.[0]).find(p => p && (p.thumbId || p.thumbDataUrl))
+                    || firstItem.photos?.[0];
 
                   return (
                     <React.Fragment key={`bundle-${bundleGroup}`}>
@@ -6682,7 +6808,7 @@ const InventoryTab = () => {
                         }}>
                         {/* サムネイル＋残り件数バッジ */}
                         <div style={{position:'relative',flexShrink:0}}>
-                          <ItemThumbnail thumbId={firstItem.photos?.[0]?.thumbId} thumbDataUrl={firstItem.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
+                          <ItemThumbnail thumbId={headPhoto?.thumbId} thumbDataUrl={headPhoto?.thumbDataUrl} size={68} fallback="📦" />
                           {restCount > 0 && (
                             <span style={{position:'absolute',bottom:-4,right:-4,fontSize:9,fontWeight:800,
                               background:'#4338ca',color:'white',borderRadius:99,padding:'1px 5px',
@@ -6718,6 +6844,13 @@ const InventoryTab = () => {
                               <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
                                 background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
                                 💰 金額未確定 {unconfirmedCount}点
+                              </span>
+                            )}
+                            {splitOrigin && (
+                              <span onClick={e => { e.stopPropagation(); setSplitOriginOpen(bundleGroup); }}
+                                style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,cursor:'pointer',
+                                  background:'#f0fdfa',color:'#115e59',border:'1px solid #5eead4'}}>
+                                ✂️ 分割前のデータ
                               </span>
                             )}
                             <span style={{fontSize:11,color:'#9ca3af',fontWeight:600}}>
@@ -6838,6 +6971,14 @@ const InventoryTab = () => {
                                 touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
                               📦 仕入れ内訳を編集
                             </button>
+                            {splitOrigin && (
+                              <button onClick={e => { e.stopPropagation(); setSplitOriginOpen(bundleGroup); }}
+                                style={{width:'100%',padding:'10px',borderRadius:10,border:'1px solid #5eead4',marginTop:8,
+                                  background:'#f0fdfa',color:'#115e59',fontWeight:700,fontSize:12,cursor:'pointer',
+                                  touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                                ✂️ 分割前のデータを見る
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
@@ -7503,7 +7644,7 @@ const InventoryTab = () => {
                 <div style={{background:'#f8fafc',border:'1.5px solid #e2e8f0',borderRadius:14,padding:'14px',marginBottom:12}}>
                   <div style={{fontWeight:800,fontSize:14,marginBottom:10,color:'#1e293b'}}>✂️ 分割登録</div>
                   <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>
-                    仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます。
+                    仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます（分割前のデータは「まとめ買い」から見られます）。送料・クーポンは各商品の金額に応じて自動で按分され、合計は必ず元と一致します。
                   </div>
                   {/* 分割数選択 */}
                   <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
@@ -7553,12 +7694,12 @@ const InventoryTab = () => {
                       if (splitItems.some(si => Number(si.purchasePrice) <= 0)) { alert('仕入れ値を入力してください'); return; }
                       const ts = Date.now();
                       const bundleGroupId = `bundle_${ts}`;
-                      const newItems = splitItems.map((si, idx) => ({
-                        ...selected,
-                        id: `${ts}_split_${idx}`,
-                        productName: si.productName.trim(),
-                        purchasePrice: Number(si.purchasePrice),
-                        purchaseCost: { totalTaxIn: Number(si.purchasePrice), totalTaxEx: Number(si.purchasePrice) },
+                      const built = buildSplitChildren(selected, splitItems, ts);
+                      if (built.error) { alert('❌ ' + built.error); return; }
+                      const nowIsoSplit = new Date().toISOString();
+                      const newItems = built.children.map((c, idx) => ({
+                        ...c,
+                        // 写真は先頭の1点だけが引き継ぐ（base64を複数の子に重複させない）
                         photos: idx === 0 ? (selected.photos || []) : [],
                         bundleGroup: bundleGroupId,
                         bundleLabel: `商品${String.fromCharCode(65+idx)}`,
@@ -7566,7 +7707,7 @@ const InventoryTab = () => {
                         status: 'unlisted',
                         listDate: '',
                         createdAt: new Date(ts + idx).toISOString(),
-                        updatedAt: new Date().toISOString(),
+                        updatedAt: nowIsoSplit,
                       }));
                       // ★ 元アイテムを削除：トゥームストーン記録（Supabase再起動時に復元されないよう）
                       const nowTs = new Date().toISOString();
@@ -7951,6 +8092,102 @@ const InventoryTab = () => {
           </div>
         </div>
       )}
+
+      {/* 分割前のデータ（読み取り専用）。splitOrigin は表示だけに使い、どの集計にも入れない */}
+      {splitOriginOpen && (() => {
+        const kids = bundleShipMembers(splitOriginOpen);
+        const o = (kids.find(m => m.splitOrigin) || {}).splitOrigin;
+        if (!o) return null;
+        const n = v => Number(v) || 0;
+        const yen = v => '¥' + formatMoney(n(v));
+        const compOf = m => {
+          const pc = m.purchaseCost || {};
+          return {
+            item: n(pc.itemPriceTaxIn ?? m.itemPriceTaxIn),
+            ship: n(pc.shippingTaxIn ?? m.shippingTaxIn),
+            coupon: n(pc.couponTaxIn ?? m.couponTaxIn),
+            fee: n(pc.optionalFeeTaxIn ?? m.optionalFeeTaxIn),
+            total: n(m.purchasePrice),
+          };
+        };
+        const rows = kids.map(m => ({ m, c: compOf(m) }));
+        const sums = rows.reduce((a, r) => ({ item: a.item + r.c.item, ship: a.ship + r.c.ship, coupon: a.coupon + r.c.coupon, fee: a.fee + r.c.fee, total: a.total + r.c.total }), { item: 0, ship: 0, coupon: 0, fee: 0, total: 0 });
+        const orig = { item: n(o.itemPriceTaxIn), ship: n(o.shippingTaxIn), coupon: n(o.couponTaxIn), fee: n(o.optionalFeeTaxIn), total: n(o.purchasePrice) };
+        // 売却済みなどで子の数が変わった場合は合計が合わなくなるため、⚠️で知らせる
+        const mark = k => sums[k] === orig[k] ? <span style={{color:'#16a34a'}}> ✓</span> : <span style={{color:'#dc2626'}}> ⚠️</span>;
+        const lbl = {fontSize:11,color:'#9ca3af',flexShrink:0};
+        const line = (k, v) => (
+          <div style={{display:'flex',justifyContent:'space-between',gap:10,padding:'5px 0',borderBottom:'1px solid #f3f4f6',fontSize:13}}>
+            <span style={lbl}>{k}</span><span style={{fontWeight:600,textAlign:'right',wordBreak:'break-all'}}>{v}</span>
+          </div>
+        );
+        const th = {padding:'6px 4px',fontSize:11,color:'#6b7280',fontWeight:700,textAlign:'right',borderBottom:'1px solid #e5e7eb'};
+        const td = {padding:'6px 4px',fontSize:12,textAlign:'right',borderBottom:'1px solid #f3f4f6'};
+        return (
+          <div className="modal-overlay" onClick={() => setSplitOriginOpen(null)}>
+            <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+              <div className="modal-handle"/>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>✂️ 分割前のデータ</div>
+                  <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>読み取り専用。集計には使われません{o.splitAt ? `（分割 ${o.splitAt.slice(0,16).replace('T',' ')}）` : ''}</div>
+                </div>
+                <button onClick={() => setSplitOriginOpen(null)}
+                  style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
+              </div>
+              <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:10}}>
+                <ItemThumbnail thumbId={o.photos?.[0]?.thumbId} thumbDataUrl={o.photos?.[0]?.thumbDataUrl} size={72} fallback="📦" />
+                <div style={{fontWeight:700,fontSize:14,lineHeight:1.4}}>{o.productName || '(商品名なし)'}</div>
+              </div>
+              {o.yahooAuctionId ? line('オークションID', o.yahooAuctionId) : null}
+              {line('仕入れ先', o.purchaseStore || '-')}
+              {line('仕入れ日', o.purchaseDate ? o.purchaseDate.replace(/-/g, '/') : '-')}
+              {line('商品代', yen(orig.item))}
+              {line('送料', yen(orig.ship))}
+              {orig.fee > 0 ? line('任意手数料', yen(orig.fee)) : null}
+              {line('クーポン', orig.coupon > 0 ? '−' + yen(orig.coupon) : 'なし')}
+              {orig.coupon > 0 && o.couponNote ? line('クーポン名', o.couponNote) : null}
+              {line('合計（仕入れ値）', <span style={{fontWeight:800}}>{yen(orig.total)}</span>)}
+              {o.breakdownReliable === false ? (
+                <div style={{fontSize:11,color:'#b45309',marginTop:6}}>元データの内訳が合計と整合していなかったため、分割時は全額を商品代として扱いました。</div>
+              ) : null}
+              <div style={{fontWeight:800,fontSize:13,margin:'16px 0 6px'}}>分割後の内訳</div>
+              <div style={{overflowX:'auto'}}>
+                <table style={{width:'100%',borderCollapse:'collapse'}}>
+                  <thead><tr>
+                    <th style={{...th,textAlign:'left'}}>商品</th><th style={th}>商品代</th><th style={th}>送料</th><th style={th}>クーポン</th><th style={th}>合計</th>
+                  </tr></thead>
+                  <tbody>
+                    {rows.map(({ m, c }) => (
+                      <tr key={m.id}>
+                        <td style={{...td,textAlign:'left',maxWidth:110,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.productName}</td>
+                        <td style={td}>{formatMoney(c.item)}</td><td style={td}>{formatMoney(c.ship)}</td>
+                        <td style={td}>{c.coupon > 0 ? '−' + formatMoney(c.coupon) : '0'}</td>
+                        <td style={{...td,fontWeight:700}}>{formatMoney(c.total)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{background:'#f9fafb'}}>
+                      <td style={{...td,textAlign:'left',fontWeight:800}}>合計</td>
+                      <td style={{...td,fontWeight:800}}>{formatMoney(sums.item)}{mark('item')}</td>
+                      <td style={{...td,fontWeight:800}}>{formatMoney(sums.ship)}{mark('ship')}</td>
+                      <td style={{...td,fontWeight:800}}>{sums.coupon > 0 ? '−' : ''}{formatMoney(sums.coupon)}{mark('coupon')}</td>
+                      <td style={{...td,fontWeight:800}}>{formatMoney(sums.total)}{mark('total')}</td>
+                    </tr>
+                    <tr>
+                      <td style={{...td,textAlign:'left',color:'#9ca3af'}}>分割前</td>
+                      <td style={{...td,color:'#9ca3af'}}>{formatMoney(orig.item)}</td><td style={{...td,color:'#9ca3af'}}>{formatMoney(orig.ship)}</td>
+                      <td style={{...td,color:'#9ca3af'}}>{orig.coupon > 0 ? '−' : ''}{formatMoney(orig.coupon)}</td><td style={{...td,color:'#9ca3af'}}>{formatMoney(orig.total)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div style={{fontSize:11,color:'#9ca3af',marginTop:8}}>✓ は分割前の金額と一致、⚠️ は不一致（後から内訳を編集した場合など）</div>
+              <button onClick={() => setSplitOriginOpen(null)}
+                style={{width:'100%',padding:'12px',borderRadius:12,border:'none',background:'#4338ca',color:'white',fontWeight:800,fontSize:14,marginTop:14,cursor:'pointer'}}>閉じる</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* まとめ買い内訳エディタモーダル */}
       {bundleShipOpen && (
