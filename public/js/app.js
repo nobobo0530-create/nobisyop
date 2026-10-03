@@ -5565,6 +5565,9 @@ const InventoryTab = () => {
   const [search, setSearch] = React.useState('');
   const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
   const [selected, setSelected] = React.useState(null);
+  const [detailEditField, setDetailEditField] = React.useState(null);  // 商品詳細のタップ編集中の項目（'purchasePrice'|'listPrice'）
+  const [detailEditDraft, setDetailEditDraft] = React.useState('');
+  React.useEffect(() => { setDetailEditField(null); }, [selected?.id]);
   const [splitMode, setSplitMode] = React.useState(false);   // 分割登録UI表示フラグ
   const [splitCount, setSplitCount] = React.useState(2);     // 分割数
   const [splitItems, setSplitItems] = React.useState([]);    // [{productName, purchasePrice}]
@@ -5764,6 +5767,76 @@ const InventoryTab = () => {
     setData({ ...data, inventory: updated });
     setSelected(null);
     toast('✅ 未出品に戻しました');
+  };
+
+  // 商品詳細シートの操作（写真横のボタンと下部ボタンで共用）
+  const openEditFromDetail = (item) => {
+    // ★ 編集前の状態を保存（戻り時にフィルター・スクロール位置を復元するため）
+    setPendingReturnTab('inventory');
+    setPendingInventoryFilter(filter);          // 現在のタブ（未出品/出品中/売却済）
+    setPendingInventoryScrollY(window.scrollY); // 現在のスクロール位置
+    setEditingItem(item);
+    setTab('purchase');
+    setSelected(null);
+  };
+  const recordSaleFromDetail = (item) => {
+    setSelected(null);
+    setPendingSaleItemId(item.id);
+    setTab('sales');
+  };
+  const undoSoldFromDetail = (item) => {
+    if (!window.confirm('売却済みを取り消して「出品中」に戻しますか？')) return;
+    const updated = data.inventory.map(i => i.id === item.id ? { ...i, status: 'listed' } : i);
+    setData({ ...data, inventory: updated });
+    setSelected(null);
+    toast('↩️ 出品中に戻しました');
+  };
+  const startSplitFromDetail = (item) => {
+    const n = 2;
+    const base = Math.floor((item.purchasePrice||0) / n);
+    const rem  = (item.purchasePrice||0) - base * n;
+    setSplitCount(n);
+    setSplitItems(Array.from({length:n}, (_,i) => ({
+      productName: `${item.productName||'商品'} [${String.fromCharCode(65+i)}]`,
+      purchasePrice: String(i===n-1 ? base+rem : base),
+    })));
+    setSplitMode(true);
+  };
+  // 商品詳細からの項目タップ編集（updatedAt は setData が編集した行に刻む）
+  const saveInlineField = (patch) => {
+    if (!selected) return;
+    let merged = null;
+    const updated = data.inventory.map(i => {
+      if (i.id !== selected.id) return i;
+      merged = { ...i, ...patch };
+      return merged;
+    });
+    if (!merged) return;
+    setData({ ...data, inventory: updated });
+    setSelected(prev => (prev && prev.id === merged.id) ? { ...prev, ...patch } : prev);
+    toast('✅ 保存しました');
+  };
+  // 仕入れ値の内訳（送料・クーポン等）があるか。ある場合はタップ編集せず通常の編集フォームへ
+  const hasPurchaseBreakdown = (item) => {
+    const pc = item.purchaseCost || {};
+    return (Number(pc.shippingTaxIn)||0) > 0 || (Number(pc.couponTaxIn)||0) > 0 || (Number(pc.optionalFeeTaxIn)||0) > 0
+      || !!item.bundleGroup || item.status === 'sold';
+  };
+  const commitInlinePrice = (field) => {
+    const raw = String(detailEditDraft).replace(/[^\d]/g, '');
+    setDetailEditField(null);
+    if (raw === '' && field === 'purchasePrice') return;
+    const v = raw === '' ? 0 : Number(raw);
+    if (v === Number(selected?.[field] || 0)) return;
+    if (field === 'listPrice') { saveInlineField({ listPrice: v }); return; }
+    const pc = selected.purchaseCost || {};
+    const rate = pc.itemTaxRate != null ? Number(pc.itemTaxRate) : 10;
+    const ex = (v === 0 || rate === 0) ? v : Math.round(v / (1 + rate / 100));
+    saveInlineField({
+      purchasePrice: v,
+      priceUnconfirmed: v > 0 ? false : selected.priceUnconfirmed,
+      purchaseCost: { ...pc, itemPriceTaxIn: v, itemPriceTaxEx: ex, totalTaxIn: v, totalTaxEx: ex },
+    });
   };
 
   const bundleShipMembers = (bg) => (data.inventory || []).filter(i => i.bundleGroup === bg);
@@ -7082,14 +7155,49 @@ const InventoryTab = () => {
               <button onClick={() => { setSelected(null); setSplitMode(false); setSplitItems([]); }} style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
             </div>
 
-            {/* 写真スライド（IndexedDBから取得） */}
-            {selected.photos?.length > 0 && (
-              <div style={{display:'flex',gap:8,overflowX:'auto',marginBottom:16,paddingBottom:4}}>
-                {selected.photos.map((p, i) => (
-                  <PhotoSlide key={p.id || i} photoRef={p} />
-                ))}
-              </div>
-            )}
+            {/* 写真スライド（IndexedDBから取得）＋ 写真の横に操作ボタン */}
+            {(() => {
+              const cb = {width:'100%',padding:'6px 8px',borderRadius:9,fontSize:13,fontWeight:700,cursor:'pointer',
+                minHeight:32,lineHeight:1.2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',
+                WebkitTapHighlightColor:'transparent',touchAction:'manipulation',boxSizing:'border-box'};
+              const hasPhoto = selected.photos?.length > 0;
+              return (
+                <div style={{display:'flex',gap:10,alignItems:'flex-start',marginBottom:16}}>
+                  {hasPhoto && (
+                    <div style={{flex:'0 0 36%',minWidth:0,display:'flex',gap:8,overflowX:'auto',paddingBottom:4}}>
+                      {selected.photos.map((p, i) => (
+                        <PhotoSlide key={p.id || i} photoRef={p} />
+                      ))}
+                    </div>
+                  )}
+                  <div style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',gap:6}}>
+                    <button className="btn-secondary" style={cb} onClick={() => openEditFromDetail(selected)}>✏️ 編集</button>
+                    {selected.status !== 'sold' && (
+                      <button className="btn-primary" style={cb} onClick={() => markAsSold(selected)}>🎉 売れた！</button>
+                    )}
+                    {selected.status === 'sold' && (
+                      <button style={{...cb,border:'1.5px solid #E84040',background:'white',color:'#E84040'}}
+                        onClick={() => recordSaleFromDetail(selected)}>💰 売上を記録</button>
+                    )}
+                    {selected.status === 'unlisted' && (
+                      <button className="btn-secondary" style={cb} onClick={() => markAsListed(selected)}>📱 出品中にする</button>
+                    )}
+                    {selected.status === 'listed' && (
+                      <button className="btn-secondary" style={cb} onClick={() => markAsUnlisted(selected)}>📦 未出品に戻す</button>
+                    )}
+                    {selected.status === 'sold' && (
+                      <button className="btn-secondary" style={cb} onClick={() => undoSoldFromDetail(selected)}>↩️ 売却を取消</button>
+                    )}
+                    {selected.status !== 'sold' && (
+                      <button style={{...cb,border:'1.5px solid #64748b',background:'#f8fafc',color:'#334155'}}
+                        onClick={() => startSplitFromDetail(selected)}>✂️ 分割登録</button>
+                    )}
+                    <button style={{...cb,minHeight:28,padding:'4px 8px',fontSize:12,fontWeight:600,border:'1px solid #fecaca',background:'#fef2f2',color:'#dc2626'}}
+                      onClick={() => deleteItem(selected)}>🗑️ 削除</button>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* 回転日数バナー（売却済みのみ） */}
             {selected.status === 'sold' && (() => {
@@ -7114,57 +7222,94 @@ const InventoryTab = () => {
               );
             })()}
 
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>管理番号</div>
-                <div style={{fontFamily:'monospace',fontSize:13,fontWeight:600}}>{selected.mgmtNo || '-'}</div>
-              </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>状態</div>
-                {conditionTag(selected.condition)}
-              </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>ブランド</div>
-                <div style={{fontWeight:600}}>{selected.brand || '-'}</div>
-              </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>カテゴリー</div>
-                <div>{selected.category || '-'}</div>
-              </div>
-              {(() => {
-                /* 売却済みは売上レコードの仕入れ値・実売価を優先（一覧カードと同じルール）*/
-                const selSale = selected.status === 'sold' ? (data.sales||[]).find(s => s.inventoryId === selected.id) : null;
-                const selPP = (selSale?.purchasePrice||0) > 0 ? selSale.purchasePrice : (selected.purchasePrice||0);
-                return (
-                  <>
-                    <div>
-                      <div style={{fontSize:12,color:'#999'}}>仕入れ値</div>
-                      <div style={{fontWeight:600}}>¥{formatMoney(selPP)}
-                        {selected?.priceUnconfirmed && (
-                          <span style={{fontSize:10,fontWeight:700,color:'#b45309',marginLeft:6}}>💰未確定</span>
-                        )}
-                      </div>
+            {(() => {
+              /* タップで直接変更できる項目の見た目（点線の下線 + ✎） */
+              const hint = {borderBottom:'1px dashed #bbb',paddingBottom:1,cursor:'pointer'};
+              const pen = <span style={{fontSize:10,color:'#aaa',marginLeft:4}}>✎</span>;
+              const overlay = {position:'absolute',left:0,top:0,width:'100%',height:'100%',opacity:0,cursor:'pointer',fontSize:16,border:'none',padding:0,margin:0};
+              const dateField = (key, label, emptyNode, allowClear) => (
+                <div>
+                  <div style={{fontSize:12,color:'#999'}}>{label}</div>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <span style={{position:'relative',display:'inline-block',...hint}}>
+                      {selected[key] || emptyNode}{pen}
+                      <input type="date" value={selected[key] || ''} style={overlay}
+                        onClick={e => { try { e.target.showPicker && e.target.showPicker(); } catch(_e) {} }}
+                        onChange={e => { const v = e.target.value; if ((v || '') !== (selected[key] || '') && (v || allowClear)) saveInlineField({ [key]: v }); }}/>
+                    </span>
+                    {allowClear && selected[key] && (
+                      <button onClick={() => saveInlineField({ [key]: '' })}
+                        style={{border:'none',background:'#f3f4f6',borderRadius:99,width:20,height:20,fontSize:12,color:'#888',cursor:'pointer',padding:0,lineHeight:1}}>×</button>
+                    )}
+                  </div>
+                </div>
+              );
+              const priceField = (field, label, display, viaForm) => (
+                <div>
+                  <div style={{fontSize:12,color:'#999'}}>{label}</div>
+                  {detailEditField === field ? (
+                    <input autoFocus type="text" inputMode="numeric" value={detailEditDraft}
+                      onChange={e => setDetailEditDraft(e.target.value)}
+                      onBlur={() => commitInlinePrice(field)}
+                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); else if (e.key === 'Escape') setDetailEditField(null); }}
+                      style={{width:'100%',boxSizing:'border-box',fontSize:16,fontWeight:600,padding:'2px 6px',border:'1.5px solid #E84040',borderRadius:6}}/>
+                  ) : (
+                    <div style={{fontWeight:600}}
+                      onClick={() => {
+                        if (viaForm) { openEditFromDetail(selected); return; }
+                        setDetailEditDraft(String(selected[field] || '')); setDetailEditField(field);
+                      }}>
+                      <span style={hint}>{display}{pen}</span>
+                      {field === 'purchasePrice' && selected?.priceUnconfirmed && (
+                        <span style={{fontSize:10,fontWeight:700,color:'#b45309',marginLeft:6}}>💰未確定</span>
+                      )}
                     </div>
+                  )}
+                </div>
+              );
+              /* 売却済みは売上レコードの仕入れ値・実売価を優先（一覧カードと同じルール）*/
+              const selSale = selected.status === 'sold' ? (data.sales||[]).find(s => s.inventoryId === selected.id) : null;
+              const selPP = (selSale?.purchasePrice||0) > 0 ? selSale.purchasePrice : (selected.purchasePrice||0);
+              return (
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
+                  <div>
+                    <div style={{fontSize:12,color:'#999'}}>管理番号</div>
+                    <div style={{fontFamily:'monospace',fontSize:13,fontWeight:600}}>{selected.mgmtNo || '-'}</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:12,color:'#999'}}>状態</div>
+                    <span style={{position:'relative',display:'inline-block',...hint}}>
+                      {conditionTag(selected.condition)}{pen}
+                      <select value={selected.condition || 'A'} style={overlay}
+                        onChange={e => { const v = e.target.value; if (v !== selected.condition) saveInlineField({ condition: v }); }}>
+                        {['S','A','B','C','D'].map(c => <option key={c} value={c}>{c}ランク</option>)}
+                      </select>
+                    </span>
+                  </div>
+                  <div>
+                    <div style={{fontSize:12,color:'#999'}}>ブランド</div>
+                    <div style={{fontWeight:600}}>{selected.brand || '-'}</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:12,color:'#999'}}>カテゴリー</div>
+                    <div>{selected.category || '-'}</div>
+                  </div>
+                  {priceField('purchasePrice', '仕入れ値', `¥${formatMoney(selPP)}`, hasPurchaseBreakdown(selected))}
+                  {selSale ? (
                     <div>
-                      <div style={{fontSize:12,color:'#999'}}>{selSale ? '売却価格' : '見込み売上'}</div>
-                      <div style={{fontWeight:600}}>¥{formatMoney(selSale ? selSale.salePrice : selected.listPrice)}</div>
+                      <div style={{fontSize:12,color:'#999'}}>売却価格</div>
+                      <div style={{fontWeight:600}}>¥{formatMoney(selSale.salePrice)}</div>
                     </div>
-                  </>
-                );
-              })()}
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>仕入れ日</div>
-                <div>{selected.purchaseDate}</div>
-              </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>出品日</div>
-                <div>{selected.listDate || <span style={{color:'#E84040',fontSize:12}}>未定</span>}</div>
-              </div>
-              <div>
-                <div style={{fontSize:12,color:'#999'}}>仕入れ先</div>
-                <div>{selected.purchaseStore || '-'}</div>
-              </div>
-            </div>
+                  ) : priceField('listPrice', '見込み売上', `¥${formatMoney(selected.listPrice)}`, false)}
+                  {dateField('purchaseDate', '仕入れ日', '-', false)}
+                  {dateField('listDate', '出品日', <span style={{color:'#E84040',fontSize:12}}>未定</span>, true)}
+                  <div>
+                    <div style={{fontSize:12,color:'#999'}}>仕入れ先</div>
+                    <div>{selected.purchaseStore || '-'}</div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* まとめ仕入れ内訳セクション */}
             {selected?.bundleGroup && (() => {
@@ -7467,15 +7612,7 @@ const InventoryTab = () => {
             <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:12}}>
               {/* 編集ボタン */}
               <button className="btn-secondary" style={{width:'100%'}}
-                onClick={() => {
-                  // ★ 編集前の状態を保存（戻り時にフィルター・スクロール位置を復元するため）
-                  setPendingReturnTab('inventory');
-                  setPendingInventoryFilter(filter);          // 現在のタブ（未出品/出品中/売却済）
-                  setPendingInventoryScrollY(window.scrollY); // 現在のスクロール位置
-                  setEditingItem(selected);
-                  setTab('purchase');
-                  setSelected(null);
-                }}>
+                onClick={() => openEditFromDetail(selected)}>
                 ✏️ 編集
               </button>
 
@@ -7488,11 +7625,7 @@ const InventoryTab = () => {
               {selected.status === 'sold' && (
                 <button style={{width:'100%',padding:'12px',borderRadius:12,border:'1.5px solid #E84040',
                   background:'white',color:'#E84040',fontSize:14,fontWeight:700,cursor:'pointer'}}
-                  onClick={() => {
-                    setSelected(null);
-                    setPendingSaleItemId(selected.id);
-                    setTab('sales');
-                  }}>
+                  onClick={() => recordSaleFromDetail(selected)}>
                   💰 この商品の売上を記録する →
                 </button>
               )}
@@ -7510,29 +7643,13 @@ const InventoryTab = () => {
               )}
               {selected.status === 'sold' && (
                 <button className="btn-secondary" style={{width:'100%'}}
-                  onClick={() => {
-                    if (!window.confirm('売却済みを取り消して「出品中」に戻しますか？')) return;
-                    const updated = data.inventory.map(i => i.id === selected.id ? { ...i, status: 'listed' } : i);
-                    setData({ ...data, inventory: updated });
-                    setSelected(null);
-                    toast('↩️ 出品中に戻しました');
-                  }}>
+                  onClick={() => undoSoldFromDetail(selected)}>
                   ↩️ 売却済みを取り消す
                 </button>
               )}
               {/* 分割登録ボタン（未出品・出品中のみ） */}
               {selected.status !== 'sold' && (
-                <button onClick={() => {
-                    const n = 2;
-                    const base = Math.floor((selected.purchasePrice||0) / n);
-                    const rem  = (selected.purchasePrice||0) - base * n;
-                    setSplitCount(n);
-                    setSplitItems(Array.from({length:n}, (_,i) => ({
-                      productName: `${selected.productName||'商品'} [${String.fromCharCode(65+i)}]`,
-                      purchasePrice: String(i===n-1 ? base+rem : base),
-                    })));
-                    setSplitMode(true);
-                  }}
+                <button onClick={() => startSplitFromDetail(selected)}
                   style={{width:'100%',padding:12,borderRadius:12,border:'1.5px solid #64748b',background:'#f8fafc',color:'#334155',fontWeight:700,cursor:'pointer',fontSize:14,minHeight:44,WebkitTapHighlightColor:'transparent'}}>
                   ✂️ 分割登録
                 </button>
