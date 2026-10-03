@@ -5643,11 +5643,15 @@ const InventoryTab = () => {
   // ★ 重複候補: 外部スクリプトが付けた dupCheck が未解決のものを「open」とする
   const isDupOpen = (item) => !!(item.dupCheck && !item.dupCheck.resolved);
   const dupGroupNo = (item) => String(item.dupCheck?.group || '').replace(/^dup_/, '');
+  // ★ クーポン利用: 仕入れ時のクーポン値引き額(税込)が正のもの
+  const couponAmt = (item) => Number(item.purchaseCost?.couponTaxIn) || 0;
+  const hasCoupon = (item) => couponAmt(item) > 0;
 
   const filtered = data.inventory.filter(item => {
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
     if (filter === 'bundle') { if (!item.bundleGroup || (data.inventory||[]).filter(x => x.bundleGroup === item.bundleGroup).length < 2) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
+    else if (filter === 'coupon') { if (!hasCoupon(item)) return false; }
     else if (filter !== 'all' && filter !== 'priceUnconfirmed' && filter !== 'bundle' && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
     if (search.trim()) {
@@ -6264,6 +6268,29 @@ const InventoryTab = () => {
           );
         })()}
         {(() => {
+          // ★ クーポン利用チップ（couponTaxIn > 0 の商品数）
+          const cpCnt = (data.inventory||[]).filter(hasCoupon).length;
+          if (cpCnt === 0 && filter !== 'coupon') return null;
+          const active = filter === 'coupon';
+          return (
+            <button onClick={() => { setFilter('coupon'); setCheckedIds(new Set()); }}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
+                background: active ? '#0f766e' : '#ccfbf1',
+                color: active ? 'white' : '#115e59',
+                boxShadow: active ? '0 2px 8px rgba(15,118,110,0.3)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              🎟️ クーポン
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#99f6e4',
+                color: active ? 'white' : '#115e59',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {cpCnt}
+              </span>
+            </button>
+          );
+        })()}
+        {(() => {
           const bgCnt = (data.inventory||[]).filter(i => i.bundleGroup && (data.inventory||[]).filter(x => x.bundleGroup === i.bundleGroup).length >= 2).length;
           if (bgCnt === 0 && filter !== 'bundle') return null;
           const active = filter === 'bundle';
@@ -6460,7 +6487,7 @@ const InventoryTab = () => {
         )}
         {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundle' ? 'まとめ買いの商品がありません' : filter === 'dupCheck' ? '重複候補はありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundle' ? 'まとめ買いの商品がありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -6790,6 +6817,12 @@ const InventoryTab = () => {
                           <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
                             background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
                             💰 金額未確定
+                          </span>
+                        )}
+                        {filter === 'coupon' && hasCoupon(item) && (
+                          <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
+                            background:'#f0fdfa',color:'#115e59',border:'1px solid #5eead4'}}>
+                            🎟️ −¥{couponAmt(item).toLocaleString()}
                           </span>
                         )}
                         {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
