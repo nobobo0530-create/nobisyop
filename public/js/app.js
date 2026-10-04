@@ -5766,6 +5766,10 @@ const InventoryTab = () => {
   // ★ クーポン利用: 仕入れ時のクーポン値引き額(税込)が正のもの
   const couponAmt = (item) => Number(item.purchaseCost?.couponTaxIn) || 0;
   const hasCoupon = (item) => couponAmt(item) > 0;
+  // ★ 要確認: 外部の監査が付けた auditCheck が未解決のもの
+  const isAuditOpen = (item) => !!(item.auditCheck && !item.auditCheck.resolved);
+  const auditOpenCount = React.useMemo(() => (data.inventory||[]).filter(isAuditOpen).length, [data.inventory]);
+  const AUDIT_SEV_ORDER = { '高': 0, '中': 1, '低': 2 };
 
   // まとめ仕入れ バッジ用カウント（map内で毎回filterしない）
   const bundleCounts = React.useMemo(() => {
@@ -5775,15 +5779,16 @@ const InventoryTab = () => {
   }, [data.inventory]);
 
   // まとめ買いの種別フィルター：同梱(individual)／セット購入(set)／未分類(bundleType なし)
-  const BUNDLE_FILTERS = { bundleIndividual: 'individual', bundleSet: 'set', bundleNone: '' };
+  const BUNDLE_FILTERS = { bundleAll: null, bundleIndividual: 'individual', bundleSet: 'set', bundleNone: '' };
   const isBundleFilter = (f) => Object.prototype.hasOwnProperty.call(BUNDLE_FILTERS, f);
   const bundleTypeKey = (item) => item.bundleType === 'individual' || item.bundleType === 'set' ? item.bundleType : '';
   const isInBundle = (item) => !!item.bundleGroup && bundleCounts[item.bundleGroup] > 1;
 
   const filtered = data.inventory.filter(item => {
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
-    if (isBundleFilter(filter)) { if (!isInBundle(item) || bundleTypeKey(item) !== BUNDLE_FILTERS[filter]) return false; }
+    if (isBundleFilter(filter)) { if (!isInBundle(item) || (filter !== 'bundleAll' && bundleTypeKey(item) !== BUNDLE_FILTERS[filter])) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
+    else if (filter === 'auditCheck') { if (!isAuditOpen(item)) return false; }
     else if (filter === 'coupon') { if (!hasCoupon(item)) return false; }
     else if (filter !== 'all' && filter !== 'priceUnconfirmed' && !isBundleFilter(filter) && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
@@ -5820,6 +5825,12 @@ const InventoryTab = () => {
       const da = a.purchaseDate || '', db = b.purchaseDate || '';
       return da < db ? -1 : da > db ? 1 : 0;
     }
+    // ★ 要確認モード: 重要度（高→中→低）→ 監査番号の順
+    if (filter === 'auditCheck') {
+      const sa = AUDIT_SEV_ORDER[a.auditCheck?.severity] ?? 3, sb = AUDIT_SEV_ORDER[b.auditCheck?.severity] ?? 3;
+      if (sa !== sb) return sa - sb;
+      return (Number(a.auditCheck?.no) || 9999) - (Number(b.auditCheck?.no) || 9999);
+    }
     if (sort === 'new')    return (b.purchaseDate||'') > (a.purchaseDate||'') ? 1 : -1;
     if (sort === 'old')    return (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1;
     if (sort === 'profit') {
@@ -5842,6 +5853,92 @@ const InventoryTab = () => {
       ? { ...i, dupCheck: { ...i.dupCheck, resolved: true, resolvedAt: now } } : i);
     setData({ ...data, inventory: updated });
     toast(`✅ グループ${String(group).replace(/^dup_/, '')}を重複ではないにしました`);
+  };
+
+  // ★ 要確認：提案どおりに直した場合の「いまの値 → 提案」を作る（表示と適用で共用）
+  const auditPlan = (item) => {
+    const fx = item.auditCheck?.proposedFix;
+    if (!fx) return null;
+    const pc = item.purchaseCost || {};
+    const n = (v) => Number(v) || 0;
+    const cur = {
+      pp: n(item.purchasePrice),
+      it: n(pc.itemPriceTaxIn ?? item.itemPriceTaxIn),
+      sh: n(pc.shippingTaxIn ?? item.shippingTaxIn),
+      cp: n(pc.couponTaxIn ?? item.couponTaxIn),
+      fee: n(pc.optionalFeeTaxIn ?? item.optionalFeeTaxIn),
+    };
+    const nx = { it: n(fx.itemPriceTaxIn), sh: n(fx.shippingTaxIn), cp: n(fx.couponTaxIn), fee: cur.fee };
+    nx.pp = nx.it + nx.sh + nx.fee - nx.cp;
+    const sale = item.status === 'sold' ? (data.sales||[]).find(s => s.inventoryId === item.id) : null;
+    // 売上の利益はアプリの売上登録と同じ式：売価×(1−手数料率)−送料−仕入れ値
+    const calcSaleProfit = (pp) => sale ? Math.round((Number(sale.salePrice)||0) * (1 - (Number(sale.feeRate)||0)) - (Number(sale.shipping)||0) - pp) : null;
+    return {
+      cur, nx, sale,
+      ok: nx.pp === n(fx.purchasePrice) && nx.it >= 0 && nx.sh >= 0 && nx.cp >= 0 && nx.pp >= 0,
+      curProfit: sale ? (Number(sale.profit) || 0) : null,
+      nxProfit: calcSaleProfit(nx.pp),
+    };
+  };
+
+  // ★ 要確認「✅ 提案どおり直す」: 通常の編集保存と同じ項目（内訳・合計・トップレベルの写し）を更新し、売却済みなら売上の仕入れ値と利益も同時に直す
+  const applyAuditFix = (item) => {
+    const plan = auditPlan(item);
+    if (!plan) return;
+    if (!plan.ok) { toast('❌ 提案の金額が合いません。「編集で直す」を使ってください'); return; }
+    const { cur, nx, sale } = plan;
+    const yen = (v) => '¥' + (Number(v)||0).toLocaleString();
+    const lines = [`${item.productName || '(名称なし)'}`, '',
+      `仕入れ値: ${yen(cur.pp)} → ${yen(nx.pp)}`];
+    if (cur.it !== nx.it) lines.push(`商品代: ${yen(cur.it)} → ${yen(nx.it)}`);
+    if (cur.sh !== nx.sh) lines.push(`送料: ${yen(cur.sh)} → ${yen(nx.sh)}`);
+    if (cur.cp !== nx.cp) lines.push(`クーポン: ${yen(cur.cp)} → ${yen(nx.cp)}`);
+    if (sale) lines.push(`売上の利益: ${yen(plan.curProfit)} → ${yen(plan.nxProfit)}（売上の仕入れ値も ${yen(nx.pp)} に直します）`);
+    lines.push('', 'この内容で直しますか？');
+    if (!window.confirm(lines.join('\n'))) return;
+    const now = new Date().toISOString();
+    const exOf = (inV, rate) => Math.round(inV / (1 + (Number(rate) || 10) / 100));
+    const updated = data.inventory.map(i => {
+      if (i.id !== item.id) return i;
+      const pc = i.purchaseCost || {};
+      const newPc = {
+        ...pc,
+        itemPriceTaxIn: nx.it,
+        shippingTaxIn: nx.sh,
+        totalTaxIn: nx.pp,
+        totalTaxEx: Math.max(0, (Number(pc.totalTaxEx) || cur.pp) + (nx.pp - cur.pp)),
+      };
+      if ('itemPriceTaxEx' in pc) newPc.itemPriceTaxEx = exOf(nx.it, pc.itemTaxRate);
+      if ('shippingTaxEx' in pc) newPc.shippingTaxEx = exOf(nx.sh, pc.shippingTaxRate);
+      if (nx.cp > 0) { newPc.couponTaxIn = nx.cp; newPc.couponNote = pc.couponNote || i.couponNote || 'クーポン値引き'; }
+      else { delete newPc.couponTaxIn; delete newPc.couponNote; }
+      return {
+        ...i,
+        purchasePrice: nx.pp,
+        itemPriceTaxIn: nx.it,
+        shippingTaxIn: nx.sh,
+        couponTaxIn: nx.cp > 0 ? nx.cp : 0,
+        couponNote: nx.cp > 0 ? newPc.couponNote : '',
+        priceUnconfirmed: false,
+        purchaseCost: newPc,
+        updatedAt: now,
+        auditCheck: { ...i.auditCheck, resolved: 'fixed', resolvedAt: now },
+      };
+    });
+    const sales = sale
+      ? (data.sales || []).map(s => s.id === sale.id ? { ...s, purchasePrice: nx.pp, profit: plan.nxProfit, updatedAt: now } : s)
+      : data.sales;
+    setData({ ...data, inventory: updated, sales });
+    toast('✅ 直しました' + (sale ? '（売上の利益も更新）' : ''));
+  };
+
+  // ★ 要確認「👌 このままでOK」
+  const keepAuditItem = (item) => {
+    const now = new Date().toISOString();
+    const updated = data.inventory.map(i => i.id === item.id
+      ? { ...i, updatedAt: now, auditCheck: { ...i.auditCheck, resolved: 'kept', resolvedAt: now } } : i);
+    setData({ ...data, inventory: updated });
+    toast('👌 このままでOKにしました');
   };
 
   // ★ 「重複なので削除」: 通常の削除(deleteItem)と同じ墓標方式で1点削除し、残りが1点以下ならグループを解決済みにする
@@ -6455,6 +6552,28 @@ const InventoryTab = () => {
           );
         })}
         {(() => {
+          // ★ 要確認チップ（未解決の auditCheck 数）。特別チップの先頭
+          if (auditOpenCount === 0 && filter !== 'auditCheck') return null;
+          const active = filter === 'auditCheck';
+          return (
+            <button onClick={() => { setFilter('auditCheck'); setCheckedIds(new Set()); }}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
+                background: active ? '#dc2626' : '#fee2e2',
+                color: active ? 'white' : '#991b1b',
+                boxShadow: active ? '0 2px 8px rgba(220,38,38,0.3)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              🔍 要確認
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#fecaca',
+                color: active ? 'white' : '#991b1b',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {auditOpenCount}
+              </span>
+            </button>
+          );
+        })()}
+        {(() => {
           const puCnt = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
           if (puCnt === 0 && filter !== 'priceUnconfirmed') return null;
           const active = filter === 'priceUnconfirmed';
@@ -6523,13 +6642,14 @@ const InventoryTab = () => {
           );
         })()}
         {[
+          ['bundleAll', '📦 まとめ買い 全部', '#4338ca', '#e0e7ff', '#c7d2fe', '#3730a3', 'rgba(67,56,202,0.3)'],
           ['bundleIndividual', '📦 同梱', '#4338ca', '#eef2ff', '#c7d2fe', '#3730a3', 'rgba(67,56,202,0.3)'],
           ['bundleSet', '🎁 まとめ仕入れ購入', '#be185d', '#fdf2f8', '#fbcfe8', '#9d174d', 'rgba(190,24,93,0.3)'],
           ['bundleNone', '❓ 未分類', '#6b7280', '#f3f4f6', '#e5e7eb', '#4b5563', 'rgba(107,114,128,0.3)'],
         ].map(([key, label, activeBg, bg, badgeBg, badgeColor, shadow]) => {
-          const mem = (data.inventory||[]).filter(i => isInBundle(i) && bundleTypeKey(i) === BUNDLE_FILTERS[key]);
+          const mem = (data.inventory||[]).filter(i => isInBundle(i) && (key === 'bundleAll' || bundleTypeKey(i) === BUNDLE_FILTERS[key]));
           const active = filter === key;
-          if (mem.length === 0 && !active) return null;
+          // 0件でもチップは常に表示（消えたと思われないように）
           const grpCnt = new Set(mem.map(i => i.bundleGroup)).size;
           return (
             <button key={key} onClick={() => { setFilter(key); setCheckedIds(new Set()); }}
@@ -6682,10 +6802,10 @@ const InventoryTab = () => {
         {isBundleFilter(filter) && sorted.length > 0 && (
           <div style={{background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:10,padding:12,marginBottom:12}}>
             <div style={{fontWeight:800,fontSize:13,color:'#3730a3',marginBottom:2}}>
-              {filter === 'bundleIndividual' ? '📦 個別購入（同梱）' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類のまとめ買い'}
+              {filter === 'bundleAll' ? '📦 まとめ買い（すべて）' : filter === 'bundleIndividual' ? '📦 個別購入（同梱）' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類のまとめ買い'}
             </div>
             <div style={{fontSize:11,color:'#4338ca',marginBottom:10}}>
-              {filter === 'bundleNone' ? '「📦 内訳を編集」から同梱／まとめ仕入れ購入の種類を選べます' : '送料やセット金額が後から変わったら、グループごとに入れ直せます'}
+              {filter === 'bundleNone' || filter === 'bundleAll' ? '「📦 内訳を編集」から同梱／まとめ仕入れ購入の種類を選べます' : '送料やセット金額が後から変わったら、グループごとに入れ直せます'}
             </div>
             {(() => {
               const groups = {};
@@ -6726,13 +6846,13 @@ const InventoryTab = () => {
         )}
         {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundleIndividual' ? '同梱（個別購入）の商品がありません' : filter === 'bundleSet' ? 'まとめ仕入れ購入の商品がありません' : filter === 'bundleNone' ? '未分類のまとめ買いはありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : (filter === 'bundleIndividual' || filter === 'bundleSet' || filter === 'bundleAll') ? 'まだ分類されていません。まとめ買いのカードの「仕入れ内訳を編集」で種類を選べます' : filter === 'bundleNone' ? '未分類のまとめ買いはありません' : filter === 'auditCheck' ? '要確認の商品はありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
-              const useGrouping = groupBundles && !bulkMode && !isBundleFilter(filter) && filter !== 'dupCheck';
+              const useGrouping = groupBundles && !bulkMode && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck';
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
@@ -6765,6 +6885,81 @@ const InventoryTab = () => {
               }
 
               return displayRows.map(row => {
+                if (filter === 'auditCheck' && row.type === 'single' && !bulkMode) {
+                  // ===== 要確認カード：理由・いまの値→提案・根拠・操作ボタン =====
+                  const item = row.item, ac = item.auditCheck || {};
+                  const plan = auditPlan(item);
+                  const yen = (v) => '¥' + (Number(v)||0).toLocaleString();
+                  const sevColor = ac.severity === '高' ? ['#fee2e2','#991b1b','#fecaca'] : ac.severity === '中' ? ['#fef3c7','#92400e','#fcd34d'] : ['#f3f4f6','#4b5563','#e5e7eb'];
+                  const rows = [];
+                  if (plan) {
+                    rows.push(['仕入れ値', yen(plan.cur.pp), yen(plan.nx.pp), plan.cur.pp !== plan.nx.pp]);
+                    if (plan.cur.it !== plan.nx.it) rows.push(['商品代', yen(plan.cur.it), yen(plan.nx.it), true]);
+                    if (plan.cur.sh !== plan.nx.sh) rows.push(['送料', yen(plan.cur.sh), yen(plan.nx.sh), true]);
+                    if (plan.cur.cp !== plan.nx.cp) rows.push(['クーポン', yen(plan.cur.cp), yen(plan.nx.cp), true]);
+                    if (plan.sale) rows.push(['利益（売却済み）', yen(plan.curProfit), yen(plan.nxProfit), plan.curProfit !== plan.nxProfit]);
+                  }
+                  const ev = Array.isArray(ac.evidence) ? ac.evidence : (ac.evidence ? [String(ac.evidence)] : []);
+                  const btn = {padding:'10px 12px',borderRadius:10,fontSize:13,fontWeight:700,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'};
+                  return (
+                    <div key={item.id} className="card" style={{padding:'12px 14px',border:'1.5px solid #fecaca'}}>
+                      <div style={{display:'flex',gap:12,alignItems:'flex-start',cursor:'pointer'}} onClick={() => setSelected(item)}>
+                        <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={68} fallback="📦" />
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:3,flexWrap:'wrap'}}>
+                            <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,background:sevColor[0],color:sevColor[1],border:'1px solid '+sevColor[2]}}>重要度 {ac.severity || '-'}</span>
+                            <span style={{fontSize:10,color:'#9ca3af'}}>{statusLabel[item.status] || ''}{ac.no ? ` ・ 監査#${ac.no}` : ''}</span>
+                          </div>
+                          <div style={{fontWeight:700,fontSize:13,lineHeight:1.35,color:'#111',marginBottom:3,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName}</div>
+                          <div style={{fontSize:11,color:'#6b7280',lineHeight:1.5}}>
+                            {item.mgmtNo ? <div>管理番号 {item.mgmtNo}</div> : null}
+                            <div>{item.purchaseStore || '仕入れ先未設定'}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
+                            {item.yahooAuctionId ? <div>オークションID {item.yahooAuctionId}</div> : null}
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{marginTop:10,padding:'9px 11px',borderRadius:10,background:'#fef2f2',fontSize:12,color:'#7f1d1d',lineHeight:1.55}}>{ac.reason || '確認が必要です'}</div>
+                      {plan ? (
+                        <table style={{width:'100%',borderCollapse:'collapse',marginTop:8,fontSize:12}}>
+                          <thead><tr style={{color:'#9ca3af',fontSize:10}}>
+                            <th style={{textAlign:'left',fontWeight:700,padding:'3px 4px'}}>項目</th>
+                            <th style={{textAlign:'right',fontWeight:700,padding:'3px 4px'}}>いまの値</th>
+                            <th style={{textAlign:'center',width:18}}></th>
+                            <th style={{textAlign:'right',fontWeight:700,padding:'3px 4px'}}>提案</th>
+                          </tr></thead>
+                          <tbody>{rows.map(([label, a, b, changed]) => (
+                            <tr key={label} style={{borderTop:'1px solid #f3f4f6'}}>
+                              <td style={{padding:'5px 4px',color:'#374151'}}>{label}</td>
+                              <td style={{padding:'5px 4px',textAlign:'right',color:'#6b7280'}}>{a}</td>
+                              <td style={{textAlign:'center',color:'#9ca3af'}}>→</td>
+                              <td style={{padding:'5px 4px',textAlign:'right',fontWeight:800,color: changed ? '#b91c1c' : '#374151'}}>{b}</td>
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      ) : (
+                        <div style={{marginTop:8,fontSize:11,color:'#6b7280',lineHeight:1.5}}>
+                          自動の提案はありません。数字は {ac.numbers ? Object.entries(ac.numbers).map(([k,v]) => `${k}=${v}`).join(' / ') : '—'}。「編集で直す」で自分の値を入れるか、問題なければ「このままでOK」を押してください。
+                        </div>
+                      )}
+                      {plan && !plan.ok && <div style={{marginTop:6,fontSize:11,color:'#b91c1c'}}>⚠️ 提案の合計が合わないため自動では直せません</div>}
+                      {ev.length > 0 && (
+                        <div style={{marginTop:8,padding:'8px 10px',borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0',fontSize:11,color:'#475569',lineHeight:1.55}}>
+                          <div style={{fontWeight:800,marginBottom:2}}>根拠</div>
+                          {ev.map((t, k) => <div key={k}>{t}</div>)}
+                        </div>
+                      )}
+                      <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:10}}>
+                        {plan && plan.ok && (
+                          <button onClick={() => applyAuditFix(item)} style={{...btn,border:'none',background:'#16a34a',color:'white'}}>✅ 提案どおり直す</button>
+                        )}
+                        <div style={{display:'flex',gap:8}}>
+                          <button onClick={() => openEditFromDetail(item)} style={{...btn,flex:1,border:'1px solid #d1d5db',background:'white',color:'#374151'}}>✏️ 編集で直す</button>
+                          <button onClick={() => keepAuditItem(item)} style={{...btn,flex:1,border:'1px solid #d1d5db',background:'white',color:'#374151'}}>👌 このままでOK</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
                 if (row.type === 'dupHeader') {
                   return (
                     <div key={`dup-${row.group}`} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,
