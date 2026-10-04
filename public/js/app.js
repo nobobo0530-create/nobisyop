@@ -6938,7 +6938,7 @@ const InventoryTab = () => {
                         </table>
                       ) : (
                         <div style={{marginTop:8,fontSize:11,color:'#6b7280',lineHeight:1.5}}>
-                          自動の提案はありません。数字は {ac.numbers ? Object.entries(ac.numbers).map(([k,v]) => `${k}=${v}`).join(' / ') : '—'}。「編集で直す」で自分の値を入れるか、問題なければ「このままでOK」を押してください。
+                          自動の提案はありません。「編集で直す」で自分の値を入れるか、問題なければ「このままでOK」を押してください。
                         </div>
                       )}
                       {plan && !plan.ok && <div style={{marginTop:6,fontSize:11,color:'#b91c1c'}}>⚠️ 提案の合計が合わないため自動では直せません</div>}
