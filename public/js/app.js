@@ -996,11 +996,16 @@ const buildSplitChildren = (orig, splitInputs, ts) => {
   const totals = splitInputs.map(si => Math.round(num(si.purchasePrice)));
   const sumTotals = totals.reduce((a, b) => a + b, 0);
   if (sumTotals !== total) return { error: `分割後の合計 ¥${sumTotals.toLocaleString()} が元の仕入れ値 ¥${total.toLocaleString()} と一致しません` };
-  const shipA = allocLargestRemainder(ship, totals);
-  const couponA = allocLargestRemainder(coupon, totals);
-  const feeA = allocLargestRemainder(fee, totals);
+  // 方針：送料・任意手数料は均等割り（端数は先頭から1円ずつ）、クーポンは入力合計が最も高い1点だけ（同額なら先頭）
+  const nKids = totals.length;
+  const evenA = (T) => totals.map((_, i) => Math.floor(T / nKids) + (i < T % nKids ? 1 : 0));
+  const shipA = evenA(ship);
+  const feeA = evenA(fee);
+  let topIdx = 0;
+  totals.forEach((t, i) => { if (t > totals[topIdx]) topIdx = i; });
+  const couponA = totals.map((_, i) => (i === topIdx ? coupon : 0));
   const itemA = totals.map((t, i) => t - shipA[i] - feeA[i] + couponA[i]);
-  if (itemA.some(v => v < 0)) return { error: '送料・クーポンを按分すると商品代がマイナスになる商品があります。金額の割り振りを見直してください' };
+  if (itemA.some(v => v < 0)) return { error: '送料を均等割り・クーポンを最高額の1点に集約すると商品代がマイナスになる商品があります。各商品の金額の割り振りを見直してください' };
   const sum = a => a.reduce((x, y) => x + y, 0);
   if (sum(itemA) !== item || sum(shipA) !== ship || sum(couponA) !== coupon || sum(feeA) !== fee || sum(totals) !== total) {
     return { error: '内訳の按分合計が元の金額と一致しません（保存を中止しました）' };
@@ -5762,12 +5767,25 @@ const InventoryTab = () => {
   const couponAmt = (item) => Number(item.purchaseCost?.couponTaxIn) || 0;
   const hasCoupon = (item) => couponAmt(item) > 0;
 
+  // まとめ仕入れ バッジ用カウント（map内で毎回filterしない）
+  const bundleCounts = React.useMemo(() => {
+    const m = {};
+    (data.inventory||[]).forEach(i => { if (i.bundleGroup) m[i.bundleGroup] = (m[i.bundleGroup]||0) + 1; });
+    return m;
+  }, [data.inventory]);
+
+  // まとめ買いの種別フィルター：同梱(individual)／セット購入(set)／未分類(bundleType なし)
+  const BUNDLE_FILTERS = { bundleIndividual: 'individual', bundleSet: 'set', bundleNone: '' };
+  const isBundleFilter = (f) => Object.prototype.hasOwnProperty.call(BUNDLE_FILTERS, f);
+  const bundleTypeKey = (item) => item.bundleType === 'individual' || item.bundleType === 'set' ? item.bundleType : '';
+  const isInBundle = (item) => !!item.bundleGroup && bundleCounts[item.bundleGroup] > 1;
+
   const filtered = data.inventory.filter(item => {
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
-    if (filter === 'bundle') { if (!item.bundleGroup || (data.inventory||[]).filter(x => x.bundleGroup === item.bundleGroup).length < 2) return false; }
+    if (isBundleFilter(filter)) { if (!isInBundle(item) || bundleTypeKey(item) !== BUNDLE_FILTERS[filter]) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
     else if (filter === 'coupon') { if (!hasCoupon(item)) return false; }
-    else if (filter !== 'all' && filter !== 'priceUnconfirmed' && filter !== 'bundle' && item.status !== filter) return false;
+    else if (filter !== 'all' && filter !== 'priceUnconfirmed' && !isBundleFilter(filter) && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
@@ -6001,7 +6019,7 @@ const InventoryTab = () => {
     const members = bundleShipMembers(bundleShipOpen);
     if (members.length === 0) return;
     const total = Number(bundleSetTotalIn) || 0;
-    if (total <= 0) { toast('❌ セット総額（商品代）を入力してください'); return; }
+    if (total <= 0) { toast('❌ まとめ仕入れ総額（商品代）を入力してください'); return; }
     let alloc = [];
     if (mode === 'ratio') {
       const priceOf = i => Math.max(0, Number(bundleItemDraft[i.id]) || 0);
@@ -6357,13 +6375,6 @@ const InventoryTab = () => {
   const allChecked  = sorted.length > 0 && checkedIds.size === sorted.length;
   const someChecked = checkedIds.size > 0 && checkedIds.size < sorted.length;
 
-  // まとめ仕入れ バッジ用カウント（map内で毎回filterしない）
-  const bundleCounts = React.useMemo(() => {
-    const m = {};
-    (data.inventory||[]).forEach(i => { if (i.bundleGroup) m[i.bundleGroup] = (m[i.bundleGroup]||0) + 1; });
-    return m;
-  }, [data.inventory]);
-
   return (
     <div className="fade-in">
       <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12}}>
@@ -6511,28 +6522,33 @@ const InventoryTab = () => {
             </button>
           );
         })()}
-        {(() => {
-          const bgCnt = (data.inventory||[]).filter(i => i.bundleGroup && (data.inventory||[]).filter(x => x.bundleGroup === i.bundleGroup).length >= 2).length;
-          if (bgCnt === 0 && filter !== 'bundle') return null;
-          const active = filter === 'bundle';
+        {[
+          ['bundleIndividual', '📦 同梱', '#4338ca', '#eef2ff', '#c7d2fe', '#3730a3', 'rgba(67,56,202,0.3)'],
+          ['bundleSet', '🎁 まとめ仕入れ購入', '#be185d', '#fdf2f8', '#fbcfe8', '#9d174d', 'rgba(190,24,93,0.3)'],
+          ['bundleNone', '❓ 未分類', '#6b7280', '#f3f4f6', '#e5e7eb', '#4b5563', 'rgba(107,114,128,0.3)'],
+        ].map(([key, label, activeBg, bg, badgeBg, badgeColor, shadow]) => {
+          const mem = (data.inventory||[]).filter(i => isInBundle(i) && bundleTypeKey(i) === BUNDLE_FILTERS[key]);
+          const active = filter === key;
+          if (mem.length === 0 && !active) return null;
+          const grpCnt = new Set(mem.map(i => i.bundleGroup)).size;
           return (
-            <button onClick={() => { setFilter('bundle'); setCheckedIds(new Set()); }}
+            <button key={key} onClick={() => { setFilter(key); setCheckedIds(new Set()); }}
               style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
-                background: active ? '#4338ca' : '#eef2ff',
-                color: active ? 'white' : '#4338ca',
-                boxShadow: active ? '0 2px 8px rgba(67,56,202,0.3)' : 'none',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
+                background: active ? activeBg : bg,
+                color: active ? 'white' : badgeColor,
+                boxShadow: active ? '0 2px 8px ' + shadow : 'none',
                 transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              📦まとめ
+              {label}
               <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#c7d2fe',
-                color: active ? 'white' : '#3730a3',
+                background: active ? 'rgba(255,255,255,0.3)' : badgeBg,
+                color: active ? 'white' : badgeColor,
                 borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {bgCnt}
+                {mem.length}点/{grpCnt}組
               </span>
             </button>
           );
-        })()}
+        })}
       </div>
 
       {/* 並び替えバー */}
@@ -6552,7 +6568,7 @@ const InventoryTab = () => {
       )}
 
       {/* まとめ買いグループ化トグル */}
-      {!bulkMode && filter !== 'bundle' && (data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
+      {!bulkMode && !isBundleFilter(filter) && (data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
         <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
           <button
             onClick={() => { const v = !groupBundles; setGroupBundles(v); localStorage.setItem('nobushop_group_bundles', v ? '1' : '0'); }}
@@ -6663,11 +6679,13 @@ const InventoryTab = () => {
             💰 まとめて金額を確定（{sorted.length}件）
           </button>
         )}
-        {filter === 'bundle' && sorted.length > 0 && (
+        {isBundleFilter(filter) && sorted.length > 0 && (
           <div style={{background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:10,padding:12,marginBottom:12}}>
-            <div style={{fontWeight:800,fontSize:13,color:'#3730a3',marginBottom:2}}>📦 まとめ買い（同梱）</div>
+            <div style={{fontWeight:800,fontSize:13,color:'#3730a3',marginBottom:2}}>
+              {filter === 'bundleIndividual' ? '📦 個別購入（同梱）' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類のまとめ買い'}
+            </div>
             <div style={{fontSize:11,color:'#4338ca',marginBottom:10}}>
-              同梱送料が後から変わったら、グループごとに入れ直せます
+              {filter === 'bundleNone' ? '「📦 内訳を編集」から同梱／まとめ仕入れ購入の種類を選べます' : '送料やセット金額が後から変わったら、グループごとに入れ直せます'}
             </div>
             {(() => {
               const groups = {};
@@ -6708,13 +6726,13 @@ const InventoryTab = () => {
         )}
         {sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundle' ? 'まとめ買いの商品がありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : filter === 'bundleIndividual' ? '同梱（個別購入）の商品がありません' : filter === 'bundleSet' ? 'まとめ仕入れ購入の商品がありません' : filter === 'bundleNone' ? '未分類のまとめ買いはありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
-              const useGrouping = groupBundles && !bulkMode && filter !== 'bundle' && filter !== 'dupCheck';
+              const useGrouping = groupBundles && !bulkMode && !isBundleFilter(filter) && filter !== 'dupCheck';
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
@@ -6832,7 +6850,7 @@ const InventoryTab = () => {
                             ) : firstItem.bundleType === 'set' ? (
                               <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
                                 background:'#fdf4ff',color:'#86198f',border:'1px solid #f0abfc'}}>
-                                🎁 セット
+                                🎁 まとめ仕入れ購入
                               </span>
                             ) : (
                               <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
@@ -7644,7 +7662,7 @@ const InventoryTab = () => {
                 <div style={{background:'#f8fafc',border:'1.5px solid #e2e8f0',borderRadius:14,padding:'14px',marginBottom:12}}>
                   <div style={{fontWeight:800,fontSize:14,marginBottom:10,color:'#1e293b'}}>✂️ 分割登録</div>
                   <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>
-                    仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます（分割前のデータは「まとめ買い」から見られます）。送料・クーポンは各商品の金額に応じて自動で按分され、合計は必ず元と一致します。
+                    仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます（分割前のデータは「まとめ買い」から見られます）。送料は各商品に均等に、クーポンは金額が最も高い1点だけに自動で割り当てられ、合計は必ず元と一致します。
                   </div>
                   {/* 分割数選択 */}
                   <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
@@ -7702,6 +7720,7 @@ const InventoryTab = () => {
                         // 写真は先頭の1点だけが引き継ぐ（base64を複数の子に重複させない）
                         photos: idx === 0 ? (selected.photos || []) : [],
                         bundleGroup: bundleGroupId,
+                        bundleType: 'set',
                         bundleLabel: `商品${String.fromCharCode(65+idx)}`,
                         mgmtNo: idx === 0 ? selected.mgmtNo : null,
                         status: 'unlisted',
@@ -8206,8 +8225,8 @@ const InventoryTab = () => {
             {/* 種別セレクタ */}
             <div style={{display:'flex',gap:8,marginBottom:14,marginTop:10}}>
               {[
-                {value:'individual',label:'📦 個別購入（同梱）',desc:'個別に落札して同梱発送'},
-                {value:'set',label:'🎁 セット購入',desc:'まとめて1件で販売されていた'},
+                {value:'individual',label:'📦 個別購入（同梱）',desc:'個別に落札し、まとめて購入（送料はまとめて1回）'},
+                {value:'set',label:'🎁 まとめ仕入れ購入',desc:'まとめて1件で販売されていた'},
                 {value:'',label:'❓ 未分類',desc:'あとで決める'},
               ].map(opt => (
                 <button key={opt.value} onClick={() => setBundleTypeDraft(opt.value)}
@@ -8313,7 +8332,7 @@ const InventoryTab = () => {
             {bundleTypeDraft === 'set' && (
               <>
                 <div style={{background:'#fdf4ff',border:'1px solid #f0abfc',borderRadius:12,padding:'12px 14px',marginBottom:14}}>
-                  <div style={{fontSize:12,fontWeight:700,color:'#86198f',marginBottom:8}}>セット総額（商品代）</div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#86198f',marginBottom:8}}>まとめ仕入れ総額（商品代）</div>
                   <input className="input-field" type="number" inputMode="numeric" placeholder="商品代の合計"
                     value={bundleSetTotalIn}
                     onChange={e => setBundleSetTotalIn(e.target.value)}
