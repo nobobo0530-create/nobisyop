@@ -124,6 +124,37 @@ function mergeTombstones(a, b) {
   return out;
 }
 
+// ★ まとめ買いの表紙 settings.bundleCovers（bundleGroup → 表紙）
+// settings は丸ごと上書き保存なので、端末が bundleCovers を持たない/古い状態で送ると表紙が消える。
+// 墓標と同様に、保存済みと送信分をキーごとにマージする（クライアントの mergeBundleCovers/pickCover と同じ規則）
+async function fetchStoredBundleCovers() {
+  const rows = await sbFetch('app_settings?select=b:data->bundleCovers&id=eq.default');
+  const b = Array.isArray(rows) && rows[0] ? rows[0].b : null;
+  return (b && typeof b === 'object' && !Array.isArray(b)) ? b : {};
+}
+const COVER_RANK = { manual: 3, splitOrigin: 2, firstMember: 1 };
+function pickCover(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ra = COVER_RANK[a.source] || 0, rb = COVER_RANK[b.source] || 0;
+  let w = a, l = b;
+  if (ra !== rb) { if (rb > ra) { w = b; l = a; } }
+  else {
+    const ta = Date.parse(a.setAt) || 0, tb = Date.parse(b.setAt) || 0;
+    if (a.source === 'manual' ? tb > ta : tb < ta) { w = b; l = a; }
+  }
+  if (!w.thumbDataUrl && l.thumbDataUrl && l.photoId === w.photoId) return { ...w, thumbDataUrl: l.thumbDataUrl };
+  return w;
+}
+function mergeBundleCovers(a, b) {
+  const out = {};
+  for (const k of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
+    const v = pickCover((a || {})[k], (b || {})[k]);
+    if (v) out[k] = v;
+  }
+  return out;
+}
+
 // ★ 古い端末の状態でクラウドの新しいデータを上書きしないためのガード
 // - 保存済みより古い（updatedAt/createdAt が小さい）行は書かない
 // - 墓標（削除済み）にあるIDは書かない
@@ -248,6 +279,14 @@ export default async function handler(req, res) {
         if (tombstones && settings && typeof settings === 'object') {
           const merged = mergeTombstones(tombstones, settings._deletedIds);
           if (Object.keys(merged).length) settingsData = { ...settings, _deletedIds: merged };
+        }
+        // ★ 表紙(bundleCovers)も保存済みとキーごとにマージ（取得に失敗したら送信分のまま）
+        if (settingsData && typeof settingsData === 'object') {
+          try {
+            const storedCovers = await fetchStoredBundleCovers();
+            const mc = mergeBundleCovers(storedCovers, settingsData.bundleCovers);
+            if (Object.keys(mc).length) settingsData = { ...settingsData, bundleCovers: mc };
+          } catch(e) { console.warn('[api/data] bundleCovers の取得に失敗（マージなしで続行）:', e.message); }
         }
         ops.push(sbFetch('app_settings', {
           method: 'POST',

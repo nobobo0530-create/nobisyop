@@ -2760,8 +2760,11 @@ const PurchaseTab = () => {
       if (p.previewUrl) URL.revokeObjectURL(p.previewUrl);
       if (p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
       try {
-        await deletePhoto(p.id);
-        await deletePhoto(p.thumbId);
+        // まとめ買いの表紙・分割前データが参照している写真はIndexedDBから消さない
+        if (!isPhotoProtected(data, p)) {
+          await deletePhoto(p.id);
+          await deletePhoto(p.thumbId);
+        }
       } catch(e) { /* ignore */ }
     }
     setPhotos(prev => prev.filter((_, i) => i !== idx));
@@ -3612,7 +3615,10 @@ const PurchaseTab = () => {
         });
 
         const totalCount = createdItems.length + existingBundleItems.length;
-        setData({ ...data, inventory: [...updatedInventory, ...createdItems] });
+        // まとめ買いの表紙：作成時の先頭の写真で固定（以後、子の写真が変わっても変わらない）
+        const _coverRef = (createdItems.find(i => (i.photos || []).length) || {}).photos?.[0];
+        const _newCovers = _coverRef ? { ...(data.settings?.bundleCovers || {}), [bundleGroupId]: { photoId: _coverRef.id || null, thumbId: _coverRef.thumbId || null, thumbDataUrl: null, source: 'firstMember', setAt: new Date().toISOString() } } : null;
+        setData({ ...data, inventory: [...updatedInventory, ...createdItems], ...(_newCovers ? { settings: { ...data.settings, bundleCovers: _newCovers } } : {}) });
         const msgParts = [];
         if (createdItems.length)        msgParts.push(`新規${createdItems.length}件`);
         if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
@@ -5449,6 +5455,96 @@ const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) 
   return <div style={{width:size,height:size,borderRadius:10,background:'#f0f0f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*0.4,flexShrink:0}}>{fallback}</div>;
 };
 
+// ============================================================
+// まとめ買いの表紙（bundleCover）
+// 表紙は「まとめ買い自体」が持つ。子の写真を差し替え・追加・削除しても変わらない。
+// 置き場所: settings.bundleCovers[bundleGroup]（クラウドの設定に入る。メンバーが消えても残る）
+//   { photoId, thumbId, thumbDataUrl(160px・数KB), source: 'manual'|'splitOrigin'|'firstMember', setAt }
+// 一度決まったら自動では変わらない。変えられるのは「表紙の写真を変更」の手動操作だけ。
+// ============================================================
+const COVER_RANK = { manual: 3, splitOrigin: 2, firstMember: 1 };
+// 2つの表紙のうち残す方（手動 > 分割元 > 先頭メンバー。同格なら手動は新しい方・自動は古い方）
+const pickCover = (a, b) => {
+  if (!a) return b;
+  if (!b) return a;
+  const ra = COVER_RANK[a.source] || 0, rb = COVER_RANK[b.source] || 0;
+  let w = a, l = b;
+  if (ra !== rb) { if (rb > ra) { w = b; l = a; } }
+  else {
+    const ta = Date.parse(a.setAt) || 0, tb = Date.parse(b.setAt) || 0;
+    if (a.source === 'manual' ? tb > ta : tb < ta) { w = b; l = a; }
+  }
+  // 勝った方にサムネイルが無く、同じ写真の負けた方が持っていれば補う
+  if (!w.thumbDataUrl && l.thumbDataUrl && l.photoId === w.photoId) return { ...w, thumbDataUrl: l.thumbDataUrl };
+  return w;
+};
+// 設定の bundleCovers を、端末とクラウドでキーごとに安全にマージする（上書きで失わない）
+const mergeBundleCovers = (a, b) => {
+  const out = {};
+  for (const k of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
+    const v = pickCover((a || {})[k], (b || {})[k]);
+    if (v) out[k] = v;
+  }
+  return out;
+};
+// 写真から表紙用の小さなサムネイル(160px)のdata URLを作る。取れなければ null
+const coverThumbFromPhoto = async (p) => {
+  try {
+    if (!p) return null;
+    let blob = null;
+    const du = p.thumbDataUrl || p.medDataUrl;
+    if (du) blob = await (await fetch(du)).blob();
+    else {
+      if (p.thumbId) blob = await getPhoto(p.thumbId);
+      if (!blob && p.id) blob = await getPhoto(p.id);
+    }
+    if (!blob) return null;
+    const small = await compressImage(blob, 160, 0.6);
+    return `data:image/jpeg;base64,${await blobToBase64(small)}`;
+  } catch (e) { return null; }
+};
+const makeCoverRecord = async (photo, source) => {
+  const thumbDataUrl = await coverThumbFromPhoto(photo);
+  if (!thumbDataUrl) return null;
+  return { photoId: photo.id || null, thumbId: photo.thumbId || null, thumbDataUrl, source, setAt: new Date().toISOString() };
+};
+// メンバーから最初の表紙を決める（分割元の写真 → 作成順で最初に写真を持つメンバー）
+const buildBundleCover = async (members) => {
+  const origin = (members.find(m => m.splitOrigin) || {}).splitOrigin;
+  const ref = origin?.photos?.[0];
+  if (ref && (ref.id || ref.thumbId)) {
+    let photo = ref;
+    for (const m of members) {
+      const hit = (m.photos || []).find(p => p && ((ref.id && p.id === ref.id) || (ref.thumbId && p.thumbId === ref.thumbId)));
+      if (hit) { photo = hit; break; }
+    }
+    const rec = await makeCoverRecord(photo, 'splitOrigin');
+    if (rec) return rec;
+  }
+  const ord = [...members].sort((a, b) =>
+    String(a.createdAt || '').localeCompare(String(b.createdAt || '')) ||
+    String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  for (const m of ord) {
+    const p = (m.photos || [])[0];
+    if (!p || !(p.thumbId || p.thumbDataUrl)) continue;
+    const rec = await makeCoverRecord(p, 'firstMember');
+    if (rec) return rec;
+  }
+  return null;
+};
+// 写真が表紙・分割前データから参照されていないか（参照中の写真はIndexedDBから消さない）
+const isPhotoProtected = (data, p) => {
+  if (!p) return false;
+  const hit = (id, thumbId) => (p.id && (id === p.id || thumbId === p.id)) || (p.thumbId && (id === p.thumbId || thumbId === p.thumbId));
+  for (const c of Object.values(data?.settings?.bundleCovers || {})) {
+    if (c && hit(c.photoId, c.thumbId)) return true;
+  }
+  for (const it of (data?.inventory || [])) {
+    for (const r of (it.splitOrigin?.photos || [])) { if (r && hit(r.id, r.thumbId)) return true; }
+  }
+  return false;
+};
+
 // 詳細モーダル用の写真スライド（フル画像をIndexedDBから取得）
 const PhotoSlide = ({ photoRef }) => {
   // ★ 初期表示: medDataUrl(700px)→thumbDataUrl(300px)→null の優先順で表示
@@ -5699,6 +5795,7 @@ const InventoryTab = () => {
   const [inlineDraft, setInlineDraft] = React.useState({ price:'', ship:'', store:'', sale:'' });
   const [bundleShipOpen, setBundleShipOpen] = React.useState(null);   // 編集中の bundleGroup
   const [splitOriginOpen, setSplitOriginOpen] = React.useState(null); // 「分割前のデータ」を表示中の bundleGroup
+  const [coverPickerOpen, setCoverPickerOpen] = React.useState(null); // 「表紙の写真を変更」を表示中の bundleGroup
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
   const [groupBundles, setGroupBundles] = React.useState(() => localStorage.getItem('nobushop_group_bundles') !== '0');
@@ -6999,25 +7096,8 @@ const InventoryTab = () => {
                   // 分割登録されたグループ：分割前のスナップショット（情報表示専用）と、見出しに出す写真
                   const originMember = members.find(m => m.splitOrigin);
                   const splitOrigin = originMember ? originMember.splitOrigin : null;
-                  // 見出し写真は固定：子に写真を追加しても変わらないようにする
-                  //  1) 分割元の写真(splitOrigin.photos[0])。base64は子の写真から id/thumbId で引き当て、無ければ thumbId で IndexedDB 参照
-                  //  2) 分割でないグループは「作成順で最初のメンバー」の写真、無ければ作成順で最も早く写真を持つメンバー
-                  const headPhoto = (() => {
-                    const ref = splitOrigin?.photos?.[0];
-                    if (ref && (ref.id || ref.thumbId)) {
-                      for (const m of members) {
-                        const hit = (m.photos || []).find(p => p && ((ref.id && p.id === ref.id) || (ref.thumbId && p.thumbId === ref.thumbId)));
-                        if (hit) return hit;
-                      }
-                      return ref;
-                    }
-                    const hasPhoto = m => { const p = m.photos?.[0]; return !!(p && (p.thumbId || p.thumbDataUrl)); };
-                    const ord = [...members].sort((a, b) =>
-                      String(a.createdAt || '').localeCompare(String(b.createdAt || '')) ||
-                      String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
-                    const pick = hasPhoto(ord[0]) ? ord[0] : ord.find(hasPhoto);
-                    return pick ? pick.photos[0] : null;
-                  })();
+                  // 見出し写真はまとめ買い自体が持つ表紙(settings.bundleCovers)だけを使う。子の写真の追加・差し替え・削除には影響されない
+                  const headPhoto = (data.settings?.bundleCovers || {})[bundleGroup] || null;
 
                   return (
                     <React.Fragment key={`bundle-${bundleGroup}`}>
@@ -7199,6 +7279,12 @@ const InventoryTab = () => {
                                 background:'#eef2ff',color:'#3730a3',fontWeight:700,fontSize:12,cursor:'pointer',
                                 touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
                               📦 仕入れ内訳を編集
+                            </button>
+                            <button onClick={e => { e.stopPropagation(); setCoverPickerOpen(bundleGroup); }}
+                              style={{width:'100%',padding:'10px',borderRadius:10,border:'1px solid #e5e7eb',marginTop:8,
+                                background:'#f9fafb',color:'#374151',fontWeight:700,fontSize:12,cursor:'pointer',
+                                touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                              🖼 表紙の写真を変更
                             </button>
                             {splitOrigin && (
                               <button onClick={e => { e.stopPropagation(); setSplitOriginOpen(bundleGroup); }}
@@ -7943,7 +8029,10 @@ const InventoryTab = () => {
                       const nowTs = new Date().toISOString();
                       const newDeletedIds = { ...(data.settings?._deletedIds || {}), [selected.id]: nowTs };
                       const newInventory = data.inventory.filter(i => i.id !== selected.id).concat(newItems);
-                      setData({ ...data, inventory: newInventory, settings: { ...data.settings, _deletedIds: newDeletedIds } });
+                      // まとめ買いの表紙：元の商品の先頭の写真で固定（子の写真を後で差し替えても変わらない）
+                      const _origPhoto = (selected.photos || [])[0];
+                      const _splitCovers = _origPhoto ? { ...(data.settings?.bundleCovers || {}), [bundleGroupId]: { photoId: _origPhoto.id || null, thumbId: _origPhoto.thumbId || null, thumbDataUrl: null, source: 'splitOrigin', setAt: nowTs } } : (data.settings?.bundleCovers || {});
+                      setData({ ...data, inventory: newInventory, settings: { ...data.settings, _deletedIds: newDeletedIds, bundleCovers: _splitCovers } });
                       // ★ 分割データ全体を即座にlocalStorageへ同期書き込み
                       // saveData は setTimeout(0) で非同期のため、アプリを即座に閉じると保存されない場合がある。
                       // トゥームストーンだけでなく新しい分割アイテムも含めて全状態を即時保存することで
@@ -7960,6 +8049,7 @@ const InventoryTab = () => {
                         }));
                         if (!_stored.settings) _stored.settings = {};
                         _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [selected.id]: nowTs };
+                        _stored.settings.bundleCovers = mergeBundleCovers(_stored.settings.bundleCovers, _splitCovers);
                         _stored.inventory = [..._otherInv, ..._strippedNew];
                         localStorage.setItem('nobushop_data', JSON.stringify(_stored));
                       } catch(_e) {}
@@ -8322,6 +8412,48 @@ const InventoryTab = () => {
           </div>
         </div>
       )}
+
+      {/* まとめ買いの表紙の写真を手動で選び直す（選んだものが固定される） */}
+      {coverPickerOpen && (() => {
+        const kids = bundleShipMembers(coverPickerOpen);
+        const cur = (data.settings?.bundleCovers || {})[coverPickerOpen];
+        const opts = [];
+        kids.forEach(m => (m.photos || []).forEach(ph => { if (ph && (ph.thumbId || ph.thumbDataUrl)) opts.push({ m, ph }); }));
+        return (
+          <div className="modal-overlay" onClick={() => setCoverPickerOpen(null)}>
+            <div className="modal-content slide-up" onClick={e => e.stopPropagation()}>
+              <div className="modal-handle"/>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                <div>
+                  <div style={{fontWeight:800,fontSize:17,letterSpacing:'-0.02em'}}>🖼 表紙の写真を選ぶ</div>
+                  <div style={{fontSize:11,color:'#9ca3af',marginTop:3}}>選んだ写真が固定されます。商品の写真を変えても表紙は変わりません</div>
+                </div>
+                <button onClick={() => setCoverPickerOpen(null)}
+                  style={{background:'#f3f4f6',border:'none',borderRadius:99,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'#666',fontSize:18,fontWeight:700}}>×</button>
+              </div>
+              {opts.length === 0 ? (
+                <div style={{padding:16,textAlign:'center',color:'#9ca3af',fontSize:13}}>選べる写真がありません</div>
+              ) : (
+                <div style={{display:'flex',flexWrap:'wrap',gap:10}}>
+                  {opts.map(({ m, ph }) => (
+                    <div key={m.id + '_' + ph.id}
+                      onClick={async () => {
+                        const rec = await makeCoverRecord(ph, 'manual');
+                        if (!rec) { toast('❌ この写真は読み込めませんでした'); return; }
+                        setData({ ...data, settings: { ...data.settings, bundleCovers: { ...(data.settings?.bundleCovers || {}), [coverPickerOpen]: rec } } });
+                        toast('✅ 表紙の写真を変更しました');
+                        setCoverPickerOpen(null);
+                      }}
+                      style={{cursor:'pointer',borderRadius:12,padding:2,border: cur?.photoId === ph.id ? '2px solid #4338ca' : '2px solid transparent'}}>
+                      <ItemThumbnail thumbId={ph.thumbId} thumbDataUrl={ph.thumbDataUrl} size={72} fallback="📦" />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 分割前のデータ（読み取り専用）。splitOrigin は表示だけに使い、どの集計にも入れない */}
       {splitOriginOpen && (() => {
@@ -11550,6 +11682,8 @@ function mergeCloudIntoLocal(localFull, cloudFull) {
       if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
     }
     base._deletedIds = mergedDeletedIds;
+    // まとめ買いの表紙は端末とクラウドでキーごとにマージ（片方で上書きして失わない）
+    base.bundleCovers = mergeBundleCovers(cloud?.bundleCovers, local?.bundleCovers);
     if (!base.storeLicenses) base.storeLicenses = {};
     if (!base.storeLicenses['セカンドストリート']) {
       base.storeLicenses = { ...base.storeLicenses, 'セカンドストリート': '古物商許愛知県公安委員会  第541162001000号' };
@@ -17049,6 +17183,65 @@ const App = () => {
     _onBackupDone = () => setBackupRemind(false);
     return () => { _onBackupDone = null; };
   }, []);
+
+  // ── まとめ買いの表紙：無いものは一度だけ作って固定、サムネイルが空のものは補う ──
+  // 作った後は自動では変えない（子の写真の変更に追従しない）。クラウドとの同期後（dbStatus ok）に実行
+  const coverBusyRef  = React.useRef(false);
+  const coverTriedRef = React.useRef(new Set());
+  React.useEffect(() => {
+    if (dbStatus !== 'ok' && dbStatus !== 'migrated') return;
+    if (coverBusyRef.current) return;
+    const covers = fullData.settings?.bundleCovers || {};
+    const groups = new Map();
+    for (const it of (fullData.inventory || [])) {
+      if (!it.bundleGroup) continue;
+      if (!groups.has(it.bundleGroup)) groups.set(it.bundleGroup, []);
+      groups.get(it.bundleGroup).push(it);
+    }
+    const todo = [];
+    for (const [g, members] of groups) {
+      if (members.length < 2) continue;
+      const c = covers[g];
+      if (c && c.thumbDataUrl) continue;
+      if (!c && coverTriedRef.current.has(g)) continue;
+      if (c && coverTriedRef.current.has(g + '#fill')) continue;
+      todo.push([g, members, c]);
+    }
+    if (!todo.length) return;
+    coverBusyRef.current = true;
+    (async () => {
+      try {
+        const made = {};
+        for (const [g, members, c] of todo) {
+          if (c) {
+            coverTriedRef.current.add(g + '#fill');
+            const th = await coverThumbFromPhoto({ id: c.photoId, thumbId: c.thumbId });
+            if (th) made[g] = { ...c, thumbDataUrl: th };
+          } else {
+            coverTriedRef.current.add(g);
+            const rec = await buildBundleCover(members);
+            if (rec) made[g] = rec;
+          }
+        }
+        if (!Object.keys(made).length) return;
+        setFullDataRaw(prev => {
+          const oldFull = dataRef.current;
+          const cur = prev.settings?.bundleCovers || {};
+          const next = { ...cur };
+          for (const [g, rec] of Object.entries(made)) next[g] = cur[g] ? pickCover(cur[g], rec) : rec;
+          const newFull = { ...prev, settings: { ...prev.settings, bundleCovers: next } };
+          dataRef.current = newFull;
+          saveData(newFull);
+          setTimeout(() => syncToSupabase(oldFull, newFull), 0);
+          return newFull;
+        });
+      } catch (e) {
+        console.warn('[BundleCover] 表紙の作成に失敗:', e?.message || e);
+      } finally {
+        coverBusyRef.current = false;
+      }
+    })();
+  }, [dbStatus, fullData.inventory, fullData.settings?.bundleCovers]);
 
   // ★ 手動で全データを今すぐクラウド同期する（「今すぐ同期」ボタン用）
   const manualSync = React.useCallback(() => {
