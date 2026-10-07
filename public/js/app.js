@@ -6999,9 +6999,25 @@ const InventoryTab = () => {
                   // 分割登録されたグループ：分割前のスナップショット（情報表示専用）と、見出しに出す写真
                   const originMember = members.find(m => m.splitOrigin);
                   const splitOrigin = originMember ? originMember.splitOrigin : null;
-                  const headPhoto = (splitOrigin?.photos?.[0])
-                    || members.map(m => m.photos?.[0]).find(p => p && (p.thumbId || p.thumbDataUrl))
-                    || firstItem.photos?.[0];
+                  // 見出し写真は固定：子に写真を追加しても変わらないようにする
+                  //  1) 分割元の写真(splitOrigin.photos[0])。base64は子の写真から id/thumbId で引き当て、無ければ thumbId で IndexedDB 参照
+                  //  2) 分割でないグループは「作成順で最初のメンバー」の写真、無ければ作成順で最も早く写真を持つメンバー
+                  const headPhoto = (() => {
+                    const ref = splitOrigin?.photos?.[0];
+                    if (ref && (ref.id || ref.thumbId)) {
+                      for (const m of members) {
+                        const hit = (m.photos || []).find(p => p && ((ref.id && p.id === ref.id) || (ref.thumbId && p.thumbId === ref.thumbId)));
+                        if (hit) return hit;
+                      }
+                      return ref;
+                    }
+                    const hasPhoto = m => { const p = m.photos?.[0]; return !!(p && (p.thumbId || p.thumbDataUrl)); };
+                    const ord = [...members].sort((a, b) =>
+                      String(a.createdAt || '').localeCompare(String(b.createdAt || '')) ||
+                      String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+                    const pick = hasPhoto(ord[0]) ? ord[0] : ord.find(hasPhoto);
+                    return pick ? pick.photos[0] : null;
+                  })();
 
                   return (
                     <React.Fragment key={`bundle-${bundleGroup}`}>
