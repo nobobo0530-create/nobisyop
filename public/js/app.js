@@ -714,8 +714,23 @@ const initSupabase = (url, key) => {
 // ★ 既定は light=1（写真のbase64を除外）。在庫869点でフル取得すると30MB・23秒かかり
 //   iPhoneの回線では途中で切れて「同期失敗」になっていた。
 //   サムネイルはIndexedDBにあるので通常起動には不要。写真復元時のみ light:false で取り直す。
+// 写真id → { hasThumb, hasMed }（クラウド側にbase64があるか。端末内のメモリのみ・保存しない）
+const _cloudPhotoFlags = new Map();
+// 指定した商品の写真base64だけをクラウドから取る（最大20件ずつ。全件base64の一括取得はしない）
+const fetchItemsWithPhotos = async (itemIds) => {
+  const out = [];
+  for (let i = 0; i < itemIds.length; i += 20) {
+    const url = `${_API_BASE}/api/data?photoIds=` + encodeURIComponent(itemIds.slice(i, i + 20).join(','));
+    const resp = await fetch(url, { cache: 'no-store', headers: authHeaders() });
+    const json = await resp.json();
+    if (!resp.ok || !json.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+    out.push(...(json.inventory || []));
+  }
+  return out;
+};
+
 const fetchSupabaseData = async ({ light = true } = {}) => {
-  const url = `${_API_BASE}/api/data` + (light ? '?light=1' : '');
+  const url = `${_API_BASE}/api/data` + (light ? '?light=1' : '?full=1');
   // ★ リトライ付き（最大3回）: Supabaseのstatement timeoutなど一時的な500で
   //   いきなり「同期失敗」にせず、少し待って取り直す
   let msg = '通信エラー';
@@ -724,8 +739,22 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
       const resp = await fetch(url, { cache: 'no-store', headers: authHeaders() });
       const json = await resp.json();
       if (resp.ok && json.ok) {
+        // ★ 写真ごとの「クラウドにbase64があるか」をメモリに控え、データ本体からは外す
+        //   （自動写真バックアップが、既にクラウドにある写真を毎回やり直さないため）
+        const inventory = (json.inventory || []).map(it => {
+          if (!Array.isArray(it.photos) || !it.photos.some(p => p && ('hasThumb' in p || 'hasMed' in p))) return it;
+          return { ...it, photos: it.photos.map(p => {
+            if (!p) return p;
+            if ('hasThumb' in p || 'hasMed' in p) {
+              _cloudPhotoFlags.set(p.id, { hasThumb: !!p.hasThumb, hasMed: !!p.hasMed });
+              const { hasThumb, hasMed, ...rest } = p;
+              return rest;
+            }
+            return p;
+          }) };
+        });
         return {
-          inventory: json.inventory || [],
+          inventory,
           sales:     json.sales     || [],
           settings:  json.settings  || getInitialData().settings,
           receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
@@ -5428,6 +5457,26 @@ const PurchaseTab = () => {
 // ============================================================
 // サムネイル表示コンポーネント（IndexedDB対応）
 // ============================================================
+// ★ 長い一覧を少しずつ描画するための「もっと見る」（画面に近づくと自動で追加。ボタンでも追加できる）
+const LoadMoreRows = ({ remaining, onMore }) => {
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((es) => { if (es.some(e => e.isIntersecting)) onMore(); }, { rootMargin: '800px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [remaining]);
+  return (
+    <div ref={ref} style={{textAlign:'center',padding:'10px 0'}}>
+      <button onClick={onMore}
+        style={{padding:'10px 20px',borderRadius:99,border:'1px solid #d1d5db',background:'white',color:'#374151',fontSize:13,fontWeight:700,cursor:'pointer',touchAction:'manipulation'}}>
+        もっと見る（あと{remaining}件）
+      </button>
+    </div>
+  );
+};
+
 const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) => {
   const [url, setUrl] = React.useState(thumbDataUrl || null);
   React.useEffect(() => {
@@ -5767,6 +5816,10 @@ const InventoryTab = () => {
   const [filter, setFilter] = React.useState(() => pendingInventoryFilter || 'unlisted');
   const [sort, setSort]     = React.useState('new');  // 新しい順がデフォルト（最新登録を上に）
   const [search, setSearch] = React.useState('');
+  // ★ 一覧は60行ずつ描画（在庫が数百点あると全行描画でDOM1万個・サムネ400枚になり重かった）
+  //   スクロール位置の復元が必要なときは全部描画する
+  const ROW_STEP = 60;
+  const [rowLimit, setRowLimit] = React.useState(() => (pendingInventoryScrollY !== null && pendingInventoryScrollY > 0) ? 1e9 : ROW_STEP);
   const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
   const [selected, setSelected] = React.useState(null);
   const [detailEditField, setDetailEditField] = React.useState(null);  // 商品詳細のタップ編集中の項目（'purchasePrice'|'listPrice'）
@@ -5881,7 +5934,7 @@ const InventoryTab = () => {
   const bundleTypeKey = (item) => item.bundleType === 'individual' || item.bundleType === 'set' ? item.bundleType : '';
   const isInBundle = (item) => !!item.bundleGroup && bundleCounts[item.bundleGroup] > 1;
 
-  const filtered = data.inventory.filter(item => {
+  const filtered = React.useMemo(() => data.inventory.filter(item => {
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
     if (isBundleFilter(filter)) { if (!isInBundle(item) || (filter !== 'bundleAll' && bundleTypeKey(item) !== BUNDLE_FILTERS[filter])) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
@@ -5896,7 +5949,7 @@ const InventoryTab = () => {
              (item.memo||'').toLowerCase().includes(q);
     }
     return true;
-  });
+  }), [data.inventory, filter, storeFilter, search, dupOpenCounts, bundleCounts]);
 
   // 仕入れ先サマリー（storeFilter選択時に表示）※正規化名で照合
   const storeFilteredAll = storeFilter
@@ -5914,7 +5967,7 @@ const InventoryTab = () => {
   )].sort((a,b) => a.localeCompare(b, 'ja'));
 
   // 並び替え
-  const sorted = [...filtered].sort((a, b) => {
+  const sorted = React.useMemo(() => [...filtered].sort((a, b) => {
     // ★ 重複候補モード: 通常の並び順は無視し、グループ→仕入日でメンバーを隣接させる
     if (filter === 'dupCheck') {
       const ga = a.dupCheck?.group || '', gb = b.dupCheck?.group || '';
@@ -5938,7 +5991,14 @@ const InventoryTab = () => {
       return pb - pa;
     }
     return 0;
-  });
+  }), [filtered, filter, sort, data.settings?.platformFees]);
+
+  // 条件が変わったら表示件数を最初に戻す（初回マウントは復元値を尊重）
+  const _rowLimitInit = React.useRef(true);
+  React.useEffect(() => {
+    if (_rowLimitInit.current) { _rowLimitInit.current = false; return; }
+    setRowLimit(ROW_STEP);
+  }, [filter, search, storeFilter, sort, groupBundles]);
 
   const statusLabel = { unlisted: '未出品', listed: '出品中', sold: '売却済' };
   const statusClass = { unlisted: 'tag-unlisted', listed: 'tag-active', sold: 'tag-sold' };
@@ -6953,12 +7013,15 @@ const InventoryTab = () => {
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
+                // bundleGroup → sorted内のメンバー（1回の走査で作る。以前はまとめごとに全件filter）
+                const membersByGroup = new Map();
+                sorted.forEach(x => { if (x.bundleGroup) { const a = membersByGroup.get(x.bundleGroup); if (a) a.push(x); else membersByGroup.set(x.bundleGroup, [x]); } });
                 sorted.forEach(item => {
                   if (item.bundleGroup && bundleCounts[item.bundleGroup] > 1) {
                     if (!seenBundles.has(item.bundleGroup)) {
                       seenBundles.add(item.bundleGroup);
                       // sortedの中でこのbundleGroupに属するメンバーを集める
-                      const members = sorted.filter(x => x.bundleGroup === item.bundleGroup);
+                      const members = membersByGroup.get(item.bundleGroup) || [];
                       displayRows.push({ type: 'bundle', bundleGroup: item.bundleGroup, members });
                     }
                     // 2件目以降はスキップ（まとめカードに内包）
@@ -6981,7 +7044,8 @@ const InventoryTab = () => {
                 sorted.forEach(item => displayRows.push({ type: 'single', item }));
               }
 
-              return displayRows.map(row => {
+              const visibleRows = displayRows.length > rowLimit ? displayRows.slice(0, rowLimit) : displayRows;
+              const rowsEl = visibleRows.map(row => {
                 if (filter === 'auditCheck' && row.type === 'single' && !bulkMode) {
                   // ===== 要確認カード：理由・いまの値→提案・根拠・操作ボタン =====
                   const item = row.item, ac = item.auditCheck || {};
@@ -7568,6 +7632,14 @@ const InventoryTab = () => {
                   </React.Fragment>
                 );
               });
+              return (
+                <>
+                  {rowsEl}
+                  {displayRows.length > visibleRows.length && (
+                    <LoadMoreRows remaining={displayRows.length - visibleRows.length} onMore={() => setRowLimit(n => n + ROW_STEP)} />
+                  )}
+                </>
+              );
             })()}
           </div>
         )}
@@ -16956,17 +17028,20 @@ const CloudAutoSync = () => {
   const { setFullDataRaw, dataRef, editingItem, pendingEditSaleId, dbStatus } = React.useContext(AppContext);
   const toast = useToast();
 
-  // ── visibilitychange クラウド再取得（30秒スロットル）──
+  // ── visibilitychange クラウド再取得（120秒スロットル）──
   const lastFetchRef = React.useRef(0);
+  const inFlightRef = React.useRef(false);
 
   React.useEffect(() => {
     const onVisible = async () => {
       if (document.visibilityState !== 'visible') return;
       // 編集中はスキップ（データ上書きを防止）
       if (editingItem || pendingEditSaleId) return;
-      // 30秒スロットル
-      if (Date.now() - lastFetchRef.current < 30000) return;
+      // 120秒スロットル + 取得中は重ねない（サーバー負荷・通信量の抑制。以前は30秒）
+      if (inFlightRef.current) return;
+      if (Date.now() - lastFetchRef.current < 120000) return;
       lastFetchRef.current = Date.now();
+      inFlightRef.current = true;
 
       try {
         const cloudData = await fetchSupabaseData();
@@ -16993,6 +17068,8 @@ const CloudAutoSync = () => {
         }
       } catch(e) {
         console.warn('[CloudAutoSync] visibilitychange 再取得失敗:', e.message);
+      } finally {
+        inFlightRef.current = false;
       }
     };
 
@@ -17389,12 +17466,14 @@ const App = () => {
         const missing = inventory.some(it => (it.photos || []).some(isMissing));
         if (!missing) return;
 
-        // 復元が必要なときだけ、base64込みのフルデータを取り直す
+        // 復元が必要な商品だけ、base64込みで取り直す
         // （通常起動は light=1 なので手元のデータにbase64が無い）
         let base64Map = new Map();
         try {
-          const full = await fetchSupabaseData({ light: false });
-          for (const it of (full.inventory || [])) {
+          // 写真が足りない商品だけを20件ずつ取得（全件base64の一括取得はしない）
+          const missingIds = inventory.filter(it => (it.photos || []).some(isMissing)).map(it => it.id);
+          const fetched = await fetchItemsWithPhotos(missingIds);
+          for (const it of fetched) {
             for (const p of (it.photos || [])) {
               if (p?.id && (p.medDataUrl || p.thumbDataUrl)) base64Map.set(p.id, p);
             }
@@ -17592,8 +17671,13 @@ const App = () => {
       running = true;
       try {
         const inv = (dataRef.current.inventory || []);
+        // ★ クラウドが「base64あり」と報告している写真は対象外。
+        //   light取得では端末側にbase64が無いため、これが無いと毎回全写真を再圧縮・再アップロードしていた
+        const cloudHas = (p, k) => !!(_cloudPhotoFlags.get(p.id) || {})[k];
+        const needThumb = (p) => !p.thumbDataUrl && !cloudHas(p, 'hasThumb');
+        const needMed   = (p) => !p.medDataUrl   && !cloudHas(p, 'hasMed');
         const targets = inv.filter(item =>
-          (item.photos || []).some(p => !p.thumbDataUrl || !p.medDataUrl)
+          (item.photos || []).some(p => needThumb(p) || needMed(p))
         );
         if (targets.length === 0) {
           // 処理対象なし → フラグだけ更新して終了（軽い）
@@ -17610,8 +17694,8 @@ const App = () => {
           let changed = false;
           const newPhotos = [];
           for (const photo of photos) {
-            const needsThumb = !photo.thumbDataUrl;
-            const needsMed   = !photo.medDataUrl;
+            const needsThumb = needThumb(photo);
+            const needsMed   = needMed(photo);
             if (!needsThumb && !needsMed) { newPhotos.push(photo); continue; }
             try {
               const blob = await getPhoto(photo.id);

@@ -81,6 +81,8 @@ self.addEventListener('fetch', function(e) {
 
   // ── index.html / app.js: ネットワーク優先（常に最新を取得） ──
   var path = new URL(url).pathname;
+  // 事前コンパイル版はページ側が版ごとに取得・照合・Cache APIに保存するので、SWでは保持しない（容量が増えるため）
+  if (path.startsWith('/js/app.compiled.js')) return;
   if (path === '/' || path === '/index.html' || path.startsWith('/js/app.js') || path === '/sw.js') {
     e.respondWith(
       fetch(e.request).then(function(resp) {

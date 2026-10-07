@@ -31,6 +31,16 @@ iPhone PWA。古着販売（ラクマ/ヤフオク/メルカリ）の在庫・�
 ## デプロイ
 git push origin main → Vercel自動公開
 
+### app.js を変えたら必ず（コミット前）
+`./tools/build_app.sh` で `public/js/app.compiled.js`（事前コンパイル版）を作り直して一緒にコミットする。
+`./tools/build_app.sh --check` で最新か確認（.git/hooks/pre-commit が app.js 変更時に自動チェック）。
+index.html は app.js の SHA-256 と app.compiled.js 先頭の刻印を照合し、一致しなければ従来のブラウザ内Babelコンパイルに自動で戻る（壊れはしないが遅くなる）。
+
+### クラウド取得の方針（Supabase過負荷対策）
+- `/api/data` GET は常に軽量（写真base64なし・hasThumb/hasMed フラグのみ）。ツールも ?light なしで軽量
+- 写真base64は `?photoIds=商品id,...`（最大20件）で必要な商品だけ。全件は `?full=1`（通常使わない・30MB）
+- DBに `light` 列があればそれを読む（SQLは ~/Documents/nobushop_mail/perf_1007.md）。無ければ従来方式
+
 ## 重要な制約
 - 写真データ復旧不可: 一度cloudから消えるとiPhone Photosからしか戻せない
 - Supabase同期失敗時はlocalStorageが正

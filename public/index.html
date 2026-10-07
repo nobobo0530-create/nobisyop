@@ -386,7 +386,7 @@
   </script>
   <script>
   // ★ アプリバージョンをグローバルに公開（app.jsのヘッダー表示で参照）
-  window._APP_VERSION = 'v20260926a';
+  window._APP_VERSION = 'v20261007a';
   </script>
 
   <script>
@@ -521,6 +521,35 @@
       execCode(compiled);
     }
 
+    // 事前コンパイル版を使う。app.js の SHA-256 が app.compiled.js 先頭の刻印と一致したときだけ採用
+    // （app.js だけ更新してビルドし忘れた場合は不一致になり、従来どおりブラウザ内でコンパイルされる）
+    function tryPrecompiled(cacheKey, fallback) {
+      if (!(window.crypto && crypto.subtle && window.TextEncoder)) { fallback(); return; }
+      setStatus('最新版を取得中...');
+      var getText = function(u) {
+        return fetch(u + '?v=' + cacheKey, { cache: 'no-store' }).then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + u);
+          return r.text();
+        });
+      };
+      Promise.all([getText('/js/app.js'), getText('/js/app.compiled.js')]).then(function(res) {
+        var m = /^\/\*APP_SRC_SHA256:([0-9a-f]{64})\*\//.exec(res[1]);
+        if (!m) throw new Error('刻印なし');
+        return crypto.subtle.digest('SHA-256', new TextEncoder().encode(res[0])).then(function(buf) {
+          var hex = Array.prototype.map.call(new Uint8Array(buf), function(b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+          if (hex !== m[1]) throw new Error('app.js と app.compiled.js が一致しません（ビルド漏れ）');
+          return res[1];
+        });
+      }).then(function(code) {
+        cachePut(cacheKey, code);
+        setStatus('');
+        execCode(code);
+      }, function(err) {
+        console.warn('[SalesLog] 事前コンパイル版を使わず従来方式:', err && err.message);
+        fallback();
+      });
+    }
+
     function fetchAndCompile(cacheKey) {
       // Babel が未ロードならロード → fetch → コンパイル
       var doFetch = function() {
@@ -569,7 +598,9 @@
             } else {
               // 新バージョンまたは初回 → フェッチ・コンパイル
               console.log('[SalesLog] 新バージョン検出 → 自動更新します:', versionTag);
-              fetchAndCompile(cacheKey);
+              // ★ まず事前コンパイル済み(app.compiled.js)を試す。ソースとの照合に通れば
+              //   ブラウザ内Babelコンパイル(数秒〜十数秒)を丸ごと省ける。ダメなら従来のコンパイルに戻る
+              tryPrecompiled(cacheKey, function() { fetchAndCompile(cacheKey); });
             }
           });
         })

@@ -47,15 +47,20 @@ async function sbFetchPaged(path, pageSize = 200) {
 async function preservePhotoData(rows) {
   if (!rows?.length) return rows;
   const needIds = rows
-    .filter(r => (r?.data?.photos || []).some(p => p && !p.thumbDataUrl && !p.medDataUrl))
+    .filter(r => (r?.data?.photos || []).some(p => p && (!p.thumbDataUrl || !p.medDataUrl)))
     .map(r => r.id);
   if (!needIds.length) return rows;
 
   let saved = new Map();
   try {
-    const ids = needIds.map(id => `"${id}"`).join(',');
-    const prev = await sbFetch(`inventory?select=id,data&id=in.(${ids})`);
-    saved = new Map((Array.isArray(prev) ? prev : []).map(r => [
+    // 20件ずつ（写真base64を含む行を一度に大量に引かない）
+    const prev = [];
+    for (let i = 0; i < needIds.length; i += 20) {
+      const ids = needIds.slice(i, i + 20).map(id => `"${id}"`).join(',');
+      const part = await sbFetch(`inventory?select=id,data&id=in.(${ids})`);
+      if (Array.isArray(part)) prev.push(...part);
+    }
+    saved = new Map(prev.map(r => [
       r.id,
       new Map((r.data?.photos || []).map(p => [p.id, p])),
     ]));
@@ -73,13 +78,13 @@ async function preservePhotoData(rows) {
       data: {
         ...r.data,
         photos: r.data.photos.map(p => {
-          if (!p || p.thumbDataUrl || p.medDataUrl) return p;
+          if (!p || (p.thumbDataUrl && p.medDataUrl)) return p;
           const o = old.get(p.id);
           if (!o) return p;
           return {
             ...p,
-            ...(o.thumbDataUrl ? { thumbDataUrl: o.thumbDataUrl } : {}),
-            ...(o.medDataUrl   ? { medDataUrl:   o.medDataUrl   } : {}),
+            ...(!p.thumbDataUrl && o.thumbDataUrl ? { thumbDataUrl: o.thumbDataUrl } : {}),
+            ...(!p.medDataUrl   && o.medDataUrl   ? { medDataUrl:   o.medDataUrl   } : {}),
           };
         }),
       },
@@ -198,8 +203,46 @@ export default async function handler(req, res) {
   try {
     // ── GET: 全データ取得 ──────────────────────────────────────
     if (req.method === 'GET') {
+      // ★ 写真base64を一括で引かない設計（2026-10-07）
+      //  - 既定は常に軽量（写真は id/thumbId と hasThumb/hasMed の有無フラグだけ）。
+      //    ツール（tools/*.py）が ?light なしで呼んでも30MBを引かない
+      //  - 写真の復元は ?photoIds=<商品id,...>（最大20件）でその商品だけ取得
+      //  - どうしても全件base64が要るときだけ ?full=1（通常は使わない）
+      //  - DBに `light` 列があればそれを読む（data列の巨大TOASTに触らない）。無ければ従来の読み方に自動で戻る
+      const full = req.query?.full === '1';
+      const photoIds = String(req.query?.photoIds || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 20);
+      const lightenItem = (item) => (full || !Array.isArray(item.photos)) ? item
+        : { ...item, photos: item.photos.map(p => ({ id: p.id, thumbId: p.thumbId, hasThumb: !!p.thumbDataUrl, hasMed: !!p.medDataUrl })) };
+
+      if (photoIds.length) {
+        const ids = photoIds.map(id => `"${id.replace(/"/g, '')}"`).join(',');
+        const rows = await sbFetch(`inventory?select=id,data&id=in.(${ids})`);
+        res.json({ ok: true, photos: true, inventory: (Array.isArray(rows) ? rows : []).map(r => ({ ...r.data, id: r.id })) });
+        return;
+      }
+
+      const loadInventory = async () => {
+        if (full) return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc')).map(r => ({ ...r.data, id: r.id }));
+        // light列が使えれば小さい列だけ読む。無い(400)・失敗なら従来どおり
+        try {
+          const rows = await sbFetchPaged('inventory?select=id,light,created_at&order=created_at.asc', 500);
+          const need = rows.filter(r => !r.light).map(r => r.id);
+          const fill = new Map();
+          for (let i = 0; i < need.length; i += 20) {
+            const ids = need.slice(i, i + 20).map(id => `"${id}"`).join(',');
+            const part = await sbFetch(`inventory?select=id,data&id=in.(${ids})`);
+            for (const r of (Array.isArray(part) ? part : [])) fill.set(r.id, r.data);
+          }
+          return rows.map(r => r.light ? { ...r.light, id: r.id } : lightenItem({ ...(fill.get(r.id) || {}), id: r.id }));
+        } catch(e) {
+          // 列が無い(400)ときだけ従来方式へ。タイムアウト等のときは重い取り直しをせずそのままエラーにする（DBに追い打ちしない）
+          if (!/\[400\]/.test(e.message)) throw e;
+          return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc')).map(r => lightenItem({ ...r.data, id: r.id }));
+        }
+      };
+
       const [inv, sales] = await Promise.all([
-        sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc'),
+        loadInventory(),
         sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc'),
       ]);
       const cfg = await sbFetch('app_settings?select=data&id=eq.default', {
@@ -210,19 +253,10 @@ export default async function handler(req, res) {
         headers: { 'Accept': 'application/vnd.pgrst.object+json' },
       }).catch(() => null);
 
-      // ★ light=1: 写真のbase64（thumbDataUrl / medDataUrl）を落として返す
-      // 在庫869点で全部返すと30MB・23秒かかり、iPhoneの回線では途中で切れて「同期失敗」になる。
-      // サムネイルは端末のIndexedDBにあるので通常起動には不要。
-      // 写真復元が必要なときだけクライアントが light なしで取り直す。
-      const light = req.query?.light === '1';
-      const lighten = (item) => (light && Array.isArray(item.photos))
-        ? { ...item, photos: item.photos.map(p => ({ id: p.id, thumbId: p.thumbId })) }
-        : item;
-
       res.json({
         ok: true,
-        light,
-        inventory: (Array.isArray(inv)   ? inv   : []).map(r => lighten({ ...r.data, id: r.id })),
+        light: !full,
+        inventory: inv,
         sales:     (Array.isArray(sales) ? sales : []).map(r => ({ ...r.data, id: r.id })),
         settings:  cfg?.data || null,
         receipts:  (rcp?.data && Array.isArray(rcp.data.list)) ? rcp.data.list : [],
@@ -249,7 +283,10 @@ export default async function handler(req, res) {
       // light モードで受け取ったデータをそのまま書き戻すと、保存済みの
       // thumbDataUrl / medDataUrl（写真の3重バックアップの1つ）が消えてしまう。
       // base64が欠けている写真は、保存済みの値をサーバー側で埋め直す。
-      const invRows = await preservePhotoData(guardedInv);
+      // hasThumb/hasMed はGET時にサーバーが付ける表示用フラグ。保存データに混ぜない
+      const stripFlags = (rows) => (rows || []).map(r => (Array.isArray(r?.data?.photos) && r.data.photos.some(p => p && ('hasThumb' in p || 'hasMed' in p)))
+        ? { ...r, data: { ...r.data, photos: r.data.photos.map(p => { if (!p) return p; const { hasThumb, hasMed, ...rest } = p; return rest; }) } } : r);
+      const invRows = stripFlags(await preservePhotoData(stripFlags(guardedInv)));
       const salesRows = guardedSales;
 
       if (invRows?.length)
