@@ -8,7 +8,13 @@ const SB_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE
 // 未設定の間は従来どおり動作する（後方互換・デプロイ直後にアプリが壊れない）
 const SYNC_TOKEN = process.env.SYNC_TOKEN || '';
 
+let _timings = null; // GET中だけ配列。Server-Timing用
 async function sbFetch(path, options = {}) {
+  const _t0 = Date.now();
+  try { return await sbFetchInner(path, options); }
+  finally { if (_timings) _timings.push(`${path.split('?')[0].replace(/[^a-z_]/g,'')}${_timings.length};dur=${Date.now() - _t0}`); }
+}
+async function sbFetchInner(path, options = {}) {
   const url = `${SB_URL}/rest/v1/${path}`;
   const resp = await fetch(url, {
     ...options,
@@ -225,7 +231,7 @@ export default async function handler(req, res) {
         if (full) return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc,id.asc')).map(r => ({ ...r.data, id: r.id }));
         // light列が使えれば小さい列だけ読む。無い(400)・失敗なら従来どおり
         try {
-          const rows = await sbFetchPaged('inventory?select=id,light,created_at&order=created_at.asc,id.asc', 500);
+          const rows = await sbFetchPaged('inventory?select=id,light,created_at&order=created_at.asc,id.asc', 1000);
           const need = rows.filter(r => !r.light).map(r => r.id);
           const fill = new Map();
           for (let i = 0; i < need.length; i += 20) {
@@ -241,22 +247,20 @@ export default async function handler(req, res) {
         }
       };
 
-      const [inv, sales] = await Promise.all([
+      // ★ 独立したクエリは並列で投げる（設定3行は1クエリにまとめる）
+      _timings = [];
+      const _tAll = Date.now();
+      const [inv, sales, cfgRows] = await Promise.all([
         loadInventory(),
-        sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc,id.asc'),
+        sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc,id.asc', 500),
+        sbFetch('app_settings?select=id,data&id=in.(default,receipts,storePending)').catch(() => null),
       ]);
-      const cfg = await sbFetch('app_settings?select=data&id=eq.default', {
-        headers: { 'Accept': 'application/vnd.pgrst.object+json' },
-      }).catch(() => null);
-      // ★ レシートも同じ app_settings テーブル内の別行 (id=receipts) で管理
-      const rcp = await sbFetch('app_settings?select=data&id=eq.receipts', {
-        headers: { 'Accept': 'application/vnd.pgrst.object+json' },
-      }).catch(() => null);
-
-      // ★ 店舗仕入れ未入力リスト（id=storePending・小さい）
-      const sp = await sbFetch('app_settings?select=data&id=eq.storePending', {
-        headers: { 'Accept': 'application/vnd.pgrst.object+json' },
-      }).catch(() => null);
+      const _cfg = new Map((Array.isArray(cfgRows) ? cfgRows : []).map(r => [r.id, r.data]));
+      const cfg = { data: _cfg.get('default') };
+      const rcp = { data: _cfg.get('receipts') };
+      const sp = { data: _cfg.get('storePending') };
+      res.setHeader('Server-Timing', `total;dur=${Date.now() - _tAll}, ` + _timings.join(', '));
+      _timings = null;
 
       res.json({
         ok: true,

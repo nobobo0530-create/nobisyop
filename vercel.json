@@ -1,6 +1,7 @@
 {
   "outputDirectory": "public",
   "buildCommand": "",
+  "regions": ["hnd1"],
   "crons": [
     { "path": "/api/ping", "schedule": "0 0 * * *" }
   ],
@@ -26,6 +27,12 @@
     },
     {
       "source": "/manual/index.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/stock/index.html",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
       ]
