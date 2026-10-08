@@ -913,6 +913,65 @@ const diceSimilarity = (a, b) => {
   return (2 * common) / (ba.size + bb.size);
 };
 
+// ── メール取込の売上（在庫に未紐付け）──────────────────────────
+// source:'mail' / inventoryId:null / needsLink:true(要紐付け) / shippingUnknown / feeEstimated / platformId / mailTitle / buyer
+// 利益は null（未計算）。売上額の合計には含め、利益の合計からは除外する。
+const isMailSale = (s) => !s.inventoryId && (s.source === 'mail' || s.needsLink === true);
+const isRevenueOnlySale = (s) => isMailSale(s) && (s.salePrice || 0) > 0 && !((s.purchasePrice || 0) > 0);
+const revenueOnlyOfMonth = (sales, prefix) => {
+  let revenue = 0, count = 0;
+  (sales || []).forEach(s => {
+    if (isRevenueOnlySale(s) && (!prefix || (s.saleDate || '').startsWith(prefix))) { revenue += s.salePrice || 0; count++; }
+  });
+  return { revenue, count };
+};
+// 同じ商品ID/注文IDの売上があるか（重複登録防止）
+const findSaleByPlatformId = (sales, platformId, exceptId) => {
+  const pid = (platformId || '').trim();
+  if (!pid) return null;
+  return (sales || []).find(s => s.id !== exceptId && s.platformId && String(s.platformId).trim() === pid) || null;
+};
+// 売上メールのタイトルと在庫の照合用に正規化（全角→半角・記号/絵文字除去・小文字化）
+const normMatchText = (s) => String(s || '').normalize('NFKC').toLowerCase()
+  .replace(/[【】\[\]（）()「」『』\-_・,、。．.:：;；!！?？~〜～*＊#＃@＠&＆✨⭐★☆◎○●◆◇■□▲△▼▽※→←↑↓♪✔✓♡♥❤️]+/g, ' ')
+  .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}️]/gu, ' ')
+  .replace(/\s+/g, ' ').trim();
+const _bigramSet = (s) => { const t = s.replace(/\s/g, ''); const set = new Set(); for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2)); return set; };
+// 売上(メールタイトル/価格/日付)に対する在庫候補をスコア順に返す。売却済み・紐付け済みの在庫は除外
+const rankLinkCandidates = (sale, inventory, linkedIds, topN = 3) => {
+  const title = normMatchText(sale.mailTitle || sale.productName || '');
+  const tBig = _bigramSet(title);
+  const sd = sale.saleDate || '';
+  const out = [];
+  (inventory || []).forEach(it => {
+    if (it.status === 'sold' || linkedIds.has(it.id)) return;
+    const name = normMatchText((it.brand || '') + ' ' + (it.productName || ''));
+    let sim = 0;
+    if (tBig.size && name) {
+      const nBig = _bigramSet(name);
+      if (nBig.size) { let c = 0; for (const g of nBig) if (tBig.has(g)) c++; sim = c / nBig.size * 0.6 + (2 * c) / (tBig.size + nBig.size) * 0.4; }
+    }
+    let score = sim * 60;
+    const brand = normMatchText(it.brand), brandJa = normMatchText(it.brandReading);
+    if ((brand && brand.length >= 2 && title.replace(/\s/g, '').includes(brand.replace(/\s/g, ''))) ||
+        (brandJa && brandJa.length >= 2 && title.replace(/\s/g, '').includes(brandJa.replace(/\s/g, '')))) score += 15;
+    if ((it.listPrice || 0) > 0 && it.listPrice === sale.salePrice) score += 20;
+    score += it.status === 'listed' ? 8 : 3;
+    if (it.listDate && sd) score += it.listDate <= sd ? 4 : -4;
+    if (it.purchaseDate && sd) score += it.purchaseDate <= sd ? 4 : -15;
+    if (score >= 12) out.push({ item: it, score, sim });
+  });
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, topN);
+};
+const searchInventoryForLink = (q, inventory, linkedIds, limit = 8) => {
+  const nq = normMatchText(q).replace(/\s/g, '');
+  if (!nq) return [];
+  return (inventory || []).filter(it => it.status !== 'sold' && !linkedIds.has(it.id))
+    .filter(it => normMatchText([it.brand, it.brandReading, it.productName, it.mgmtNo, it.modelNumber, it.color].join(' ')).replace(/\s/g, '').includes(nq))
+    .slice(0, limit);
+};
+
 // 仕入れの重複候補を探す（タイトル類似度＋価格/日付/仕入れ先の一致度でスコアリング）
 const findDuplicatePurchase = (cand, items) => {
   const title = ((cand.brand || '') + ' ' + (cand.productName || '')).trim();
@@ -1604,7 +1663,7 @@ const AppContext = React.createContext(null);
 // ホームタブ
 // ============================================================
 // ── 利益推移グラフ（SVG折れ線） ────────────────────────────
-const ProfitChart = ({ summarySales, now }) => {
+const ProfitChart = ({ summarySales, revenueOnlySales = [], now }) => {
   const [selectedIdx, setSelectedIdx] = React.useState(null);
   const scrollRef = React.useRef(null);
 
@@ -1631,14 +1690,18 @@ const ProfitChart = ({ summarySales, now }) => {
       const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const sales = summarySales.filter(s => s.saleDate?.startsWith(key));
       const profit  = sales.reduce((a, s) => a + (s.profit  || 0), 0);
-      const revenue = sales.reduce((a, s) => a + (s.salePrice || 0), 0);
-      const cost    = revenue - profit;
+      const pRevenue = sales.reduce((a, s) => a + (s.salePrice || 0), 0);
+      const cost    = pRevenue - profit;
+      // 未紐付け（利益未計算）の売上は売上額にだけ含める
+      const uSales  = revenueOnlySales.filter(s => s.saleDate?.startsWith(key));
+      const uRev    = uSales.reduce((a, s) => a + (s.salePrice || 0), 0);
       result.push({ key, label:`${d.getMonth()+1}月`,
         yearLabel: d.getMonth() === 0 ? `${d.getFullYear()}` : '',
-        profit, revenue, cost, count: sales.length, isCurrent: key === thisKey });
+        profit, revenue: pRevenue + uRev, pRevenue, uRev, uCount: uSales.length, cost,
+        count: sales.length + uSales.length, isCurrent: key === thisKey });
     }
     return result;
-  }, [summarySales, now]);
+  }, [summarySales, revenueOnlySales, now]);
 
   React.useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
@@ -1826,9 +1889,10 @@ const ProfitChart = ({ summarySales, now }) => {
           </div>
           {selected.count > 0 && selected.revenue > 0 && (
             <div style={{marginTop:10, paddingTop:10, borderTop:'1px solid #e5e7eb',
-              display:'flex', gap:16, fontSize:11, color:'#9ca3af'}}>
+              display:'flex', gap:16, fontSize:11, color:'#9ca3af', flexWrap:'wrap'}}>
               <span>仕入れ合計 ¥{formatMoney(selected.cost)}</span>
-              <span>利益率 {Math.round(selected.profit / selected.revenue * 100)}%</span>
+              {selected.pRevenue > 0 && <span>利益率 {Math.round(selected.profit / selected.pRevenue * 100)}%</span>}
+              {selected.uCount > 0 && <span style={{color:'#2563eb'}}>🔗 未紐付け{selected.uCount}件 ¥{formatMoney(selected.uRev)}（売上に含む・利益は未計算）</span>}
             </div>
           )}
         </div>
@@ -1863,6 +1927,7 @@ const SummaryPanel = ({ setActiveSection }) => {
   const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
   const profitRate   = totalRevenue > 0 ? Math.round(totalProfit / totalRevenue * 100) : 0;
+  const _ro          = revenueOnlyOfMonth(validSales, currentMonth); // 未紐付け（売上のみ）
 
   const turnoverList = monthlySales.map(s => s.turnoverDays).filter(d => d != null && d >= 0);
   const avgTurnover  = turnoverList.length > 0 ? Math.round(turnoverList.reduce((a,b)=>a+b,0)/turnoverList.length) : null;
@@ -2002,7 +2067,7 @@ const SummaryPanel = ({ setActiveSection }) => {
             border: monthlySales.length>0 ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',
             boxShadow:'0 1px 3px rgba(0,0,0,0.04)'}}>
           <div style={{fontSize:9,color:'#16a34a',fontWeight:700,letterSpacing:'0.05em',marginBottom:6}}>今月売上</div>
-          <div style={{fontSize:28,fontWeight:900,color:'#15803d',lineHeight:1,marginBottom:2}}>{monthlySales.length}</div>
+          <div style={{fontSize:28,fontWeight:900,color:'#15803d',lineHeight:1,marginBottom:2}}>{monthlySales.length + _ro.count}</div>
           <div style={{fontSize:9,color:'#9ca3af'}}>件</div>
         </div>
       </div>
@@ -2016,9 +2081,9 @@ const SummaryPanel = ({ setActiveSection }) => {
             color: profitRate >= 20 ? '#16a34a' : profitRate >= 10 ? '#d97706' : '#dc2626'}}>
             {totalRevenue > 0 ? `${profitRate}%` : '−'}
           </div>
-          {totalRevenue > 0 && (
+          {(totalRevenue + _ro.revenue) > 0 && (
             <div style={{fontSize:9,color:'#9ca3af',marginTop:4}}>
-              売上 ¥{formatMoney(totalRevenue)}
+              売上 ¥{formatMoney(totalRevenue + _ro.revenue)}{_ro.count > 0 ? `（未紐付け${_ro.count}件含む）` : ''}
             </div>
           )}
         </div>
@@ -2059,6 +2124,8 @@ const HomeTab = () => {
   const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(currentMonth));
   const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
   const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const _ro          = revenueOnlyOfMonth(validSales, currentMonth); // 未紐付け（売上のみ・利益は未計算）
+  const revenueOnlySales = validSales.filter(isRevenueOnlySale);
 
   // ── 前月比 ──
   const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -2184,7 +2251,8 @@ const HomeTab = () => {
           </div>
           {/* 件数・売上（小さく） */}
           <div style={{fontSize:11,color:'#9ca3af',marginBottom:10}}>
-            {monthlySales.length}件成約 · 売上 ¥{formatMoney(totalRevenue)}
+            {monthlySales.length + _ro.count}件成約 · 売上 ¥{formatMoney(totalRevenue + _ro.revenue)}
+            {_ro.count > 0 && <span style={{color:'#2563eb'}}> （🔗未紐付け{_ro.count}件 ¥{formatMoney(_ro.revenue)}含む・利益は除外）</span>}
           </div>
           {/* 前月比 + ±¥金額 */}
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
@@ -2243,7 +2311,7 @@ const HomeTab = () => {
         </div>
 
         {/* ── 利益推移グラフ ── */}
-        <ProfitChart summarySales={summarySales} now={now} />
+        <ProfitChart summarySales={summarySales} revenueOnlySales={revenueOnlySales} now={now} />
 
       </div>
 
@@ -9251,6 +9319,216 @@ const InventoryTab = () => {
 };
 
 // ============================================================
+// 未紐付け売上（メール取込）を在庫と紐付ける画面
+// ============================================================
+const MAIL_LINK_PAGE = 12;
+const calcLinkedSaleFields = (sale, item) => {
+  const price = Number(sale.salePrice) || 0;
+  const feeRate = Number(sale.feeRate) || 0;
+  // 送料未確定のときは仮の送料(ESTIMATED_SHIPPING)で利益を出し、「送料未入力」の印は残す
+  const ship = (sale.shippingUnknown && !(Number(sale.shipping) > 0)) ? CONFIG.ESTIMATED_SHIPPING : (Number(sale.shipping) || 0);
+  const pp = Number(item.purchasePrice) || 0;
+  const profit = Math.round(price * (1 - feeRate) - ship - pp);
+  const listDate = item.listDate || '';
+  let turnoverDays = null;
+  if (listDate && sale.saleDate) turnoverDays = Math.max(0, Math.floor((new Date(sale.saleDate).getTime() - new Date(listDate).getTime()) / 86400000));
+  return { ship, pp, profit, listDate, turnoverDays };
+};
+
+const ShippingEditModal = ({ sale, data, setData, toast, onClose }) => {
+  const [val, setVal] = React.useState(sale.shippingUnknown ? '' : String(sale.shipping ?? ''));
+  const save = () => {
+    const ship = Number(val);
+    if (val === '' || isNaN(ship) || ship < 0) { toast('送料を数字で入力してください'); return; }
+    const nowIso = new Date().toISOString();
+    const cur = (data.sales || []).find(s => s.id === sale.id);
+    if (!cur) { onClose(); return; }
+    const item = cur.inventoryId ? (data.inventory || []).find(i => i.id === cur.inventoryId) : null;
+    const pp = (cur.purchasePrice || 0) > 0 ? cur.purchasePrice : (item?.purchasePrice || 0);
+    const next = { ...cur, shipping: ship, shippingUnknown: false, updatedAt: nowIso };
+    if (cur.inventoryId || pp > 0) next.profit = Math.round((cur.salePrice || 0) * (1 - (cur.feeRate || 0)) - ship - pp);
+    setData({ ...data, sales: data.sales.map(s => s.id === cur.id ? next : s) });
+    toast('✅ 送料を保存しました');
+    onClose();
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{padding:18}}>
+        <div style={{fontWeight:800,fontSize:16,marginBottom:4}}>📦 送料を入力</div>
+        <div style={{fontSize:12,color:'#6b7280',marginBottom:12,lineHeight:1.5}}>
+          {sale.platform} · {sale.saleDate} · ¥{formatMoney(sale.salePrice)}<br/>
+          <span style={{color:'#111'}}>{sale.mailTitle || sale.productName || ''}</span>
+        </div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+          {[210, 450, 750, 850, 1050].map(v => (
+            <button key={v} type="button" onClick={() => setVal(String(v))}
+              style={{padding:'6px 12px',borderRadius:99,border:'1px solid #d1d5db',background: String(v) === val ? '#dbeafe' : '#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>¥{v}</button>
+          ))}
+        </div>
+        <input type="number" inputMode="numeric" className="input-field" value={val} placeholder="送料（円）"
+          onChange={e => setVal(e.target.value)} style={{width:'100%',marginBottom:12,fontSize:16}}/>
+        <div style={{display:'flex',gap:8}}>
+          <button type="button" onClick={onClose} style={{flex:1,padding:12,borderRadius:12,border:'1px solid #d1d5db',background:'#fff',fontWeight:700,fontSize:14}}>キャンセル</button>
+          <button type="button" onClick={save} className="btn-primary" style={{flex:2,padding:12,borderRadius:12,fontWeight:800,fontSize:14}}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
+  const [limit, setLimit] = React.useState(MAIL_LINK_PAGE);
+  const [queries, setQueries] = React.useState({});
+  const [showNoStock, setShowNoStock] = React.useState(false);
+  const linkedIds = React.useMemo(() => new Set((data.sales || []).map(s => s.inventoryId).filter(Boolean)), [data.sales]);
+  const pending = React.useMemo(() => (data.sales || [])
+    .filter(s => s.needsLink && !s.inventoryId)
+    .sort((a, b) => (a.saleDate || '') < (b.saleDate || '') ? 1 : (a.saleDate || '') > (b.saleDate || '') ? -1 : 0),
+    [data.sales]);
+  const noStock = React.useMemo(() => (data.sales || []).filter(s => s.noStock && !s.inventoryId && !s.needsLink), [data.sales]);
+  const pendingTotal = pending.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const shown = pending.slice(0, limit);
+
+  const candMap = React.useMemo(() => {
+    const m = {};
+    shown.forEach(s => { m[s.id] = rankLinkCandidates(s, data.inventory, linkedIds, 3); });
+    return m;
+  }, [shown.map(s => s.id).join(','), data.inventory, linkedIds]);
+
+  const doLink = (sale, item) => {
+    const curSale = (data.sales || []).find(s => s.id === sale.id);
+    const curItem = (data.inventory || []).find(i => i.id === item.id);
+    if (!curSale || curSale.inventoryId) { toast('この売上はすでに紐付け済みです'); return; }
+    if (!curItem || curItem.status === 'sold' || (data.sales || []).some(s => s.inventoryId === curItem.id)) { toast('この商品はすでに売却済み／紐付け済みです'); return; }
+    const f = calcLinkedSaleFields(curSale, curItem);
+    const nm = `${curItem.brand ? curItem.brand + ' ' : ''}${curItem.productName || ''}`.trim();
+    const msg = `この売上に紐付けます\n\n売上：${curSale.platform} ¥${formatMoney(curSale.salePrice)}\n${(curSale.mailTitle || '').slice(0, 40)}\n\n在庫：${nm}\n${curItem.mgmtNo || ''}\n\n仕入れ ¥${formatMoney(f.pp)} → 利益 ¥${formatMoney(f.profit)}${curSale.shippingUnknown ? '（送料は仮' + CONFIG.ESTIMATED_SHIPPING + '円）' : ''}\n在庫は「売却済み」になります。`;
+    if (!window.confirm(msg)) return;
+    const nowIso = new Date().toISOString();
+    const linked = {
+      ...curSale,
+      inventoryId: curItem.id, needsLink: false, noStock: false,
+      purchasePrice: f.pp, purchaseDate: curItem.purchaseDate || '', purchaseStore: curItem.purchaseStore || '',
+      listDate: f.listDate, turnoverDays: f.turnoverDays,
+      shipping: f.ship, profit: f.profit,
+      productName: curItem.productName || '', brand: curItem.brand || '',
+      updatedAt: nowIso,
+    };
+    // 売上と在庫を1回の setData でまとめて保存
+    setData({
+      ...data,
+      inventory: data.inventory.map(i => i.id === curItem.id ? { ...i, status: 'sold', soldAt: nowIso, soldDate: curSale.saleDate || '' } : i),
+      sales: data.sales.map(s => s.id === curSale.id ? linked : s),
+    });
+    toast('✅ 紐付けました（利益 ¥' + formatMoney(f.profit) + '）');
+  };
+
+  const markNoStock = (sale) => {
+    if (!window.confirm('在庫なし（記録だけ）にしますか？\n\n売上には含まれたまま、利益は計算されません。\n（2025年の仕入れ分など、在庫に無い商品用）')) return;
+    const nowIso = new Date().toISOString();
+    setData({ ...data, sales: data.sales.map(s => s.id === sale.id ? { ...s, needsLink: false, inventoryId: null, noStock: true, updatedAt: nowIso } : s) });
+    toast('記録だけにしました（売上には含まれます）');
+  };
+  const backToPending = (sale) => {
+    const nowIso = new Date().toISOString();
+    setData({ ...data, sales: data.sales.map(s => s.id === sale.id ? { ...s, needsLink: true, noStock: false, updatedAt: nowIso } : s) });
+    toast('紐付け待ちに戻しました');
+  };
+
+  const statusLabel = (st) => st === 'listed' ? '出品中' : st === 'unlisted' ? '未出品' : st || '';
+
+  const renderItemRow = (sale, it, note, key) => (
+    <div key={key} onClick={() => doLink(sale, it)}
+      style={{display:'flex',gap:10,alignItems:'center',padding:'8px 8px',marginTop:6,borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0',cursor:'pointer',touchAction:'manipulation'}}>
+      <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={46} fallback="📦" />
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
+        </div>
+        <div style={{fontSize:10,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+          <span>{it.mgmtNo || '管理番号なし'}</span>
+          <span>出品 {it.listPrice > 0 ? '¥' + formatMoney(it.listPrice) : '−'}</span>
+          <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{statusLabel(it.status)}</span>
+          {it.purchaseDate && <span>仕入 {it.purchaseDate}</span>}
+          {note}
+        </div>
+      </div>
+      <div style={{flexShrink:0,fontSize:11,fontWeight:800,color:'#2563eb',border:'1.5px solid #2563eb',borderRadius:99,padding:'4px 10px'}}>紐付け</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:12,padding:'10px 12px',marginBottom:12,fontSize:12,color:'#1e3a8a',lineHeight:1.6}}>
+        🔗 未紐付け <b>{pending.length}件</b>・¥{formatMoney(pendingTotal)}<br/>
+        売上には含まれています。紐付けると仕入れ値から利益が計算され、在庫が「売却済み」になります。
+      </div>
+      {pending.length === 0 && (
+        <div style={{textAlign:'center',color:'#16a34a',fontWeight:700,padding:'30px 0',fontSize:14}}>🎉 未紐付けの売上はありません</div>
+      )}
+      {shown.map(s => {
+        const cands = candMap[s.id] || [];
+        const q = queries[s.id] || '';
+        const found = q.trim() ? searchInventoryForLink(q, data.inventory, linkedIds, 8) : [];
+        return (
+          <div key={s.id} className="card" style={{padding:'12px 12px',marginBottom:12,borderLeft:'3px solid #2563eb'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+                  <span style={{fontSize:11,color:'#6b7280',fontWeight:700}}>{s.saleDate}</span>
+                  <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
+                  {s.shippingUnknown && (
+                    <span onClick={() => onEditShipping(s)} style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,padding:'2px 8px',fontWeight:700,border:'1px solid #fed7aa',cursor:'pointer'}}>📦 送料未入力</span>
+                  )}
+                </div>
+                <div style={{fontSize:13,fontWeight:700,color:'#111',lineHeight:1.4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{s.mailTitle || s.productName || '（タイトルなし）'}</div>
+              </div>
+              <div style={{fontWeight:800,fontSize:16,color:'#111',flexShrink:0}}>¥{formatMoney(s.salePrice)}</div>
+            </div>
+            <div style={{fontSize:11,fontWeight:700,color:'#475569',marginTop:10}}>候補の在庫（タップで紐付け）</div>
+            {cands.length === 0 && <div style={{fontSize:11,color:'#9ca3af',marginTop:4}}>近い在庫が見つかりません。下の検索で探してください。</div>}
+            {cands.map(c => renderItemRow(s, c.item,
+              (c.item.listPrice || 0) > 0 && c.item.listPrice === s.salePrice ? <span style={{color:'#b45309',fontWeight:800}}>価格一致</span> : null,
+              c.item.id))}
+            <input type="search" className="input-field" placeholder="🔍 在庫を探す（商品名・ブランド・管理番号）" value={q}
+              onChange={e => setQueries(prev => ({ ...prev, [s.id]: e.target.value }))}
+              style={{width:'100%',marginTop:10,fontSize:14}} />
+            {q.trim() && found.length === 0 && <div style={{fontSize:11,color:'#9ca3af',marginTop:6}}>該当なし</div>}
+            {found.map(it => renderItemRow(s, it, null, 'f' + it.id))}
+            <button type="button" onClick={() => markNoStock(s)}
+              style={{width:'100%',marginTop:10,padding:'9px',borderRadius:10,border:'1px dashed #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:12,cursor:'pointer'}}>
+              在庫なし（記録だけ）
+            </button>
+          </div>
+        );
+      })}
+      {pending.length > limit && (
+        <button type="button" onClick={() => setLimit(l => l + MAIL_LINK_PAGE)}
+          style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #d1d5db',background:'#fff',fontWeight:700,fontSize:13,marginBottom:12}}>
+          さらに表示（残り{pending.length - limit}件）
+        </button>
+      )}
+      {noStock.length > 0 && (
+        <div style={{marginTop:8}}>
+          <div onClick={() => setShowNoStock(v => !v)} style={{fontSize:12,fontWeight:700,color:'#6b7280',cursor:'pointer',padding:'8px 0'}}>
+            {showNoStock ? '▼' : '▶'} 在庫なしで記録した売上 {noStock.length}件（売上には含む）
+          </div>
+          {showNoStock && noStock.map(s => (
+            <div key={s.id} className="card" style={{padding:'10px 12px',marginBottom:8,display:'flex',gap:8,alignItems:'center'}}>
+              <div style={{flex:1,minWidth:0,fontSize:12}}>
+                <div style={{color:'#6b7280'}}>{s.saleDate} · {s.platform} · ¥{formatMoney(s.salePrice)}</div>
+                <div style={{fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.mailTitle || ''}</div>
+              </div>
+              <button type="button" onClick={() => backToPending(s)} style={{fontSize:11,fontWeight:700,padding:'6px 10px',borderRadius:99,border:'1px solid #cbd5e1',background:'#fff'}}>紐付け待ちに戻す</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============================================================
 // 売上記録タブ
 // ============================================================
 const SalesTab = () => {
@@ -9259,6 +9537,8 @@ const SalesTab = () => {
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
   const [monthDetail, setMonthDetail] = React.useState(null); // 月次詳細モーダル用 "YYYY-MM"
+  const [salesView, setSalesView] = React.useState('all'); // 'all' | 'unlinked'(🔗未紐付け) | 'noship'(送料未入力)
+  const [shipEdit, setShipEdit] = React.useState(null);    // 送料入力モーダル対象の売上
   const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '', purchasePrice: '', purchaseDate: '', purchaseStore: '' };
   const [form, setForm] = React.useState(emptyForm);
   const [ssReading, setSsReading] = React.useState(false);
@@ -10124,6 +10404,10 @@ const SalesTab = () => {
         category:    selectedItem?.category    || '',
         productName: selectedItem?.productName || '',
       });
+      if (dup && dup.level === 'strong') {
+        setFormError('同じ商品ID／注文IDの売上がすでに登録されています（二重登録できません）');
+        return;
+      }
       if (dup) {
         setDupConfirm({ existingSale: dup.sale, reason: dup.reason, onConfirm: doSave });
         return;
@@ -10167,16 +10451,37 @@ const SalesTab = () => {
   // 集計用：販売価格＋仕入れ値が両方揃っているものだけ
   const summarySales = validSales.filter(s => (s.salePrice||0) > 0 && getSalePP(s) > 0);
   // 未完了チェック（バッジ表示用）
-  const isSaleIncomplete = (s) => !(s.salePrice > 0) || !(getSalePP(s) > 0);
+  const isSaleIncomplete = (s) => isRevenueOnlySale(s) ? false : (!(s.salePrice > 0) || !(getSalePP(s) > 0));
+  // メール取込の未紐付け売上（売上額のみ集計・利益は未計算）
+  const revenueOnlySales = validSales.filter(isRevenueOnlySale);
+  const unlinkedPending  = validSales.filter(s => s.needsLink && !s.inventoryId);
+  const unlinkedPendingAmt = unlinkedPending.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const noStockSales     = revenueOnlySales.filter(s => !s.needsLink);
+  const noShipSales      = validSales.filter(s => s.shippingUnknown);
+  const revenueOnlyTotal = revenueOnlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const allRevenueTotal  = summarySales.reduce((a, s) => a + (s.salePrice || 0), 0) + revenueOnlyTotal;
+  const listSales = salesView === 'noship' ? noShipSales : validSales;
 
   // 月次サマリー（集計用のみ使用）
   const salesByMonth = {};
   summarySales.forEach(s => {
     const m = s.saleDate?.slice(0,7) || 'unknown';
-    if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, platforms: {} };
+    if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, pcount: 0, urevenue: 0, ucount: 0, platforms: {} };
     salesByMonth[m].revenue += s.salePrice || 0;
     salesByMonth[m].profit += s.profit || 0;
     salesByMonth[m].count++;
+    salesByMonth[m].pcount++;
+    const p = s.platform || 'その他';
+    salesByMonth[m].platforms[p] = (salesByMonth[m].platforms[p] || 0) + 1;
+  });
+  // 未紐付け売上：売上額・件数だけ加算（利益には加えない）
+  revenueOnlySales.forEach(s => {
+    const m = s.saleDate?.slice(0,7) || 'unknown';
+    if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, pcount: 0, urevenue: 0, ucount: 0, platforms: {} };
+    salesByMonth[m].revenue += s.salePrice || 0;
+    salesByMonth[m].urevenue += s.salePrice || 0;
+    salesByMonth[m].count++;
+    salesByMonth[m].ucount++;
     const p = s.platform || 'その他';
     salesByMonth[m].platforms[p] = (salesByMonth[m].platforms[p] || 0) + 1;
   });
@@ -10193,6 +10498,37 @@ const SalesTab = () => {
       </div>
 
       <div style={{padding:'12px 16px'}}>
+        {/* 表示切り替えチップ（メール取込の未紐付け／送料未入力） */}
+        {(unlinkedPending.length > 0 || noShipSales.length > 0 || noStockSales.length > 0) && (
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+            {[
+              ['all', '全て', null],
+              ['unlinked', `🔗 未紐付け ${unlinkedPending.length}`, '#2563eb'],
+              ...(noShipSales.length > 0 ? [['noship', `📦 送料未入力 ${noShipSales.length}`, '#c2410c']] : []),
+            ].map(([k, label, col]) => (
+              <button key={k} type="button" onClick={() => setSalesView(k)}
+                style={{padding:'7px 14px',borderRadius:99,fontSize:13,fontWeight:800,cursor:'pointer',touchAction:'manipulation',
+                  border: salesView === k ? `1.5px solid ${col || '#111'}` : '1.5px solid #e5e7eb',
+                  background: salesView === k ? (col || '#111') : '#fff',
+                  color: salesView === k ? '#fff' : (col || '#444')}}>{label}</button>
+            ))}
+          </div>
+        )}
+        {salesView === 'unlinked' && (
+          <UnlinkedSalesView data={data} setData={setData} toast={toast} onEditShipping={setShipEdit} />
+        )}
+        {salesView !== 'unlinked' && (<>
+        {/* 売上合計（未紐付けを含む）と未紐付けの内訳 */}
+        {revenueOnlySales.length > 0 && (
+          <div onClick={() => setSalesView('unlinked')}
+            style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:12,padding:'10px 12px',marginBottom:12,fontSize:12,color:'#1e3a8a',lineHeight:1.6,cursor:'pointer'}}>
+            <div>売上合計（全期間） <b style={{fontSize:15}}>¥{formatMoney(allRevenueTotal)}</b></div>
+            <div>🔗 未紐付け {unlinkedPending.length}件 ¥{formatMoney(unlinkedPendingAmt)}
+              {noStockSales.length > 0 && <>　在庫なし記録 {noStockSales.length}件 ¥{formatMoney(noStockSales.reduce((a, s) => a + (s.salePrice || 0), 0))}</>}
+              <span style={{color:'#2563eb',fontWeight:700}}>　紐付ける →</span></div>
+            <div style={{color:'#64748b'}}>売上には含み、利益の合計・平均からは除外しています</div>
+          </div>
+        )}
         {/* 販売履歴一括取込ボタン（主導線） */}
         <button ref={batchBtnRef}
           onClick={() => { if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; } batchInputRef.current?.click(); }}
@@ -10219,7 +10555,7 @@ const SalesTab = () => {
         )}
 
         {/* 月次サマリー */}
-        {months.length > 0 && (
+        {salesView === 'all' && months.length > 0 && (
           <>
             {/* 1個あたり平均利益 */}
             {(() => {
@@ -10246,7 +10582,7 @@ const SalesTab = () => {
             <div className="section-title">月次サマリー</div>
             {months.map(m => {
               const mData = salesByMonth[m];
-              const mProfitRate = mData.revenue > 0 ? Math.round(mData.profit / mData.revenue * 100) : 0;
+              const mProfitRate = (mData.revenue - mData.urevenue) > 0 ? Math.round(mData.profit / (mData.revenue - mData.urevenue) * 100) : 0;
               const platformEntries = Object.entries(mData.platforms).sort((a,b) => b[1]-a[1]);
               const isGood = mData.profit >= 0;
               return (
@@ -10276,10 +10612,15 @@ const SalesTab = () => {
                       <div>
                         <div style={{fontSize:10,color:'#aaa',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:3}}>平均/個</div>
                         <div style={{fontWeight:800,fontSize:17,color: isGood ? '#16a34a' : '#dc2626',letterSpacing:'-0.02em'}}>
-                          ¥{formatMoney(Math.round(mData.profit / mData.count))}
+                          {mData.pcount > 0 ? '¥' + formatMoney(Math.round(mData.profit / mData.pcount)) : '−'}
                         </div>
                       </div>
                     </div>
+                    {mData.ucount > 0 && (
+                      <div style={{fontSize:11,color:'#2563eb',fontWeight:700,marginBottom:8}}>
+                        🔗 未紐付け{mData.ucount}件 ¥{formatMoney(mData.urevenue)} を含む（利益は未計算）
+                      </div>
+                    )}
                     {platformEntries.length > 0 && (
                       <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                         {platformEntries.map(([p,cnt]) => (
@@ -10297,6 +10638,7 @@ const SalesTab = () => {
 
         {/* 今月の利益ランキング */}
         {(() => {
+          if (salesView !== 'all') return null;
           const now = new Date();
           const cm = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
           const thisMonth = summarySales
@@ -10349,10 +10691,10 @@ const SalesTab = () => {
         })()}
 
         {/* 売上記録一覧（仕入れ日順） */}
-        {validSales.length > 0 && (
+        {listSales.length > 0 && (
           <>
-            <div className="section-title">売上記録一覧</div>
-            {[...validSales].sort((a, b) => {
+            <div className="section-title">{salesView === 'noship' ? '送料未入力の売上（タップで入力）' : '売上記録一覧'}</div>
+            {[...listSales].sort((a, b) => {
               const ia = data.inventory.find(i => i.id === a.inventoryId) || {};
               const ib = data.inventory.find(i => i.id === b.inventoryId) || {};
               const da = ia.purchaseDate || a.purchaseDate || '';
@@ -10365,19 +10707,28 @@ const SalesTab = () => {
               const sProfitRate = s.salePrice > 0 ? Math.round((s.profit || 0) / s.salePrice * 100) : 0;
               const isProfit = (s.profit || 0) >= 0;
               const incomplete = isSaleIncomplete(s);
+              const roOnly = isRevenueOnlySale(s);
               return (
                 <div key={s.id} className="card" style={{padding:'12px 14px',marginBottom:8,display:'flex',gap:12,alignItems:'center',cursor:'pointer',
-                  borderLeft: incomplete ? '3px solid #f59e0b' : 'none'}}
-                  onClick={() => openEdit(s)}>
+                  borderLeft: incomplete ? '3px solid #f59e0b' : (roOnly ? '3px solid #2563eb' : 'none')}}
+                  onClick={() => { if (s.shippingUnknown && salesView === 'noship') setShipEdit(s); else if (roOnly) setSalesView('unlinked'); else openEdit(s); }}>
                   <ItemThumbnail thumbId={item?.photos?.[0]?.thumbId} thumbDataUrl={item?.photos?.[0]?.thumbDataUrl} size={52} fallback="💰" />
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#111',marginBottom:3}}>
                       {(item?.brand || s.brand) && <span style={{color:'#aaa',fontWeight:700,fontSize:11,marginRight:5,textTransform:'uppercase'}}>{item?.brand || s.brand}</span>}
-                      {item?.productName || s.productName || s.memo || '商品'}
+                      {item?.productName || s.productName || s.mailTitle || s.memo || '商品'}
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
                       <span style={{fontSize:11,color:'#bbb'}}>{s.saleDate}</span>
+                      {s.shippingUnknown && (
+                        <span onClick={(e) => { e.stopPropagation(); setShipEdit(s); }} style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
+                          padding:'1px 7px',fontWeight:700,border:'1px solid #fed7aa'}}>📦 送料未入力</span>
+                      )}
+                      {roOnly && (
+                        <span style={{fontSize:10,background:'#eff6ff',color:'#1d4ed8',borderRadius:99,
+                          padding:'1px 7px',fontWeight:700,border:'1px solid #bfdbfe'}}>{s.needsLink ? '🔗 未紐付け' : '在庫なし(記録のみ)'}</span>
+                      )}
                       {incomplete && (
                         <span style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
                           padding:'1px 7px',fontWeight:700,border:'1px solid #fed7aa'}}>
@@ -10401,7 +10752,9 @@ const SalesTab = () => {
                   </div>
                   <div style={{textAlign:'right',flexShrink:0}}>
                     <div style={{fontWeight:800,fontSize:15,color:'#111',letterSpacing:'-0.02em'}}>¥{formatMoney(s.salePrice)}</div>
-                    {incomplete ? (
+                    {roOnly ? (
+                      <div style={{fontSize:11,color:'#64748b',fontWeight:700,marginTop:2}}>利益 未計算</div>
+                    ) : incomplete ? (
                       <div style={{fontSize:11,color:'#f59e0b',fontWeight:700,marginTop:2}}>集計対象外</div>
                     ) : (
                       <div style={{
@@ -10418,7 +10771,12 @@ const SalesTab = () => {
             })}
           </>
         )}
+        {salesView === 'noship' && noShipSales.length === 0 && (
+          <div style={{textAlign:'center',color:'#16a34a',fontWeight:700,padding:'30px 0',fontSize:14}}>送料未入力の売上はありません</div>
+        )}
+        </>)}
       </div>
+      {shipEdit && <ShippingEditModal sale={shipEdit} data={data} setData={setData} toast={toast} onClose={() => setShipEdit(null)} />}
 
       {/* 月次詳細モーダル */}
       {monthDetail && (() => {
@@ -10430,9 +10788,11 @@ const SalesTab = () => {
           .sort((a, b) => (b.saleDate||'') > (a.saleDate||'') ? 1 : -1);
         // 集計は完全データのみ
         const mdCompleteSales = summarySales.filter(s => s.saleDate?.startsWith(monthDetail));
-        const mdRevenue = mdCompleteSales.reduce((s, r) => s + (r.salePrice||0), 0);
+        const mdProfitRevenue = mdCompleteSales.reduce((s, r) => s + (r.salePrice||0), 0);
+        const mdUnlinked = revenueOnlyOfMonth(validSales, monthDetail);  // 未紐付け（売上のみ）
+        const mdRevenue = mdProfitRevenue + mdUnlinked.revenue;
         const mdProfit  = mdCompleteSales.reduce((s, r) => s + (r.profit||0), 0);
-        const mdRate    = mdRevenue > 0 ? Math.round(mdProfit / mdRevenue * 100) : 0;
+        const mdRate    = mdProfitRevenue > 0 ? Math.round(mdProfit / mdProfitRevenue * 100) : 0;
         return (
           <div className="modal-overlay" onClick={() => setMonthDetail(null)}>
             <div className="modal-content slide-up" onClick={e => e.stopPropagation()}
@@ -10456,7 +10816,7 @@ const SalesTab = () => {
                     </div>
                   ))}
                 </div>
-                <div style={{marginTop:8,fontSize:12,color:'rgba(255,255,255,0.5)',textAlign:'right'}}>{mdSales.length}件</div>
+                <div style={{marginTop:8,fontSize:12,color:'rgba(255,255,255,0.5)',textAlign:'right'}}>{mdSales.length}件{mdUnlinked.count > 0 ? `（うち未紐付け${mdUnlinked.count}件 ¥${formatMoney(mdUnlinked.revenue)}は利益に含まず）` : ''}</div>
               </div>
 
               {/* 商品リスト */}
@@ -10468,13 +10828,14 @@ const SalesTab = () => {
                   const isPos = (s.profit||0) >= 0;
                   const rate  = s.salePrice > 0 ? Math.round((s.profit||0) / s.salePrice * 100) : 0;
                   const mdIncomplete = isSaleIncomplete(s);
+                  const mdRo = isRevenueOnlySale(s);
                   return (
                     <div key={s.id} style={{display:'flex',alignItems:'center',gap:11,
                       padding:'10px 0',borderBottom:'1px solid #f3f4f6',cursor:'pointer',
                       borderLeft: mdIncomplete ? '3px solid #f59e0b' : '3px solid transparent',
                       paddingLeft: 6,
                       WebkitTapHighlightColor:'rgba(0,0,0,0.04)'}}
-                      onClick={() => { setMonthDetail(null); openEdit(s); }}>
+                      onClick={() => { setMonthDetail(null); if (mdRo) setSalesView('unlinked'); else openEdit(s); }}>
                       {/* サムネイル */}
                       <div style={{flexShrink:0}}>
                         <ItemThumbnail
@@ -10487,7 +10848,7 @@ const SalesTab = () => {
                         <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',
                           whiteSpace:'nowrap',color:'#111',lineHeight:1.3}}>
                           {(inv?.brand || s.brand) && <span style={{color:'#bbb',fontSize:11,marginRight:4}}>{inv?.brand || s.brand}</span>}
-                          {inv?.productName || s.productName || s.memo || '商品'}
+                          {inv?.productName || s.productName || s.mailTitle || s.memo || '商品'}
                         </div>
                         <div style={{display:'flex',alignItems:'center',gap:5,marginTop:4,flexWrap:'wrap'}}>
                           <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,
@@ -10510,7 +10871,9 @@ const SalesTab = () => {
                       {/* 金額 */}
                       <div style={{textAlign:'right',flexShrink:0}}>
                         <div style={{fontWeight:800,fontSize:14,color:'#111'}}>¥{formatMoney(s.salePrice)}</div>
-                        {mdIncomplete ? (
+                        {mdRo ? (
+                          <div style={{fontSize:11,color:'#64748b',fontWeight:700,marginTop:3}}>利益 未計算</div>
+                        ) : mdIncomplete ? (
                           <div style={{fontSize:11,color:'#f59e0b',fontWeight:700,marginTop:3}}>集計対象外</div>
                         ) : (
                           <div style={{fontSize:11,fontWeight:700,marginTop:3,
@@ -11775,11 +12138,12 @@ const _invRow = item => [
 
 const _saleRow = (s, invMap, rowNum) => {
   const inv = invMap[s.inventoryId] || {};
-  const rate = s.salePrice > 0 ? Math.round((s.profit||0)/s.salePrice*100) : 0;
+  const ro = isRevenueOnlySale(s); // 未紐付け：売上は出力、利益は空欄
+  const rate = (!ro && s.salePrice > 0) ? Math.round((s.profit||0)/s.salePrice*100) : '';
   return [
     rowNum,
     inv.purchaseDate||'',
-    inv.productName||'',
+    inv.productName||(ro ? ('【未紐付け】' + (s.mailTitle||'')) : ''),
     inv.brand||'',
     inv.category||'',
     (s.purchasePrice||0) > 0 ? s.purchasePrice : (inv.purchasePrice||0),
@@ -11787,7 +12151,7 @@ const _saleRow = (s, invMap, rowNum) => {
     inv.purchaseStore||inv.storeName||'',
     s.saleDate||'',
     s.salePrice||0,
-    s.profit||0,
+    ro ? '' : (s.profit||0),
     rate,
     s.platform||inv.platform||'',
     Math.round((s.salePrice||0)*(s.feeRate||0)),
@@ -12615,10 +12979,11 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const ship = s.shipping||0;
                   const sProfit = sp - fee - ship;
                   const effPP = (s.purchasePrice||0) > 0 ? s.purchasePrice : (item.purchasePrice||0);
+                  const roP = isRevenueOnlySale(s);
                   const nProfit = s.profit != null ? s.profit : (sProfit - effPP);
                   const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
                   const brand = item.brand || s.brand || '';
-                  const productName = item.productName || s.productName || s.memo || '−';
+                  const productName = item.productName || s.productName || s.mailTitle || s.memo || '−';
                   const store = item.purchaseStore || s.purchaseStore || '';
                   const td = (extra={}) => ({padding:'4px 6px',whiteSpace:'nowrap',...extra});
                   const canEdit = typeof setPendingEditSaleId === 'function' && typeof setTab === 'function';
@@ -12644,8 +13009,8 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                       <td style={td({color:'#555',fontSize:10})}>{s.saleDate}</td>
                       <td style={td({fontSize:10})}>{s.platform}</td>
                       <td style={td({fontWeight:700})}>¥{formatMoney(sp)}</td>
-                      <td style={td({fontWeight:700,color:nProfit>=0?'#16a34a':'#dc2626'})}>¥{formatMoney(nProfit)}</td>
-                      <td style={td({fontWeight:700,color:rate>=0?'#16a34a':'#dc2626'})}>{rate}%</td>
+                      <td style={td({fontWeight:700,color:roP?'#64748b':(nProfit>=0?'#16a34a':'#dc2626')})}>{roP ? '未紐付け' : '¥'+formatMoney(nProfit)}</td>
+                      <td style={td({fontWeight:700,color:roP?'#64748b':(rate>=0?'#16a34a':'#dc2626')})}>{roP ? '−' : rate+'%'}</td>
                     </tr>
                   );
                 })}
@@ -15589,16 +15954,17 @@ const OtherTab = ({ mode }) => {
         const fee  = Math.round(sp * (s.feeRate || 0));
         const ship = s.shipping || 0;
         const salesProfit = sp - fee - ship;                   // 販売利益
-        const netProfit   = salesProfit - (item.purchasePrice || 0); // 純利益
-        const profitRate  = sp > 0 ? (netProfit / sp * 100).toFixed(1) : '0.0';
+        const ro = isRevenueOnlySale(s);                       // 未紐付け：利益は空欄
+        const netProfit   = ro ? '' : salesProfit - (item.purchasePrice || 0); // 純利益
+        const profitRate  = ro ? '' : (sp > 0 ? (netProfit / sp * 100).toFixed(1) : '0.0');
         const saleDay = s.saleDate ? ['日','月','火','水','木','金','土'][new Date(s.saleDate).getDay()] : '';
         const month   = s.saleDate ? s.saleDate.slice(0,7) : '';
         return [
-          i+1, item.mgmtNo||'', item.brand||'', item.productName||'', item.category||'',
+          i+1, item.mgmtNo||'', item.brand||'', item.productName||(ro ? ('【未紐付け】' + (s.mailTitle||'')) : ''), item.category||'',
           item.purchaseDate||'', item.purchaseStore||'', item.purchasePrice||0, item.listDate||'',
           s.saleDate||'', saleDay, month, s.platform||'',
           sp, ((s.feeRate||0)*100).toFixed(1), fee, ship,
-          salesProfit, netProfit, profitRate,
+          ro ? '' : salesProfit, netProfit, profitRate,
           '済',
         ];
       });
