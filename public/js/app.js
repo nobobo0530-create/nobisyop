@@ -758,6 +758,7 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
           sales:     json.sales     || [],
           settings:  json.settings  || getInitialData().settings,
           receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
+          storePending: json.storePending || [],   // ★ 店舗仕入れ未入力
         };
       }
       msg = json.error || `HTTP ${resp.status}`;
@@ -768,7 +769,7 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
     if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
   }
   console.error('[Cloud] fetch error:', msg);
-  return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [] };
+  return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [], storePending: [] };
 };
 
 // ローカルデータを一括移行（/api/data POST）
@@ -783,6 +784,7 @@ const migrateLocalToSupabase = async (localData) => {
         salesUpsert: (localData.sales     || []).map(s    => ({ id: s.id,    data: s    })),
         settings:    localData.settings || null,
         receipts:    localData.receipts || [],   // ★ レシートも一括移行
+        storePendingUpsert: localData.storePending || [],
       }),
       cache: 'no-store',
     });
@@ -839,7 +841,11 @@ const syncToSupabase = async (oldData, newData, opts) => {
     // ★ レシートの変更検知（list 全体を上書き保存）
     const receiptsChanged = JSON.stringify(oldData?.receipts || []) !== JSON.stringify(newData?.receipts || []);
 
-    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged;
+    // ★ 店舗仕入れ未入力: 変わった行だけ送る（サーバーが id 単位で updatedAt の新しい方を採用）
+    const spOld = new Map((oldData?.storePending || []).map(x => [x.id, JSON.stringify(x)]));
+    const storePendingUpsert = (newData?.storePending || []).filter(x => x && x.id && spOld.get(x.id) !== JSON.stringify(x));
+
+    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged || storePendingUpsert.length;
     if (!hasChanges) {
       // 変更なし → 同期済み扱い
       _onSyncStatus?.({ status: 'ok', time: Date.now() });
@@ -857,6 +863,7 @@ const syncToSupabase = async (oldData, newData, opts) => {
             invUpsert, invDelete, salesUpsert, salesDelete,
             settings: settingsChanged ? newData.settings : undefined,
             receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
+            storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
           }),
           cache: 'no-store',
         });
@@ -1148,6 +1155,7 @@ const getInitialData = () => ({
   inventory: [],
   sales: [],
   receipts: [],
+  storePending: [],   // 店舗仕入れ未入力（PayPay/メルペイの店舗払いで在庫未登録のもの）
   settings: {
     apiKey: '',
     removeBgApiKey: '',
@@ -2280,7 +2288,8 @@ const normalizeColor = (colorStr) => {
 // 仕入れ登録タブ
 // ============================================================
 const PurchaseTab = () => {
-  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, setPendingInventoryFilter, setMercariItem } = React.useContext(AppContext);
+  const { data, setData, editingItem, setEditingItem, currentUser, setTab, setPendingSaleItemId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, setPendingInventoryFilter, setMercariItem, pendingStorePurchase, setPendingStorePurchase } = React.useContext(AppContext);
+  const storePendingRef = React.useRef(pendingStorePurchase); // 店舗仕入れ未入力から来た登録（保存後に紐付ける）
   const [lastSavedItem, setLastSavedItem] = React.useState(null); // 直前に保存した仕入れ品（売上記録クイックアクション用）
   const toast = useToast();
   const [step, setStep] = React.useState(1); // 1:写真, 2:AI解析, 3:入力
@@ -2422,6 +2431,23 @@ const PurchaseTab = () => {
       }
       document.removeEventListener('focusout', onFocusOut, { capture: true });
     };
+  }, []);
+
+  // ★ 店舗仕入れ未入力から来た場合: 店舗払いで仕入れ先・日付・金額・決済方法を入れた状態で入力画面を開く
+  React.useEffect(() => {
+    const sp = storePendingRef.current;
+    if (!sp || editingItem) return;
+    const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
+    const stores = master.normalStores || [];
+    const nm = sp.store || '';
+    const chain = stores.find(c => nm === c || nm.startsWith(c + ' '));
+    if (chain) { setStoreCustomText(null); setStoreChain(chain); setBranchInput(nm === chain ? '' : nm.slice(chain.length + 1)); }
+    else if (nm) { setStoreCustomText(nm); setStoreChain('__custom__'); }
+    setPurchaseType('store');
+    setForm(prev => ({ ...prev, purchaseDate: sp.date || prev.purchaseDate, purchaseStore: nm,
+      itemPriceTaxIn: sp.amount ? String(sp.amount) : '', paymentMethod: sp.method || prev.paymentMethod }));
+    setStep(3);
+    return () => { setPendingStorePurchase(null); };
   }, []);
 
   // 起動時に下書きチェック
@@ -3333,6 +3359,7 @@ const PurchaseTab = () => {
   };
 
   const resetForm = () => {
+    storePendingRef.current = null;
     // タイマー系をすべてクリア
     if (savingTimeoutRef.current) { clearTimeout(savingTimeoutRef.current); savingTimeoutRef.current = null; }
     if (draftSaveTimerRef.current) { clearTimeout(draftSaveTimerRef.current); draftSaveTimerRef.current = null; }
@@ -3532,6 +3559,7 @@ const PurchaseTab = () => {
           listPrice: Number(form.listPrice) || 0,
           photos: photoRefs,
           descriptionText: generatedDesc || form.descriptionText || '',
+          ...(editingItem.needsDetail && form.productName.trim() !== (editingItem.productName || '') ? { needsDetail: false } : {}),
           updatedAt: new Date().toISOString(),
         };
         let updated = data.inventory.map(i => i.id === editingItem.id ? updatedItem : i);
@@ -3647,7 +3675,8 @@ const PurchaseTab = () => {
         // まとめ買いの表紙：作成時の先頭の写真で固定（以後、子の写真が変わっても変わらない）
         const _coverRef = (createdItems.find(i => (i.photos || []).length) || {}).photos?.[0];
         const _newCovers = _coverRef ? { ...(data.settings?.bundleCovers || {}), [bundleGroupId]: { photoId: _coverRef.id || null, thumbId: _coverRef.thumbId || null, thumbDataUrl: null, source: 'firstMember', setAt: new Date().toISOString() } } : null;
-        setData({ ...data, inventory: [...updatedInventory, ...createdItems], ...(_newCovers ? { settings: { ...data.settings, bundleCovers: _newCovers } } : {}) });
+        const _spB = storePendingRef.current;
+        setData({ ...data, inventory: [...updatedInventory, ...createdItems], ...linkStorePending(_spB, createdItems.map(i => i.id)), ...(_newCovers ? { settings: { ...data.settings, bundleCovers: _newCovers } } : {}) });
         const msgParts = [];
         if (createdItems.length)        msgParts.push(`新規${createdItems.length}件`);
         if (existingBundleItems.length) msgParts.push(`既存更新${existingBundleItems.length}件`);
@@ -3657,7 +3686,7 @@ const PurchaseTab = () => {
         resetForm();
         // ★★★ バンドル登録後は在庫一覧に自動遷移（ユーザーが登録結果をすぐ確認できる）
         toast(`✅ まとめ仕入れ ${totalCount}件を登録！在庫一覧に移動します...`);
-        setPendingInventoryFilter('unlisted'); // 未出品タブで開く
+        setPendingInventoryFilter(_spB ? 'storePending' : 'unlisted'); // 未出品タブで開く（店舗仕入れ未入力から来た場合はその一覧へ）
         setTab('inventory');
         return;
       }
@@ -3683,7 +3712,8 @@ const PurchaseTab = () => {
         descriptionText: generatedDesc || '',
         createdAt: new Date().toISOString(),
       };
-      setData({ ...data, inventory: [...data.inventory, newItem] });
+      const _sp = storePendingRef.current;
+      setData({ ...data, inventory: [...data.inventory, newItem], ...linkStorePending(_sp, [newItem.id]) });
       toast('✅ 仕入れを登録しました！');
       const goSellNew = postSaveNavToSale.current;
       postSaveNavToSale.current = false;
@@ -3691,7 +3721,8 @@ const PurchaseTab = () => {
       console.log('[Save] new success:', newItem.id);
       try { localStorage.removeItem('nobushop_save_backup'); } catch(_) {}
       resetForm();
-      if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
+      if (_sp) { setPendingInventoryFilter('storePending'); setTab('inventory'); }
+      else if (goSellNew) { setPendingSaleItemId(newItem.id); setTab('sales'); }
 
     } catch(e) {
       // ★ 保存処理中の例外を捕捉してエラー表示（finally でロックも解放）
@@ -3772,6 +3803,14 @@ const PurchaseTab = () => {
   };
 
   const setF = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
+
+  // 店舗仕入れ未入力の登録から保存した場合、その行に新しい在庫IDを紐付けて戻り先を在庫の未入力一覧にする
+  const linkStorePending = (sp, newIds) => {
+    if (!sp || !newIds.length) return {};
+    const now = new Date().toISOString();
+    return { storePending: (data.storePending || []).map(e => e.id !== sp.id ? e : { ...e,
+      linkedItemIds: [...new Set([...(e.linkedItemIds || []), ...newIds])], updatedAt: now }) };
+  };
 
   return (
     <div className="fade-in">
@@ -5807,8 +5846,59 @@ const MercariPrepPanel = ({ item, onClose, toast }) => {
 const InventoryTab = () => {
   const { data, setData, setTab, setEditingItem, setPendingSaleItemId, setPendingReturnTab,
           pendingInventoryFilter, setPendingInventoryFilter,
-          pendingInventoryScrollY, setPendingInventoryScrollY, currentUser } = React.useContext(AppContext);
+          pendingInventoryScrollY, setPendingInventoryScrollY, currentUser, setPendingStorePurchase } = React.useContext(AppContext);
   const toast = useToast();
+  // ★ 店舗仕入れ未入力（PayPay/メルペイの店舗払いで、在庫がまだ無いもの）
+  const [devStorePending, setDevStorePending] = React.useState(null); // 表示確認用（保存しない・通常はnull）
+  const storePendingAll = devStorePending || data.storePending || [];
+  const storePendingOpen = storePendingAll.filter(e => e && e.status === 'open');
+  const updateStorePending = (id, patch) => {
+    const now = new Date().toISOString();
+    setData({ ...data, storePending: (data.storePending || []).map(e => e.id === id ? { ...e, ...patch, updatedAt: now } : e) });
+  };
+  React.useEffect(() => { window.__devStorePending = (list) => setDevStorePending(list); return () => { try { delete window.__devStorePending; } catch(_) {} }; }, []);
+  // 中身はあとで（仮登録）: 支払い1件につき仮の在庫を1点つくる。IDは支払いIDから決まる（端末が重なっても二重にならない）
+  const buildPlaceholder = (e) => {
+    const amt = Math.max(0, Math.round(Number(e.amount) || 0));
+    const dm = String(e.date || '').match(/^\d{4}-(\d{2})-(\d{2})$/);
+    const md = dm ? `${Number(dm[1])}/${Number(dm[2])}` : '';
+    const now = new Date().toISOString();
+    return {
+      id: `sp_${e.id}`,
+      userId: currentUser,
+      productName: `店舗仕入れ（中身未入力）${e.store || ''} ${md}`.trim(),
+      brand: '', category: '', color: '', gender: 'メンズ', condition: 'A', notes: e.note || '',
+      purchaseDate: e.date || today(), purchaseStore: e.store || '', paymentMethod: e.method || '現金',
+      purchaseType: 'store', purchaseTypeSource: 'manual',
+      purchaseStoreType: 'normal',
+      purchasePrice: amt,
+      itemPriceTaxIn: amt, shippingTaxIn: 0,
+      purchaseCost: { totalTaxIn: amt, totalTaxEx: Math.round(amt / 1.1), itemPriceTaxIn: amt, itemTaxRate: 10,
+        itemPriceTaxEx: Math.round(amt / 1.1), shippingTaxIn: 0, shippingTaxEx: 0, shippingTaxRate: 10 },
+      priceUnconfirmed: !(amt > 0),
+      listDate: '', listPrice: 0, photos: [],
+      mgmtNo: e.date && amt ? generateMgmtNo(e.date, '', amt, data.settings?.priceSplitDivisor || 100) : '',
+      status: 'unlisted', needsDetail: true, storePendingId: e.id,
+      createdAt: now, updatedAt: now,
+    };
+  };
+  const registerPlaceholders = (entries) => {
+    const now = new Date().toISOString();
+    const have = new Set((data.inventory || []).map(i => i.id));
+    const items = entries.map(buildPlaceholder).filter(it => !have.has(it.id));
+    const byId = new Map(entries.map(e => [e.id, e]));
+    setData({ ...data,
+      inventory: [...(data.inventory || []), ...items],
+      storePending: (data.storePending || []).map(x => byId.has(x.id)
+        ? { ...x, status: 'registered', linkedItemIds: [...new Set([...(x.linkedItemIds || []), `sp_${x.id}`])], updatedAt: now } : x) });
+    toast(`✅ ${entries.length}件を仮登録しました。「✏️ 中身未入力」から後で入力できます`);
+  };
+  const startStorePurchase = (e) => {
+    setPendingStorePurchase({ id: e.id, store: e.store || '', date: e.date || '', amount: Number(e.amount) || 0, method: e.method || '' });
+    setPendingReturnTab(null);
+    setEditingItem(null);
+    setTab('purchase');
+  };
   // ★ 編集から戻った時: useState の初期化関数で正しいタブを「最初から」設定する
   // useEffect で後から setFilter() すると「未出品で描画 → 出品中に切り替え」という2段階になり
   // その間にスクロールが実行されて「未出品の下の方に飛ぶ」バグが起きる。
@@ -5940,6 +6030,7 @@ const InventoryTab = () => {
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
     else if (filter === 'auditCheck') { if (!isAuditOpen(item)) return false; }
     else if (filter === 'coupon') { if (!hasCoupon(item)) return false; }
+    else if (filter === 'needsDetail') { if (!item.needsDetail) return false; }
     else if (filter !== 'all' && filter !== 'priceUnconfirmed' && !isBundleFilter(filter) && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
     if (search.trim()) {
@@ -6753,6 +6844,52 @@ const InventoryTab = () => {
           );
         })()}
         {(() => {
+          // ★ 中身未入力チップ（仮登録した商品。商品名を直すと外れる）
+          const ndCnt = (data.inventory||[]).filter(i => i.needsDetail).length;
+          if (ndCnt === 0 && filter !== 'needsDetail') return null;
+          const active = filter === 'needsDetail';
+          return (
+            <button onClick={() => { setFilter('needsDetail'); setCheckedIds(new Set()); }}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
+                background: active ? '#ea580c' : '#ffedd5',
+                color: active ? 'white' : '#9a3412',
+                boxShadow: active ? '0 2px 8px rgba(234,88,12,0.3)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              ✏️ 中身未入力
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#fed7aa',
+                color: active ? 'white' : '#9a3412',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {ndCnt}
+              </span>
+            </button>
+          );
+        })()}
+        {(() => {
+          // ★ 店舗仕入れ未入力チップ（status が open の件数）。0件のときは非表示（開いている間は残す）
+          const spCnt = storePendingOpen.length;
+          if (spCnt === 0 && filter !== 'storePending') return null;
+          const active = filter === 'storePending';
+          return (
+            <button onClick={() => { setFilter('storePending'); setCheckedIds(new Set()); }}
+              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
+                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
+                background: active ? '#7c3aed' : '#ede9fe',
+                color: active ? 'white' : '#5b21b6',
+                boxShadow: active ? '0 2px 8px rgba(124,58,237,0.3)' : 'none',
+                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
+              🧾 店舗仕入れ未入力
+              <span style={{
+                background: active ? 'rgba(255,255,255,0.3)' : '#ddd6fe',
+                color: active ? 'white' : '#5b21b6',
+                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
+                {spCnt}
+              </span>
+            </button>
+          );
+        })()}
+        {(() => {
           // ★ 重複候補チップ（open な商品数）
           const dcCnt = (data.inventory||[]).filter(isDupOpen).length;
           if (dcCnt === 0 && filter !== 'dupCheck') return null;
@@ -7001,9 +7138,81 @@ const InventoryTab = () => {
             })()}
           </div>
         )}
-        {sorted.length === 0 ? (
+        {filter === 'storePending' ? (() => {
+          // ★ 店舗仕入れ未入力の一覧（日付の新しい順にグループ表示）
+          const yen = (v) => '¥' + (Number(v)||0).toLocaleString();
+          const invById = new Map((data.inventory || []).map(i => [i.id, i]));
+          const groups = {};
+          storePendingOpen.forEach(e => { (groups[e.date || '日付なし'] = groups[e.date || '日付なし'] || []).push(e); });
+          const dates = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+          const btn = (bg, color) => ({flex:1,minHeight:44,padding:'10px 8px',border:'none',borderRadius:10,background:bg,color,
+            fontWeight:700,fontSize:13,cursor:'pointer',WebkitTapHighlightColor:'transparent'});
+          if (storePendingOpen.length === 0) return (
+            <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>店舗仕入れの未入力はありません</div>
+          );
+          return (
+            <div style={{display:'flex',flexDirection:'column',gap:10}}>
+              {devStorePending && <div style={{fontSize:11,color:'#b45309',fontWeight:700}}>※表示確認用のダミーです（保存されません）</div>}
+              <button style={{...btn('#ea580c','white'),flex:'none',width:'100%'}} onClick={() => {
+                const total = storePendingOpen.reduce((a, e) => a + (Number(e.amount) || 0), 0);
+                if (!confirm(`${storePendingOpen.length}件（合計 ${yen(total)}）を中身未入力のまま仮登録しますか？`)) return;
+                if (devStorePending) { toast('表示確認用です'); return; }
+                registerPlaceholders(storePendingOpen);
+              }}>まとめて仮登録（{storePendingOpen.length}件）</button>
+              {dates.map(d => (
+                <div key={d}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#64748b',margin:'6px 2px'}}>{d}</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                    {groups[d].map(e => {
+                      const linked = (e.linkedItemIds || []).map(id => invById.get(id)).filter(Boolean);
+                      const linkedSum = linked.reduce((s, i) => s + (Number(i.purchasePrice) || 0), 0);
+                      return (
+                        <div key={e.id} className="card" style={{padding:12}}>
+                          <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8}}>
+                            <div style={{fontWeight:700,fontSize:15,minWidth:0,overflow:'hidden',textOverflow:'ellipsis'}}>{e.store || '店名不明'}</div>
+                            <div style={{fontWeight:800,fontSize:16,flexShrink:0}}>{yen(e.amount)}</div>
+                          </div>
+                          <div style={{fontSize:12,color:'#64748b',marginTop:2}}>
+                            {e.method}{e.datetime ? ` ・ ${String(e.datetime).slice(11, 16) || ''}` : ''}
+                          </div>
+                          {e.note && <div style={{fontSize:12,color:'#475569',marginTop:4,wordBreak:'break-all'}}>{e.note}</div>}
+                          {(e.linkedItemIds || []).length > 0 && (
+                            <div style={{fontSize:12,fontWeight:700,marginTop:6,color: linkedSum === Number(e.amount) ? '#166534' : '#b45309'}}>
+                              登録済み合計 {yen(linkedSum)} / 支払い {yen(e.amount)}（{linked.length}点）
+                            </div>
+                          )}
+                          <div style={{display:'flex',gap:8,marginTop:10}}>
+                            <button style={btn('var(--color-primary)','white')} onClick={() => { if (devStorePending) { toast('表示確認用です'); return; } startStorePurchase(e); }}>＋ 仕入れ登録</button>
+                          </div>
+                          <div style={{display:'flex',gap:8,marginTop:8}}>
+                            <button style={btn('#ffedd5','#9a3412')} onClick={() => {
+                              if (devStorePending) { toast('表示確認用です'); return; }
+                              registerPlaceholders([e]);
+                            }}>📦 中身はあとで（仮登録）</button>
+                          </div>
+                          <div style={{display:'flex',gap:8,marginTop:8}}>
+                            <button style={btn('#dcfce7','#166534')} onClick={() => {
+                              if (!confirm('この支払いを登録済みにしますか？')) return;
+                              if (devStorePending) { toast('表示確認用です'); return; }
+                              updateStorePending(e.id, { status: 'registered' });
+                            }}>✅ 登録済みにする</button>
+                            <button style={btn('#f1f5f9','#475569')} onClick={() => {
+                              if (!confirm('この支払いは仕入れではないとして外しますか？')) return;
+                              if (devStorePending) { toast('表示確認用です'); return; }
+                              updateStorePending(e.id, { status: 'ignored' });
+                            }}>🚫 仕入れではない</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })() : sorted.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : (filter === 'bundleIndividual' || filter === 'bundleSet' || filter === 'bundleAll') ? 'まだ分類されていません。まとめ買いのカードの「仕入れ内訳を編集」で種類を選べます' : filter === 'bundleNone' ? '未分類のまとめ買いはありません' : filter === 'auditCheck' ? '要確認の商品はありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : `${statusLabel[filter]}の商品がありません`}
+            {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : (filter === 'bundleIndividual' || filter === 'bundleSet' || filter === 'bundleAll') ? 'まだ分類されていません。まとめ買いのカードの「仕入れ内訳を編集」で種類を選べます' : filter === 'bundleNone' ? '未分類のまとめ買いはありません' : filter === 'auditCheck' ? '要確認の商品はありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : filter === 'needsDetail' ? '中身未入力の商品はありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
@@ -11795,6 +12004,7 @@ function mergeCloudIntoLocal(localFull, cloudFull) {
     sales:     mergeByLastWrite(localFull.sales,     cloudFull.sales,     mergedDeletedIds),
     settings:  mergeSettings(localFull.settings, cloudFull.settings),
     receipts:  mergeReceipts(localFull.receipts, cloudFull.receipts),
+    storePending: mergeReceipts(localFull.storePending, cloudFull.storePending),   // id単位・updatedAtの新しい方
   };
   return normalizeStores(cleanOrphans(mergedData));
 }
@@ -17055,7 +17265,7 @@ const CloudAutoSync = () => {
         const invChanged      = stableJson(merged.inventory) !== stableJson(current.inventory);
         const salesChanged    = stableJson(merged.sales)     !== stableJson(current.sales);
         const settingsChanged = stableJson(merged.settings)  !== stableJson(current.settings);
-        const receiptsChanged = stableJson(merged.receipts || []) !== stableJson(current.receipts || []);
+        const receiptsChanged = stableJson(merged.receipts || []) !== stableJson(current.receipts || []) || stableJson(merged.storePending || []) !== stableJson(current.storePending || []);
 
         if (invChanged || salesChanged || settingsChanged || receiptsChanged) {
           setFullDataRaw(prev => {
@@ -17144,6 +17354,7 @@ const App = () => {
   const [pendingInventoryFilter, setPendingInventoryFilter] = React.useState(null);
   const [pendingInventoryScrollY, setPendingInventoryScrollY] = React.useState(null);
   const [mercariItem, setMercariItem] = React.useState(null); // メルカリ出品準備パネル
+  const [pendingStorePurchase, setPendingStorePurchase] = React.useState(null); // 店舗仕入れ未入力から仕入れ登録へ渡す {id,store,date,amount,method}
   const [dbStatus, setDbStatus]  = React.useState('init');
   const [dbError,  setDbError]   = React.useState('');
   // ★ クラウド同期ステータス（syncToSupabaseから_onSyncStatusコールバック経由で更新）
@@ -17433,7 +17644,7 @@ const App = () => {
           const invChanged      = JSON.stringify(cleanedMerged.inventory) !== JSON.stringify(cloudData.inventory);
           const salesChanged    = JSON.stringify(cleanedMerged.sales)    !== JSON.stringify(cloudData.sales);
           const settingsChanged = JSON.stringify(cleanedMerged.settings) !== JSON.stringify(cloudData.settings);
-          const receiptsChanged = JSON.stringify(cleanedMerged.receipts || []) !== JSON.stringify(cloudData.receipts || []);
+          const receiptsChanged = JSON.stringify(cleanedMerged.receipts || []) !== JSON.stringify(cloudData.receipts || []) || JSON.stringify(cleanedMerged.storePending || []) !== JSON.stringify(cloudData.storePending || []);
           if (invChanged || salesChanged || settingsChanged || receiptsChanged) {
             syncToSupabase(cloudData, cleanedMerged);
           } else {
@@ -17884,7 +18095,7 @@ const App = () => {
   const navBadgeOther = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
 
   return (
-    <AppContext.Provider value={{ data, setData, fullData, setFullDataRaw, dataRef, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem, salesFocusBatch, setSalesFocusBatch }}>
+    <AppContext.Provider value={{ data, setData, fullData, setFullDataRaw, dataRef, tab, setTab, editingItem, setEditingItem, dbStatus, dbError, syncStatus, lastSyncTime, syncError, manualSync, currentUser, switchUser, userProfile, setUserProfile, pendingSaleItemId, setPendingSaleItemId, pendingEditSaleId, setPendingEditSaleId, pendingReturnTab, setPendingReturnTab, pendingReturnSection, setPendingReturnSection, pendingInventoryFilter, setPendingInventoryFilter, pendingInventoryScrollY, setPendingInventoryScrollY, mercariItem, setMercariItem, salesFocusBatch, setSalesFocusBatch, pendingStorePurchase, setPendingStorePurchase }}>
       <ToastProvider>
         {/* メルカリ出品準備パネル（ルートレベルで描画しz-index競合を回避） */}
         <MercariPanelRoot />
