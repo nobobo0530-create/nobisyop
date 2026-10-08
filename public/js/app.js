@@ -12527,6 +12527,267 @@ function mergeCloudIntoLocal(localFull, cloudFull) {
 }
 
 // ============================================================
+// 年間まとめ（税理士用）— 画面表示用に在庫・売上から集計するだけ（データは書き換えない。期首棚卸の手入力だけ settings.taxYear に保存）
+// ============================================================
+const taxLocalDate = (iso) => {
+  if (!iso) return '';
+  const s = String(iso);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s.slice(0, 10);
+  const j = new Date(d.getTime() + 9 * 3600000); // JST
+  return j.toISOString().slice(0, 10);
+};
+const computeTaxSummary = (data, year) => {
+  const Y = String(year);
+  const inv = data.inventory || [];
+  const sales = (data.sales || []).filter(s => s && !s.deleted);
+  const num = (v) => { const n = Number(v); return isFinite(n) ? n : 0; };
+  const saleByInv = new Map();
+  sales.forEach(s => { if (s.inventoryId) saleByInv.set(s.inventoryId, s); });
+  const invById = new Map(inv.map(i => [i.id, i]));
+  const months = Array.from({ length: 12 }, (_, k) => Y + '-' + String(k + 1).padStart(2, '0'));
+  const PLAT = ['メルカリ', 'ラクマ', 'ヤフオク'];
+  const platKey = (p) => PLAT.includes(p) ? p : 'その他';
+  const mkSales = () => ({ 'メルカリ': 0, 'ラクマ': 0, 'ヤフオク': 0, 'その他': 0 });
+  const byMonth = months.map(m => ({ month: m, sales: mkSales(), salesTotal: 0, salesCount: 0, fee: 0, ship: 0, buy: { '店舗': 0, 'ヤフオク': 0, 'オンライン他': 0 }, buyTotal: 0, buyCount: 0 }));
+  const mIdx = (d) => months.indexOf((d || '').slice(0, 7));
+  // ── 売上 ──
+  const saleRows = [];
+  let feeEstimatedCount = 0, shipUnknown = 0, unlinked = 0, unlinkedYen = 0;
+  sales.filter(s => (s.saleDate || '').startsWith(Y)).forEach(s => {
+    const item = (s.inventoryId && invById.get(s.inventoryId)) || null;
+    const price = num(s.salePrice);
+    const hasFee = s.fee != null && s.fee !== '' && isFinite(Number(s.fee)) && !s.feeEstimated;
+    const fee = (s.fee != null && s.fee !== '' && isFinite(Number(s.fee))) ? num(s.fee) : Math.round(price * num(s.feeRate));
+    const feeEst = !hasFee;
+    const ship = num(s.shipping);
+    const shipUnk = !!s.shippingUnknown && !(ship > 0);
+    const isUnlinked = !s.inventoryId && (s.source === 'mail' || s.needsLink === true);
+    if (feeEst) feeEstimatedCount++;
+    if (shipUnk) shipUnknown++;
+    if (isUnlinked && s.needsLink !== false) { unlinked++; unlinkedYen += price; }
+    const mi = mIdx(s.saleDate);
+    const pk = platKey(s.platform);
+    if (mi >= 0) { const b = byMonth[mi]; b.sales[pk] += price; b.salesTotal += price; b.salesCount++; b.fee += fee; b.ship += ship; }
+    saleRows.push({ date: s.saleDate, platform: s.platform || '', title: (item && item.productName) || s.mailTitle || '', price, fee, feeEst, ship, shipUnk, net: price - fee - ship,
+      mgmtNo: (item && item.mgmtNo) || '', pp: item ? num(item.purchasePrice) : (num(s.purchasePrice) || ''), linked: !!item });
+  });
+  saleRows.sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
+  // ── 仕入 ──
+  const buyKind = (i) => i.purchaseType === 'store' ? '店舗' : ((i.purchaseStoreType === 'yahoo' || i.yahooAuctionId) ? 'ヤフオク' : 'オンライン他');
+  const buyRows = [];
+  let buyPlaceholder = 0, buyPlaceholderYen = 0;
+  inv.filter(i => (i.purchaseDate || '').startsWith(Y)).forEach(i => {
+    const total = num(i.purchasePrice);
+    const kind = buyKind(i);
+    const mi = mIdx(i.purchaseDate);
+    if (mi >= 0) { const b = byMonth[mi]; b.buy[kind] += total; b.buyTotal += total; b.buyCount++; }
+    if (i.needsDetail) { buyPlaceholder++; buyPlaceholderYen += total; }
+    const pc = i.purchaseCost || {};
+    buyRows.push({ date: i.purchaseDate, store: i.purchaseStore || '', title: ((i.brand ? i.brand + ' ' : '') + (i.productName || '')).trim(), mgmtNo: i.mgmtNo || '',
+      item: num(i.itemPriceTaxIn) || num(pc.itemPriceTaxIn) || '', ship: num(i.shippingTaxIn) || num(pc.shippingTaxIn) || 0, coupon: num(i.couponTaxIn),
+      total, pay: i.paymentMethod || '', orderId: i.yahooAuctionId || i.orderId || '', kind });
+  });
+  buyRows.sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
+  // ── 棚卸（日付時点で在庫だったもの）──
+  let soldNoDate = 0;
+  const soldDateOf = (i) => {
+    const s = saleByInv.get(i.id);
+    if (s && s.saleDate) return s.saleDate;
+    if (i.soldAt) return taxLocalDate(i.soldAt);
+    if (i.status === 'sold') return null; // 売却済みだが日付不明
+    return '';
+  };
+  const stockAt = (asOf, collect) => {
+    // asOf = その日の終わり時点（YYYY-MM-DD）。購入日<=asOf かつ 売却日が asOf より後 or 未売却
+    let sum = 0, cnt = 0;
+    inv.forEach(i => {
+      const pd = i.purchaseDate || '';
+      if (!pd || pd > asOf) return;
+      const sd = soldDateOf(i);
+      if (sd === null) return;              // 日付不明の売却済みは含めない（警告で数える）
+      if (sd && sd <= asOf) return;
+      const p = num(i.purchasePrice);
+      sum += p; cnt++;
+      if (collect) collect.push({ date: pd, store: i.purchaseStore || '', title: ((i.brand ? i.brand + ' ' : '') + (i.productName || '')).trim(), mgmtNo: i.mgmtNo || '', price: p, status: i.status || '' });
+    });
+    return { sum, cnt };
+  };
+  inv.forEach(i => { if (i.status === 'sold' && soldDateOf(i) === null) soldNoDate++; });
+  const closingRows = [];
+  const closing = stockAt(Y + '-12-31', closingRows);
+  closingRows.sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
+  const opening = stockAt((Number(Y) - 1) + '-12-31', null);
+  const openingOld = inv.filter(i => (i.purchaseDate || '') && (i.purchaseDate < Y + '-01-01')).length;
+  // ── 未完了 ──
+  const spOpen = (data.storePending || []).filter(e => e && e.status === 'open' && (!e.date || String(e.date).startsWith(Y)));
+  const spYen = spOpen.reduce((a, e) => {
+    const linked = (e.linkedItemIds || []).reduce((s, id) => { const it = invById.get(id); return s + (it ? num(it.purchasePrice) : 0); }, 0);
+    return a + Math.max(0, Math.round(num(e.amount) - linked));
+  }, 0);
+  const yearInv = inv.filter(i => (i.purchaseDate || '').startsWith(Y));
+  const priceUnc = yearInv.filter(i => i.priceUnconfirmed);
+  const auditOpen = inv.filter(i => i.auditCheck && !i.auditCheck.resolved);
+  const dupOpen = inv.filter(i => i.dupCheck && !i.dupCheck.resolved);
+  const dupGroups = new Set(dupOpen.map(i => i.dupCheck.group)).size;
+  const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+  const totals = {
+    sales: sum(byMonth, b => b.salesTotal), salesCount: sum(byMonth, b => b.salesCount),
+    fee: sum(byMonth, b => b.fee), ship: sum(byMonth, b => b.ship),
+    buy: sum(byMonth, b => b.buyTotal), buyCount: sum(byMonth, b => b.buyCount),
+    byPlatform: { 'メルカリ': sum(byMonth, b => b.sales['メルカリ']), 'ラクマ': sum(byMonth, b => b.sales['ラクマ']), 'ヤフオク': sum(byMonth, b => b.sales['ヤフオク']), 'その他': sum(byMonth, b => b.sales['その他']) },
+    buyByKind: { '店舗': sum(byMonth, b => b.buy['店舗']), 'ヤフオク': sum(byMonth, b => b.buy['ヤフオク']), 'オンライン他': sum(byMonth, b => b.buy['オンライン他']) },
+  };
+  return {
+    year: Y, byMonth, totals, saleRows, buyRows, closingRows,
+    closing, opening, openingOldItems: openingOld,
+    warn: {
+      unlinkedCount: unlinked, unlinkedYen, shipUnknown, feeEstimatedCount,
+      storePendingCount: spOpen.length, storePendingYen: spYen,
+      priceUnconfirmedCount: priceUnc.length, priceUnconfirmedYen: sum(priceUnc, i => num(i.purchasePrice)),
+      auditOpenCount: auditOpen.length, dupOpenCount: dupOpen.length, dupGroups,
+      placeholderCount: buyPlaceholder, placeholderYen: buyPlaceholderYen, soldNoDate,
+    },
+  };
+};
+const taxDownloadCsv = async (rows, filename) => {
+  const csv = rows.map(r => r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(',')).join('\n');
+  const file = new File(['﻿' + csv], filename, { type: 'text/csv;charset=utf-8;' });
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: filename }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+const TaxSummaryPanel = ({ data, setData, toast }) => {
+  const [year, setYear] = React.useState('2026');
+  const [open, setOpen] = React.useState(false);
+  const [openingInput, setOpeningInput] = React.useState('');
+  const sum = React.useMemo(() => open ? computeTaxSummary(data, year) : null, [open, data.inventory, data.sales, data.storePending, year]);
+  const ty = ((data.settings || {}).taxYear || {})[year] || {};
+  React.useEffect(() => { setOpeningInput(ty.openingInventory != null && ty.openingInventory !== '' ? String(ty.openingInventory) : ''); }, [year, ty.openingInventory]);
+  React.useEffect(() => { window.__taxSummary = sum; }, [sum]);
+  const yen = (v) => '¥' + (Number(v) || 0).toLocaleString();
+  const years = ['2024', '2025', '2026', '2027'];
+  const saveOpening = (val) => {
+    const cur = (data.settings || {}).taxYear || {};
+    const next = { ...cur, [year]: { ...(cur[year] || {}) } };
+    if (val === null) delete next[year].openingInventory; else next[year].openingInventory = val;
+    setData({ ...data, settings: { ...(data.settings || {}), taxYear: next } });
+    toast(val === null ? '期首棚卸高の手入力を解除しました' : '期首棚卸高を保存しました');
+  };
+  const box = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 12px', marginBottom: 10 };
+  const row = { display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', gap: 8 };
+  const h = { fontWeight: 700, fontSize: 13, marginBottom: 4, color: '#374151' };
+  const btn = { padding: '9px 10px', borderRadius: 8, border: '1px solid #d1d5db', background: '#f9fafb', fontSize: 12, fontWeight: 700, flex: '1 1 45%' };
+  const body = () => {
+    const t = sum.totals, w = sum.warn;
+    const manual = ty.openingInventory != null && ty.openingInventory !== '' && isFinite(Number(ty.openingInventory));
+    const openingVal = manual ? Number(ty.openingInventory) : sum.opening.sum;
+    const cogs = openingVal + t.buy - sum.closing.sum;
+    const gross = t.sales - cogs - t.fee - t.ship;
+    const warns = [
+      ['未紐付け売上（仕入値が不明のまま）', w.unlinkedCount, yen(w.unlinkedYen)],
+      ['送料未入力の売上', w.shipUnknown, ''],
+      ['店舗仕入れ未入力（仕入高にまだ入っていない）', w.storePendingCount, yen(w.storePendingYen)],
+      ['要確認（未解決）', w.auditOpenCount, ''],
+      ['重複候補（未解決・' + w.dupGroups + 'グループ）', w.dupOpenCount, ''],
+      ['金額未確定（仕入額）', w.priceUnconfirmedCount, yen(w.priceUnconfirmedYen)],
+      ['中身未入力の仮登録（仕入高には含む）', w.placeholderCount, yen(w.placeholderYen)],
+      ['手数料が料率からの計算値（実額でない）', w.feeEstimatedCount, ''],
+      ['売却済みで売却日が不明', w.soldNoDate, ''],
+    ];
+    const csvMonthly = () => {
+      const h1 = ['月', 'メルカリ売上', 'ラクマ売上', 'ヤフオク売上', 'その他売上', '売上合計', '売上件数', '販売手数料', '販売送料', '仕入(店舗)', '仕入(ヤフオク)', '仕入(オンライン他)', '仕入合計', '仕入件数'];
+      const rows = sum.byMonth.map(b => [b.month, b.sales['メルカリ'], b.sales['ラクマ'], b.sales['ヤフオク'], b.sales['その他'], b.salesTotal, b.salesCount, b.fee, b.ship, b.buy['店舗'], b.buy['ヤフオク'], b.buy['オンライン他'], b.buyTotal, b.buyCount]);
+      rows.push(['合計', t.byPlatform['メルカリ'], t.byPlatform['ラクマ'], t.byPlatform['ヤフオク'], t.byPlatform['その他'], t.sales, t.salesCount, t.fee, t.ship, t.buyByKind['店舗'], t.buyByKind['ヤフオク'], t.buyByKind['オンライン他'], t.buy, t.buyCount]);
+      rows.push([]);
+      rows.push(['期首棚卸高' + (manual ? '(手入力)' : '(アプリ計算)'), openingVal]);
+      rows.push(['仕入高', t.buy]); rows.push(['期末棚卸高', sum.closing.sum]);
+      rows.push(['売上原価', cogs]); rows.push(['粗利(売上-原価-手数料-送料)', gross]);
+      return [h1, ...rows];
+    };
+    return (
+      <div>
+        <div style={box}>
+          <div style={h}>売上高</div>
+          <div style={row}><span>売上高（{t.salesCount}件）</span><b>{yen(t.sales)}</b></div>
+          {Object.keys(t.byPlatform).map(p => <div key={p} style={{ ...row, color: '#6b7280', paddingLeft: 10 }}><span>{p}</span><span>{yen(t.byPlatform[p])}</span></div>)}
+          <div style={row}><span>販売手数料{w.feeEstimatedCount > 0 ? '（うち' + w.feeEstimatedCount + '件は料率計算）' : ''}</span><b>{yen(t.fee)}</b></div>
+          <div style={row}><span>販売送料{w.shipUnknown > 0 ? '（⚠️' + w.shipUnknown + '件 送料未入力）' : ''}</span><b>{yen(t.ship)}</b></div>
+        </div>
+        <div style={box}>
+          <div style={h}>仕入高</div>
+          <div style={row}><span>仕入高（{t.buyCount}点）</span><b>{yen(t.buy)}</b></div>
+          {Object.keys(t.buyByKind).map(p => <div key={p} style={{ ...row, color: '#6b7280', paddingLeft: 10 }}><span>{p}</span><span>{yen(t.buyByKind[p])}</span></div>)}
+        </div>
+        <div style={box}>
+          <div style={h}>棚卸・売上原価・粗利</div>
+          <div style={row}><span>期首棚卸高（{year}/1/1）{manual ? '＝手入力' : '＝アプリ計算'}</span><b>{yen(openingVal)}</b></div>
+          <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb', borderRadius: 6, padding: '5px 8px', margin: '2px 0 6px', lineHeight: 1.5 }}>
+            アプリで計算した値は {yen(sum.opening.sum)}（{sum.opening.cnt}点）。{Number(year) - 1}年以前に仕入れた在庫の多くはアプリに入っていないため、実際の期首棚卸高は別に管理している数字になります。その数字を下に入れると、そちらを使います。
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            <input type="number" inputMode="numeric" value={openingInput} onChange={e => setOpeningInput(e.target.value)} placeholder="期首棚卸高を手入力（円）"
+              style={{ flex: 1, minWidth: 0, padding: '8px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 14 }} />
+            <button style={{ ...btn, flex: '0 0 auto' }} onClick={() => { const v = Number(openingInput); if (openingInput === '' || !isFinite(v) || v < 0) { toast('金額を入れてください'); return; } saveOpening(Math.round(v)); }}>保存</button>
+            {manual && <button style={{ ...btn, flex: '0 0 auto' }} onClick={() => saveOpening(null)}>解除</button>}
+          </div>
+          <div style={row}><span>＋ 仕入高</span><span>{yen(t.buy)}</span></div>
+          <div style={row}><span>－ 期末棚卸高（{year}/12/31・{sum.closing.cnt}点）</span><span>{yen(sum.closing.sum)}</span></div>
+          <div style={{ ...row, borderTop: '1px solid #e5e7eb', marginTop: 4, paddingTop: 6 }}><span>売上原価</span><b>{yen(cogs)}</b></div>
+          <div style={row}><span>粗利（売上－原価－手数料－送料）</span><b style={{ color: gross < 0 ? '#dc2626' : '#047857' }}>{yen(gross)}</b></div>
+        </div>
+        <div style={{ ...box, borderColor: '#fcd34d', background: '#fffbeb' }}>
+          <div style={h}>⚠️ 未完了チェック</div>
+          {warns.map(([label, n, y]) => (
+            <div key={label} style={{ ...row, color: n > 0 ? '#b45309' : '#9ca3af', fontWeight: n > 0 ? 700 : 400 }}>
+              <span>{n > 0 ? '⚠️ ' : '✓ '}{label}</span><span>{n}件{y ? '・' + y : ''}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <button style={btn} onClick={() => taxDownloadCsv(csvMonthly(), '年間まとめ_月別サマリー_' + year + '.csv')}>月別サマリーCSV</button>
+          <button style={btn} onClick={() => taxDownloadCsv([['販売日', '販路', '商品名', '売価', '手数料', '手数料区分', '送料', '送料未入力', '差引(売価-手数料-送料)', '紐付け管理番号', '仕入額'],
+            ...sum.saleRows.map(r => [r.date, r.platform, r.title, r.price, r.fee, r.feeEst ? '料率計算' : '実額', r.ship, r.shipUnk ? '未入力' : '', r.net, r.mgmtNo, r.pp])], '年間まとめ_売上明細_' + year + '.csv')}>売上明細CSV</button>
+          <button style={btn} onClick={() => taxDownloadCsv([['仕入日', '仕入先', '種別', '商品名', '管理番号', '商品代', '送料', 'クーポン', '仕入合計', '支払方法', '注文ID/オークションID'],
+            ...sum.buyRows.map(r => [r.date, r.store, r.kind, r.title, r.mgmtNo, r.item, r.ship, r.coupon, r.total, r.pay, r.orderId])], '年間まとめ_仕入明細_' + year + '.csv')}>仕入明細CSV</button>
+          <button style={btn} onClick={() => taxDownloadCsv([['仕入日', '仕入先', '商品名', '管理番号', '仕入額', 'ステータス'],
+            ...sum.closingRows.map(r => [r.date, r.store, r.title, r.mgmtNo, r.price, r.status])], '年間まとめ_期末在庫一覧_' + year + '.csv')}>期末在庫一覧CSV</button>
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ ...box, borderColor: '#93c5fd' }}>
+        <div onClick={() => setOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>📊 年間まとめ（税理士用）</span>
+          <span style={{ fontSize: 12, color: '#6b7280' }}>{open ? '閉じる ▲' : '開く ▼'}</span>
+        </div>
+        {open && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 13 }}>対象年</span>
+              <select value={year} onChange={e => setYear(e.target.value)} style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 14 }}>
+                {years.map(y => <option key={y} value={y}>{y}年</option>)}
+              </select>
+              <span style={{ fontSize: 11, color: '#9ca3af' }}>画面上で計算するだけ（保存はしません）</span>
+            </div>
+            {sum && body()}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
 // エクスポートパネル（独立コンポーネント）
 // ============================================================
 const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, exportKobotsuCSV, setTab, setPendingEditSaleId, setEditingItem, setPendingReturnTab, setPendingReturnSection }) => {
@@ -16394,6 +16655,7 @@ const OtherTab = ({ mode }) => {
             <div style={{fontWeight:700,fontSize:14,color:'#555',marginBottom:8,paddingBottom:6,borderBottom:'1px solid #e5e7eb'}}>
               📊 エクスポート
             </div>
+            <TaxSummaryPanel data={data} setData={setData} toast={toast} />
             <ExportPanel
               data={data}
               settings={settings}
