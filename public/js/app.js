@@ -6035,6 +6035,9 @@ const InventoryTab = () => {
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
   const [groupBundles, setGroupBundles] = React.useState(() => localStorage.getItem('nobushop_group_bundles') !== '0');
   const [openBundles, setOpenBundles] = React.useState(() => new Set());
+  // 一覧の表示密度（標準／コンパクト）。端末ごとに記憶。既定はコンパクト
+  const [compact, setCompactState] = React.useState(() => { try { return localStorage.getItem('invCompact') !== '0'; } catch (e) { return true; } });
+  const setCompact = (v) => { setCompactState(v); try { localStorage.setItem('invCompact', v ? '1' : '0'); } catch (e) {} };
   const [bundleTypeDraft, setBundleTypeDraft] = React.useState('');   // '' | 'individual' | 'set'
   const [bundleItemDraft, setBundleItemDraft] = React.useState({});   // { [itemId]: '文字列' } 商品代（送料抜き）
   const [bundleSetTotalIn, setBundleSetTotalIn] = React.useState(''); // セット総額（商品代の合計）
@@ -7374,7 +7377,17 @@ const InventoryTab = () => {
             {filter === 'all' ? '在庫がありません' : filter === 'priceUnconfirmed' ? '仕入額 未確定の商品がありません' : (filter === 'bundleIndividual' || filter === 'bundleSet' || filter === 'bundleAll') ? 'まだ分類されていません。まとめ買いのカードの「仕入れ内訳を編集」で種類を選べます' : filter === 'bundleNone' ? '未分類のまとめ買いはありません' : filter === 'auditCheck' ? '要確認の商品はありません' : filter === 'dupCheck' ? '重複候補はありません' : filter === 'coupon' ? 'クーポン利用の商品がありません' : filter === 'needsDetail' ? '中身未入力の商品はありません' : `${statusLabel[filter]}の商品がありません`}
           </div>
         ) : (
-          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          <div style={{display:'flex',flexDirection:'column',gap: compact ? 6 : 10}}>
+            <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:6,fontSize:11,color:'#9ca3af'}}>
+              <span>表示</span>
+              {[[false,'標準'],[true,'コンパクト']].map(([v,l]) => (
+                <button key={l} onClick={() => setCompact(v)}
+                  style={{padding:'4px 10px',borderRadius:99,fontSize:11,fontWeight:700,cursor:'pointer',touchAction:'manipulation',
+                    border: compact === v ? '1.5px solid var(--color-primary)' : '1px solid #e5e7eb',
+                    background: compact === v ? '#fff0f0' : '#fff',
+                    color: compact === v ? 'var(--color-primary)' : '#6b7280'}}>{l}</button>
+              ))}
+            </div>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
               const useGrouping = groupBundles && (!bulkMode || bulkKind === 'list') && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck';
@@ -7535,7 +7548,7 @@ const InventoryTab = () => {
                     <React.Fragment key={`bundle-${bundleGroup}`}>
                       {/* まとめカード本体 */}
                       <div className="card"
-                        style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
+                        style={{padding: compact ? '7px 10px' : '12px 14px',display:'flex',alignItems:'center',gap: compact ? 9 : 12,cursor:'pointer',
                           background:'white',
                           border:'1.5px solid #c7d2fe',
                           borderLeft:'4px solid #4338ca',
@@ -7561,7 +7574,7 @@ const InventoryTab = () => {
                         })()}
                         {/* サムネイル＋残り件数バッジ */}
                         <div style={{position:'relative',flexShrink:0}}>
-                          <ItemThumbnail thumbId={headPhoto?.thumbId} thumbDataUrl={headPhoto?.thumbDataUrl} size={68} fallback="📦" />
+                          <ItemThumbnail thumbId={headPhoto?.thumbId} thumbDataUrl={headPhoto?.thumbDataUrl} size={compact ? 56 : 68} fallback="📦" />
                           {restCount > 0 && (
                             <span style={{position:'absolute',bottom:-4,right:-4,fontSize:9,fontWeight:800,
                               background:'#4338ca',color:'white',borderRadius:99,padding:'1px 5px',
@@ -7572,53 +7585,53 @@ const InventoryTab = () => {
                         </div>
                         {/* テキスト情報 */}
                         <div style={{flex:1,minWidth:0}}>
-                          <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap',marginBottom:3}}>
-                            <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                          <div style={{display:'flex',alignItems:'center',gap:4,flexWrap: compact ? 'nowrap' : 'wrap',overflow: compact ? 'hidden' : undefined,marginBottom: compact ? 2 : 3}}>
+                            <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,fontWeight:700,padding: compact ? '1px 5px' : '2px 7px',borderRadius:99,
                               background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
-                              📦 まとめ買い {members.length}点
+                              {compact ? `📦 ${members.length}点` : `📦 まとめ買い ${members.length}点`}
                             </span>
                             {firstItem.bundleType === 'individual' ? (
-                              <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                              <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,fontWeight:700,padding: compact ? '1px 5px' : '2px 7px',borderRadius:99,
                                 background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
-                                📦 個別（同梱）
+                                {compact ? '個別' : '📦 個別（同梱）'}
                               </span>
                             ) : firstItem.bundleType === 'set' ? (
-                              <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                              <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,fontWeight:700,padding: compact ? '1px 5px' : '2px 7px',borderRadius:99,
                                 background:'#fdf4ff',color:'#86198f',border:'1px solid #f0abfc'}}>
-                                🎁 まとめ仕入れ購入
+                                {compact ? '🎁 セット' : '🎁 まとめ仕入れ購入'}
                               </span>
                             ) : (
-                              <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                              <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,fontWeight:700,padding: compact ? '1px 5px' : '2px 7px',borderRadius:99,
                                 background:'#f3f4f6',color:'#6b7280',border:'1px solid #e5e7eb'}}>
-                                ❓ 未分類
+                                {compact ? '❓ 未分類' : '❓ 未分類'}
                               </span>
                             )}
                             {unconfirmedCount > 0 && (
-                              <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,
+                              <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,fontWeight:800,padding: compact ? '1px 5px' : '2px 7px',borderRadius:99,
                                 background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>
-                                💰 金額未確定 {unconfirmedCount}点
+                                {compact ? `💰 未確定${unconfirmedCount}` : `💰 金額未確定 ${unconfirmedCount}点`}
                               </span>
                             )}
                             {splitOrigin && (
                               <span onClick={e => { e.stopPropagation(); setSplitOriginOpen(bundleGroup); }}
-                                style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,cursor:'pointer',
+                                style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,fontWeight:800,padding: compact ? '1px 5px' : '2px 7px',borderRadius:99,cursor:'pointer',
                                   background:'#f0fdfa',color:'#115e59',border:'1px solid #5eead4'}}>
-                                ✂️ 分割前のデータ
+                                {compact ? '✂️ 分割前' : '✂️ 分割前のデータ'}
                               </span>
                             )}
-                            <span style={{fontSize:11,color:'#9ca3af',fontWeight:600}}>
+                            <span style={{fontSize:11,color:'#9ca3af',fontWeight:600,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                               {firstItem.purchaseStore || ''}{firstItem.purchaseDate ? `　${firstItem.purchaseDate.replace(/-/g, '/')}` : ''}
                             </span>
                           </div>
                           {brandSummary ? (
-                            <div style={{fontSize:12,color:'#555',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:3}}>
+                            <div style={{fontSize:12,color:'#555',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom: compact ? 1 : 3}}>
                               {brandSummary}
                             </div>
                           ) : null}
                           <div style={{display:'flex',alignItems:'baseline',gap:6,flexWrap:'wrap'}}>
-                            <span style={{fontSize:10,color:'#bbb'}}>仕入れ合計</span>
+                            <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,color:'#bbb'}}>仕入れ合計</span>
                             <span style={{fontSize:13,fontWeight:700,color:'#555'}}>¥{formatMoney(grandTotal)}</span>
-                            <span style={{fontSize:10,color:'#9ca3af'}}>売却 {soldCount}/{members.length}点</span>
+                            <span style={{whiteSpace:'nowrap',flexShrink:0,fontSize: compact ? 9.5 : 10,color:'#9ca3af'}}>売却 {soldCount}/{members.length}点</span>
                             {hasSold && (
                               <>
                                 <span style={{fontSize:12,fontWeight:700,color:'#111827'}}>売上合計 ¥{formatMoney(totalSalePrice)}</span>
@@ -7647,12 +7660,12 @@ const InventoryTab = () => {
                             const mProfitPos = mProfit !== null ? mProfit >= 0 : null;
                             return (
                               <div key={m.id}
-                                style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',
+                                style={{display:'flex',alignItems:'center',gap: compact ? 8 : 10,padding: compact ? '6px 10px' : '10px 14px',
                                   borderBottom:'1px solid #f0f0f0',cursor:'pointer'}}
                                 onClick={e => { e.stopPropagation(); setSelected(m); }}>
                                 {/* サムネイル */}
                                 <div style={{position:'relative',flexShrink:0}}>
-                                  <ItemThumbnail thumbId={m.photos?.[0]?.thumbId} thumbDataUrl={m.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                                  <ItemThumbnail thumbId={m.photos?.[0]?.thumbId} thumbDataUrl={m.photos?.[0]?.thumbDataUrl} size={compact ? 38 : 44} fallback="📦" />
                                   {mIsSold && (
                                     <div style={{position:'absolute',inset:0,borderRadius:8,
                                       background:'rgba(124,58,237,0.15)',
@@ -7666,13 +7679,14 @@ const InventoryTab = () => {
                                 </div>
                                 {/* 商品名・ステータス */}
                                 <div style={{flex:1,minWidth:0}}>
-                                  <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.03em',textTransform:'uppercase',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                  {!compact && <div style={{fontSize:11,color:'#aaa',fontWeight:700,letterSpacing:'0.03em',textTransform:'uppercase',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                                     {m.brand}
-                                  </div>
+                                  </div>}
                                   <div style={{fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: mIsSold ? '#555' : '#111'}}>
                                     {m.productName}
                                   </div>
-                                  <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:2}}>
+                                  <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:2,alignItems:'center'}}>
+                                    {compact && m.brand ? <span style={{fontSize:10,color:'#aaa',fontWeight:700,textTransform:'uppercase',maxWidth:80,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.brand}</span> : null}
                                     {mIsSold ? (
                                       <span style={{fontSize:9,fontWeight:700,borderRadius:5,padding:'1px 6px',
                                         background:'#ede9fe',color:'#6d28d9',border:'1px solid #ddd6fe'}}>
@@ -7684,12 +7698,12 @@ const InventoryTab = () => {
                                         {statusLabel[m.status] || '未出品'}
                                       </span>
                                     )}
-                                    {conditionTag(m.condition)}
+                                    {(!compact || m.condition) && conditionTag(m.condition)}
                                   </div>
                                 </div>
                                 {/* 金額：仕入れ → 売価 → 利益 */}
                                 <div style={{textAlign:'right',flexShrink:0}}>
-                                  <div style={{fontSize:10,color:'#bbb',marginBottom:1}}>仕入れ</div>
+                                  {!compact && <div style={{fontSize:10,color:'#bbb',marginBottom:1}}>仕入れ</div>}
                                   <div style={{fontSize:12,fontWeight:700,color:'#555'}}>
                                     ¥{formatMoney(mPP)}
                                   </div>
@@ -7762,7 +7776,7 @@ const InventoryTab = () => {
                 return (
                   <React.Fragment key={item.id}>
                   <div className="card"
-                    style={{padding:'12px 14px',display:'flex',alignItems:'center',gap:12,cursor:'pointer',
+                    style={{padding: compact ? '7px 10px' : '12px 14px',display:'flex',alignItems:'center',gap: compact ? 8 : 12,cursor:'pointer',
                       background: isChecked ? '#fef2f2'
                                 : isSold ? '#f8f8f8'
                                 : alert?.level==='danger' ? '#fff8f8' : 'white',
@@ -7775,6 +7789,131 @@ const InventoryTab = () => {
                       opacity: isSold ? 0.85 : 1,
                       transition:'all 0.15s'}}
                     onClick={bulkMode ? (e) => { if (bulkKind === 'list' && item.status !== 'unlisted') { e.stopPropagation(); return; } toggleCheck(item.id, e); } : () => setSelected(item)}>
+                    {compact ? (
+                    <>
+                    {bulkMode && (
+                      <input type="checkbox" checked={isChecked} disabled={bulkKind === 'list' && item.status !== 'unlisted'}
+                        onChange={e => toggleCheck(item.id, e)}
+                        onClick={e => e.stopPropagation()}
+                        style={{width:22,height:22,flexShrink:0,cursor:'pointer',accentColor:'var(--color-primary)'}} />
+                    )}
+                    <div style={{position:'relative',flexShrink:0}}>
+                      <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={56} fallback="📦" />
+                      {isSold ? (
+                        <div style={{position:'absolute',inset:0,borderRadius:10,background:'rgba(124,58,237,0.15)',
+                          display:'flex',alignItems:'center',justifyContent:'center'}}>
+                          <span style={{fontSize:8,fontWeight:800,color:'white',background:'#7c3aed',borderRadius:4,padding:'1px 4px'}}>SOLD</span>
+                        </div>
+                      ) : (
+                        <span className={`tag ${statusClass[item.status] || 'tag-unlisted'}`}
+                          style={{position:'absolute',bottom:-5,left:'50%',transform:'translateX(-50%)',whiteSpace:'nowrap',fontSize:9,padding:'1px 5px',lineHeight:'13px'}}>
+                          {statusLabel[item.status] || '未出品'}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:13,lineHeight:1.3,color: isSold ? '#555' : '#111',
+                        display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName}</div>
+                      {filter === 'dupCheck' && item.dupCheck?.reason && (
+                        <div style={{fontSize:11,color:'#9ca3af',lineHeight:1.3}}>{item.dupCheck.reason}</div>
+                      )}
+                      {filter === 'dupCheck' && !bulkMode && (
+                        <button onClick={(e) => { e.stopPropagation(); deleteDupItem(item); }}
+                          style={{padding:'5px 10px',borderRadius:99,border:'1px solid #fca5a5',background:'white',color:'#b91c1c',
+                            fontSize:11,fontWeight:700,cursor:'pointer',margin:'2px 0',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                          🗑 重複なので削除
+                        </button>
+                      )}
+                      <div style={{display:'flex',alignItems:'center',gap:4,flexWrap:'wrap',marginTop:1,fontSize:10.5,lineHeight:'16px',color: isSold ? '#9ca3af' : '#aaa'}}>
+                        {(item.brand || item.purchaseDate) && (
+                          <span style={{maxWidth:'100%',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontWeight:700}}>
+                            {item.brand ? <span style={{textTransform:'uppercase',display:'inline-block',maxWidth:84,overflow:'hidden',textOverflow:'ellipsis',verticalAlign:'bottom'}}>{item.brand}</span> : null}
+                            {item.brand && item.purchaseDate ? ' · ' : ''}{item.purchaseDate ? item.purchaseDate.slice(5).replace('-', '/') : ''}
+                          </span>
+                        )}
+                        {isDupOpen(item) && (
+                          <span style={{fontSize:9.5,fontWeight:800,padding:'0 5px',borderRadius:99,background:'#fce7f3',color:'#9d174d'}}>🔁{dupGroupNo(item)}</span>
+                        )}
+                        {item.priceUnconfirmed && (
+                          <span style={{fontSize:9.5,fontWeight:800,padding:'0 5px',borderRadius:99,background:'#fffbeb',color:'#b45309',border:'1px solid #fcd34d'}}>💰未確定</span>
+                        )}
+                        {filter === 'coupon' && hasCoupon(item) && (
+                          <span style={{fontSize:9.5,fontWeight:800,padding:'0 5px',borderRadius:99,background:'#f0fdfa',color:'#115e59',border:'1px solid #5eead4'}}>🎟️−¥{couponAmt(item).toLocaleString()}</span>
+                        )}
+                        {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
+                          <span style={{fontSize:9.5,fontWeight:700,padding:'0 5px',borderRadius:99,background:'#eef2ff',color:'#4338ca'}}>📦{bundleCounts[item.bundleGroup]}</span>
+                        )}
+                        {item.condition ? (
+                          <span className={`tag ${({S:'tag-s',A:'tag-a',B:'tag-b',C:'tag-c'})[item.condition] || 'tag-b'}`} style={{fontSize:9.5,padding:'0 5px',lineHeight:'14px'}}>{item.condition}</span>
+                        ) : null}
+                        {isSold && (
+                          <span style={{fontSize:9.5,fontWeight:700,borderRadius:5,padding:'0 5px',background:'#ede9fe',color:'#6d28d9'}}>
+                            ✅売却済{saleRecord?.saleDate ? ` ${saleRecord.saleDate.slice(5)}` : ''}
+                          </span>
+                        )}
+                        {item.status === 'unlisted' && (() => {
+                          const done = [
+                            (item.photos||[]).length > 0, !!item.productName, (item.listPrice||0) > 0,
+                            !!item.listDate, !!item.descriptionText, !!item.englishTitle,
+                          ].filter(Boolean).length;
+                          return done === 6
+                            ? <span style={{fontSize:9.5,fontWeight:700,color:'#16a34a'}}>✅準備OK</span>
+                            : <span style={{fontSize:9.5,fontWeight:700,color:'#9ca3af'}}>準備{done}/6</span>;
+                        })()}
+                        {alert && !isSold && (
+                          <span style={{fontSize:9.5,fontWeight:700,color:'#6b7280'}}>{alert.days}日</span>
+                        )}
+                      </div>
+                      <div style={{display:'flex',alignItems:'baseline',gap:6,lineHeight:'17px'}}>
+                        {isSold ? (
+                          <>
+                            <span style={{fontSize:12,fontWeight:800,color:'#111827'}}>{saleRecord ? `¥${formatMoney(saleRecord.salePrice)}` : '−'}</span>
+                            {soldProfit !== null && (
+                              <span style={{fontSize:11,fontWeight:800,color: isProfitable ? '#16a34a' : '#dc2626'}}>
+                                {isProfitable?'+':''}¥{formatMoney(soldProfit)}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {item.listPrice > 0 && <span style={{fontSize:12,fontWeight:700,color:'var(--color-primary)'}}>¥{formatMoney(item.listPrice)}</span>}
+                            {estProfit !== 0 && (
+                              <span style={{fontSize:10.5,fontWeight:700,color: estProfit > 0 ? '#16a34a' : '#dc2626'}}>
+                                {estProfit > 0 ? '+' : ''}¥{formatMoney(estProfit)}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{flexShrink:0,width:88,display:'flex',flexDirection:'column',alignItems:'stretch',gap:4}}>
+                      {bulkMode ? (
+                        <div style={{fontSize:13,fontWeight:700,color:'#555',textAlign:'right'}}>
+                          ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
+                        </div>
+                      ) : (
+                        <input type="number" inputMode="numeric" placeholder="仕入れ値"
+                          value={isInline ? inlineDraft.price
+                            : (() => { const p = isSold ? soldPP : (item.purchasePrice||0);
+                                       return p > 0 ? String(p) : ''; })()}
+                          onClick={e => e.stopPropagation()}
+                          onFocus={e => { e.stopPropagation(); if (!isInline) openInlineEdit(item); }}
+                          onChange={e => setInlineDraft(d => ({...d, price: e.target.value}))}
+                          style={{width:'100%',boxSizing:'border-box',textAlign:'right',fontSize:13,fontWeight:700,color:'#555',
+                            padding:'3px 6px',height:28,borderRadius:8,background:'#fff',
+                            border: isInline ? '1.5px solid #b45309' : '1px solid #e5e7eb'}}/>
+                      )}
+                      {!bulkMode && item.status === 'unlisted' && (
+                        <button onClick={e => { e.stopPropagation(); quickListOne(item); }}
+                          style={{height:34,width:'100%',padding:'0 4px',borderRadius:9,border:'1.5px solid var(--color-primary)',
+                            background:'#fff',color:'var(--color-primary)',fontWeight:800,fontSize:12,cursor:'pointer',
+                            touchAction:'manipulation',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
+                          📱 出品中へ
+                        </button>
+                      )}
+                    </div>
+                    </>
+                    ) : (<>
                     {bulkMode && (
                       <input type="checkbox" checked={isChecked} disabled={bulkKind === 'list' && item.status !== 'unlisted'}
                         onChange={e => toggleCheck(item.id, e)}
@@ -7945,6 +8084,7 @@ const InventoryTab = () => {
                         </button>
                       ) : !bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                     </div>
+                    </>)}
                   </div>
                   {isInline && (() => {
                     const ip = Math.max(0, Number(inlineDraft.price) || 0);
