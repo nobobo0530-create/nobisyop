@@ -222,10 +222,10 @@ export default async function handler(req, res) {
       }
 
       const loadInventory = async () => {
-        if (full) return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc')).map(r => ({ ...r.data, id: r.id }));
+        if (full) return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc,id.asc')).map(r => ({ ...r.data, id: r.id }));
         // light列が使えれば小さい列だけ読む。無い(400)・失敗なら従来どおり
         try {
-          const rows = await sbFetchPaged('inventory?select=id,light,created_at&order=created_at.asc', 500);
+          const rows = await sbFetchPaged('inventory?select=id,light,created_at&order=created_at.asc,id.asc', 500);
           const need = rows.filter(r => !r.light).map(r => r.id);
           const fill = new Map();
           for (let i = 0; i < need.length; i += 20) {
@@ -237,13 +237,13 @@ export default async function handler(req, res) {
         } catch(e) {
           // 列が無い(400)ときだけ従来方式へ。タイムアウト等のときは重い取り直しをせずそのままエラーにする（DBに追い打ちしない）
           if (!/\[400\]/.test(e.message)) throw e;
-          return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc')).map(r => lightenItem({ ...r.data, id: r.id }));
+          return (await sbFetchPaged('inventory?select=id,data,created_at&order=created_at.asc,id.asc')).map(r => lightenItem({ ...r.data, id: r.id }));
         }
       };
 
       const [inv, sales] = await Promise.all([
         loadInventory(),
-        sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc'),
+        sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc,id.asc'),
       ]);
       const cfg = await sbFetch('app_settings?select=data&id=eq.default', {
         headers: { 'Accept': 'application/vnd.pgrst.object+json' },
