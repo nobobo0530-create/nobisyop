@@ -5858,8 +5858,14 @@ const InventoryTab = () => {
   };
   React.useEffect(() => { window.__devStorePending = (list) => setDevStorePending(list); return () => { try { delete window.__devStorePending; } catch(_) {} }; }, []);
   // 中身はあとで（仮登録）: 支払い1件につき仮の在庫を1点つくる。IDは支払いIDから決まる（端末が重なっても二重にならない）
+  // 残額 = 支払い額 − 紐付け済み（実在する在庫）の仕入額合計。マイナスにはしない
+  const remainingOf = (e) => {
+    const invMap = new Map((data.inventory || []).map(i => [i.id, i]));
+    const sum = (e.linkedItemIds || []).reduce((s, id) => { const it = invMap.get(id); return s + (it ? (Number(it.purchasePrice) || 0) : 0); }, 0);
+    return Math.max(0, Math.round((Number(e.amount) || 0) - sum));
+  };
   const buildPlaceholder = (e) => {
-    const amt = Math.max(0, Math.round(Number(e.amount) || 0));
+    const amt = remainingOf(e);
     const dm = String(e.date || '').match(/^\d{4}-(\d{2})-(\d{2})$/);
     const md = dm ? `${Number(dm[1])}/${Number(dm[2])}` : '';
     const now = new Date().toISOString();
@@ -5885,13 +5891,16 @@ const InventoryTab = () => {
   const registerPlaceholders = (entries) => {
     const now = new Date().toISOString();
     const have = new Set((data.inventory || []).map(i => i.id));
-    const items = entries.map(buildPlaceholder).filter(it => !have.has(it.id));
+    // 残額が0以下なら仮在庫は作らず「登録済み」にするだけ（まとめて1回の setData で書く）
+    const needs = entries.filter(e => remainingOf(e) > 0);
+    const items = needs.map(buildPlaceholder).filter(it => !have.has(it.id));
+    const makeIds = new Set(items.map(it => it.id));
     const byId = new Map(entries.map(e => [e.id, e]));
     setData({ ...data,
       inventory: [...(data.inventory || []), ...items],
       storePending: (data.storePending || []).map(x => byId.has(x.id)
-        ? { ...x, status: 'registered', linkedItemIds: [...new Set([...(x.linkedItemIds || []), `sp_${x.id}`])], updatedAt: now } : x) });
-    toast(`✅ ${entries.length}件を仮登録しました。「✏️ 中身未入力」から後で入力できます`);
+        ? { ...x, status: 'registered', linkedItemIds: makeIds.has(`sp_${x.id}`) ? [...new Set([...(x.linkedItemIds || []), `sp_${x.id}`])] : (x.linkedItemIds || []), updatedAt: now } : x) });
+    toast(`✅ ${entries.length}件を登録済みにしました（仮在庫 ${items.length}点）。「✏️ 中身未入力」から後で入力できます`);
   };
   const startStorePurchase = (e) => {
     setPendingStorePurchase({ id: e.id, store: e.store || '', date: e.date || '', amount: Number(e.amount) || 0, method: e.method || '' });
@@ -7154,8 +7163,8 @@ const InventoryTab = () => {
             <div style={{display:'flex',flexDirection:'column',gap:10}}>
               {devStorePending && <div style={{fontSize:11,color:'#b45309',fontWeight:700}}>※表示確認用のダミーです（保存されません）</div>}
               <button style={{...btn('#ea580c','white'),flex:'none',width:'100%'}} onClick={() => {
-                const total = storePendingOpen.reduce((a, e) => a + (Number(e.amount) || 0), 0);
-                if (!confirm(`${storePendingOpen.length}件（合計 ${yen(total)}）を中身未入力のまま仮登録しますか？`)) return;
+                const total = storePendingOpen.reduce((a, e) => a + remainingOf(e), 0);
+                if (!confirm(`${storePendingOpen.length}件（残り合計 ${yen(total)}）を中身未入力のまま仮登録しますか？`)) return;
                 if (devStorePending) { toast('表示確認用です'); return; }
                 registerPlaceholders(storePendingOpen);
               }}>まとめて仮登録（{storePendingOpen.length}件）</button>
@@ -7178,7 +7187,7 @@ const InventoryTab = () => {
                           {e.note && <div style={{fontSize:12,color:'#475569',marginTop:4,wordBreak:'break-all'}}>{e.note}</div>}
                           {(e.linkedItemIds || []).length > 0 && (
                             <div style={{fontSize:12,fontWeight:700,marginTop:6,color: linkedSum === Number(e.amount) ? '#166534' : '#b45309'}}>
-                              登録済み合計 {yen(linkedSum)} / 支払い {yen(e.amount)}（{linked.length}点）
+                              登録済み合計 {yen(linkedSum)} / 支払い {yen(e.amount)}（{linked.length}点）／残り {yen(remainingOf(e))}
                             </div>
                           )}
                           <div style={{display:'flex',gap:8,marginTop:10}}>
