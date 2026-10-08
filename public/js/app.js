@@ -1571,15 +1571,24 @@ const ToastContext = React.createContext(null);
 
 const ToastProvider = ({ children }) => {
   const [toasts, setToasts] = React.useState([]);
-  const show = React.useCallback((msg) => {
-    const id = Date.now();
-    setToasts(t => [...t, { id, msg }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 2500);
+  const show = React.useCallback((msg, opts) => {
+    const id = Date.now() + Math.random();
+    const ms = (opts && opts.duration) || 2500;
+    setToasts(t => [...t, { id, msg, action: opts && opts.action, ms }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms);
   }, []);
   return (
     <ToastContext.Provider value={show}>
       {children}
-      {toasts.map(t => <div key={t.id} className="toast">{t.msg}</div>)}
+      {toasts.map(t => t.action ? (
+        <div key={t.id} className="toast" style={{display:'flex',alignItems:'center',gap:12,padding:'6px 8px 6px 18px',animation:'toastIn 0.3s cubic-bezier(0.16,1,0.3,1)',pointerEvents:'auto'}}>
+          <span>{t.msg}</span>
+          <button onClick={() => { t.action.onClick(); setToasts(l => l.filter(x => x.id !== t.id)); }}
+            style={{minHeight:44,minWidth:64,padding:'0 14px',borderRadius:99,border:'none',background:'rgba(255,255,255,0.2)',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            {t.action.label}
+          </button>
+        </div>
+      ) : <div key={t.id} className="toast">{t.msg}</div>)}
     </ToastContext.Provider>
   );
 };
@@ -5928,6 +5937,12 @@ const InventoryTab = () => {
   const [splitCount, setSplitCount] = React.useState(2);     // 分割数
   const [splitItems, setSplitItems] = React.useState([]);    // [{productName, purchasePrice}]
   const [bulkMode, setBulkMode] = React.useState(false);
+  const [bulkKind, setBulkKind] = React.useState('delete'); // 'delete'=まとめて削除 / 'list'=まとめて出品中に
+  const [listSheetOpen, setListSheetOpen] = React.useState(false);
+  const [listSheetDate, setListSheetDate] = React.useState(today());
+  const [listSheetPlatform, setListSheetPlatform] = React.useState(''); // ''=変えない
+  const dataRefInv = React.useRef(data);
+  dataRefInv.current = data;
   const [checkedIds, setCheckedIds] = React.useState(new Set());
   const [bulkConfirm, setBulkConfirm] = React.useState(false);
   const [bulkPriceOpen, setBulkPriceOpen] = React.useState(false);
@@ -6698,7 +6713,19 @@ const InventoryTab = () => {
     });
   };
 
+  // まとめて出品中モード：選べるのは今の絞り込み結果のうち未出品のものだけ
+  const listPickable = React.useMemo(() => bulkKind === 'list' ? sorted.filter(i => i.status === 'unlisted') : sorted, [sorted, bulkKind]);
   const toggleAll = () => {
+    if (bulkKind === 'list') {
+      // 絞り込み結果の全部を選択（すでに全部選んでいれば、その分だけ外す。他の絞り込みで選んだ分は残す）
+      const everyOn = listPickable.length > 0 && listPickable.every(i => checkedIds.has(i.id));
+      setCheckedIds(prev => {
+        const next = new Set(prev);
+        listPickable.forEach(i => everyOn ? next.delete(i.id) : next.add(i.id));
+        return next;
+      });
+      return;
+    }
     if (checkedIds.size === sorted.length) {
       setCheckedIds(new Set());
     } else {
@@ -6708,8 +6735,44 @@ const InventoryTab = () => {
 
   const exitBulkMode = () => {
     setBulkMode(false);
+    setBulkKind('delete');
     setCheckedIds(new Set());
     setBulkConfirm(false);
+    setListSheetOpen(false);
+  };
+
+  // 出品中にする共通処理（1件でも複数でも setData は1回）。undo 用に変更前の値を返す
+  const applyListed = (ids, listDate, platform) => {
+    const idSet = new Set(ids);
+    const cur = dataRefInv.current;
+    const prevMap = {};
+    const updated = cur.inventory.map(i => {
+      if (!idSet.has(i.id) || i.status !== 'unlisted') return i;
+      prevMap[i.id] = { status: i.status, listDate: i.listDate, platform: i.platform, soldAt: i.soldAt };
+      const n = { ...i, status: 'listed', soldAt: undefined, listDate: listDate || i.listDate || today() };
+      if (platform) n.platform = platform;
+      return n;
+    });
+    const cnt = Object.keys(prevMap).length;
+    if (cnt === 0) return 0;
+    setData({ ...cur, inventory: updated });
+    toast(`📱 ${cnt}点を出品中にしました`, { duration: 6000, action: { label: '元に戻す', onClick: () => {
+      const c2 = dataRefInv.current;
+      setData({ ...c2, inventory: c2.inventory.map(i => {
+        const p = prevMap[i.id];
+        if (!p || i.status !== 'listed') return i;
+        const r = { ...i, status: p.status, listDate: p.listDate, soldAt: p.soldAt };
+        if (p.platform === undefined) delete r.platform; else r.platform = p.platform;
+        return r;
+      }) });
+      toast(`↩️ ${cnt}点を未出品に戻しました`);
+    } } });
+    return cnt;
+  };
+  const quickListOne = (item) => { applyListed([item.id], today(), ''); };
+  const confirmBulkList = () => {
+    applyListed([...checkedIds], listSheetDate || today(), listSheetPlatform);
+    exitBulkMode();
   };
 
   const executeBulkDelete = () => {
@@ -6731,9 +6794,9 @@ const InventoryTab = () => {
 
   return (
     <div className="fade-in">
-      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12}}>
-        <h1 style={{margin:0,fontSize:18,fontWeight:800}}>📋 在庫一覧</h1>
-        <div style={{display:'flex',gap:8,alignItems:'center',flexShrink:0}}>
+      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12,flexWrap:'wrap'}}>
+        <h1 style={{margin:0,fontSize:18,fontWeight:800,whiteSpace:'nowrap'}}>📋 在庫一覧</h1>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexShrink:0,flexWrap:'wrap'}}>
           {!bulkMode && (
             <button onClick={() => setTab('purchase')}
               style={{background:'white',color:'var(--color-primary)',border:'2px solid var(--color-primary)',
@@ -6743,10 +6806,18 @@ const InventoryTab = () => {
             </button>
           )}
           {!bulkMode ? (
-            <button onClick={() => setBulkMode(true)}
+            <>
+            {filter === 'unlisted' && (
+              <button onClick={() => { setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); }}
+                style={{background:'var(--color-primary)',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:700,color:'#fff',cursor:'pointer',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
+                まとめて出品中にする
+              </button>
+            )}
+            <button onClick={() => { setBulkKind('delete'); setBulkMode(true); }}
               style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
               まとめて削除
             </button>
+            </>
           ) : (
             <button onClick={exitBulkMode}
               style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
@@ -7042,7 +7113,18 @@ const InventoryTab = () => {
       )}
 
       {/* 一括選択バー（まとめて削除モード時） */}
-      {bulkMode && filtered.length > 0 && (
+      {bulkMode && bulkKind === 'list' && (
+        <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',background:'#f0f9ff',borderBottom:'2px solid #bae6fd'}}>
+          <button onClick={toggleAll} disabled={listPickable.length === 0}
+            style={{minHeight:44,padding:'0 16px',borderRadius:10,border:'1.5px solid #0284c7',background:'#fff',color:'#0369a1',fontWeight:700,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            {listPickable.length > 0 && listPickable.every(i => checkedIds.has(i.id)) ? '全部解除' : `全部選択（${listPickable.length}点）`}
+          </button>
+          <span style={{fontSize:12,color:'#555',flex:1,lineHeight:1.4}}>
+            {search.trim() ? '検索結果を選べます' : '上の検索で絞ってから全部選択できます'}
+          </span>
+        </div>
+      )}
+      {bulkMode && bulkKind !== 'list' && filtered.length > 0 && (
         <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 16px',background:'#fff8f8',borderBottom:'2px solid #fecaca'}}>
           <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',userSelect:'none',flex:1}}>
             <input type="checkbox" checked={allChecked} ref={el => { if (el) el.indeterminate = someChecked; }}
@@ -7065,7 +7147,7 @@ const InventoryTab = () => {
         </div>
       )}
 
-      <div style={{padding:'12px 16px', paddingBottom: bulkMode && checkedIds.size > 0 ? 100 : 12}}>
+      <div style={{padding:'12px 16px', paddingBottom: bulkMode && bulkKind === 'list' ? 120 : bulkMode && checkedIds.size > 0 ? 100 : 12}}>
         {/* 仕入れ先の入力候補（一覧の直接入力とまとめ確定の両方で使う）*/}
         <datalist id="bulkStoreOptions">
           {storeOptions.map(s => <option key={s} value={s}/>)}
@@ -7227,7 +7309,7 @@ const InventoryTab = () => {
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
-              const useGrouping = groupBundles && !bulkMode && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck';
+              const useGrouping = groupBundles && (!bulkMode || bulkKind === 'list') && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck';
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
@@ -7397,6 +7479,18 @@ const InventoryTab = () => {
                             return next;
                           });
                         }}>
+                        {bulkMode && bulkKind === 'list' && (() => {
+                          const pick = members.filter(m => m.status === 'unlisted');
+                          const on = pick.length > 0 && pick.every(m => checkedIds.has(m.id));
+                          const part = !on && pick.some(m => checkedIds.has(m.id));
+                          return (
+                            <input type="checkbox" checked={on} disabled={pick.length === 0}
+                              ref={el => { if (el) el.indeterminate = part; }}
+                              onChange={() => setCheckedIds(prev => { const nx = new Set(prev); pick.forEach(m => on ? nx.delete(m.id) : nx.add(m.id)); return nx; })}
+                              onClick={e => e.stopPropagation()}
+                              style={{width:24,height:24,flexShrink:0,cursor:'pointer',accentColor:'var(--color-primary)'}} />
+                          );
+                        })()}
                         {/* サムネイル＋残り件数バッジ */}
                         <div style={{position:'relative',flexShrink:0}}>
                           <ItemThumbnail thumbId={headPhoto?.thumbId} thumbDataUrl={headPhoto?.thumbDataUrl} size={68} fallback="📦" />
@@ -7612,9 +7706,9 @@ const InventoryTab = () => {
                       borderLeft: isSold ? '4px solid #7c3aed' : undefined,
                       opacity: isSold ? 0.85 : 1,
                       transition:'all 0.15s'}}
-                    onClick={bulkMode ? (e) => toggleCheck(item.id, e) : () => setSelected(item)}>
+                    onClick={bulkMode ? (e) => { if (bulkKind === 'list' && item.status !== 'unlisted') { e.stopPropagation(); return; } toggleCheck(item.id, e); } : () => setSelected(item)}>
                     {bulkMode && (
-                      <input type="checkbox" checked={isChecked}
+                      <input type="checkbox" checked={isChecked} disabled={bulkKind === 'list' && item.status !== 'unlisted'}
                         onChange={e => toggleCheck(item.id, e)}
                         onClick={e => e.stopPropagation()}
                         style={{width:22,height:22,flexShrink:0,cursor:'pointer',accentColor:'var(--color-primary)'}} />
@@ -7774,7 +7868,14 @@ const InventoryTab = () => {
                           )}
                         </>
                       )}
-                      {!bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
+                      {!bulkMode && item.status === 'unlisted' ? (
+                        <button onClick={e => { e.stopPropagation(); quickListOne(item); }}
+                          style={{marginTop:6,minHeight:44,minWidth:96,padding:'0 10px',borderRadius:10,border:'1.5px solid var(--color-primary)',
+                            background:'#fff',color:'var(--color-primary)',fontWeight:800,fontSize:13,cursor:'pointer',
+                            touchAction:'manipulation',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
+                          📱 出品中へ
+                        </button>
+                      ) : !bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                     </div>
                   </div>
                   {isInline && (() => {
@@ -7862,6 +7963,49 @@ const InventoryTab = () => {
           </div>
         )}
       </div>
+
+      {/* まとめて出品中：下部の固定バー */}
+      {bulkMode && bulkKind === 'list' && (
+        <div style={{position:'fixed',left:0,right:0,bottom:'calc(64px + env(safe-area-inset-bottom))',zIndex:900,
+          padding:'10px 16px',background:'rgba(255,255,255,0.97)',borderTop:'1px solid #e5e7eb',boxShadow:'0 -4px 16px rgba(0,0,0,0.08)'}}>
+          <button disabled={checkedIds.size === 0} onClick={() => { setListSheetDate(today()); setListSheetOpen(true); }}
+            style={{width:'100%',minHeight:48,borderRadius:12,border:'none',fontWeight:800,fontSize:16,
+              background: checkedIds.size > 0 ? 'var(--color-primary)' : '#e5e7eb',
+              color: checkedIds.size > 0 ? '#fff' : '#aaa',cursor: checkedIds.size > 0 ? 'pointer' : 'default',
+              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            選んだ{checkedIds.size}点を出品中に
+          </button>
+        </div>
+      )}
+
+      {/* まとめて出品中：出品日・出品先の選択シート */}
+      {listSheetOpen && (
+        <div className="modal-overlay" onClick={() => setListSheetOpen(false)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:380}}>
+            <div className="modal-handle"/>
+            <div style={{fontWeight:800,fontSize:17,marginBottom:14}}>{checkedIds.size}点を出品中にする</div>
+            <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>出品日</div>
+            <input type="date" value={listSheetDate} onChange={e => setListSheetDate(e.target.value)}
+              style={{width:'100%',minHeight:44,padding:'8px 12px',fontSize:16,borderRadius:10,border:'1.5px solid #e5e7eb',boxSizing:'border-box',marginBottom:14}} />
+            <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>出品先</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:18}}>
+              {[['','そのまま'],['メルカリ','メルカリ'],['ラクマ','ラクマ'],['ヤフオク','ヤフオク']].map(([v,l]) => (
+                <button key={v} onClick={() => setListSheetPlatform(v)}
+                  style={{flex:'1 1 40%',minHeight:44,borderRadius:10,fontWeight:700,fontSize:14,cursor:'pointer',touchAction:'manipulation',
+                    border: listSheetPlatform === v ? '2px solid var(--color-primary)' : '1.5px solid #e5e7eb',
+                    background: listSheetPlatform === v ? '#fff0f0' : '#fff',
+                    color: listSheetPlatform === v ? 'var(--color-primary)' : '#555'}}>{l}</button>
+              ))}
+            </div>
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={() => setListSheetOpen(false)}
+                style={{flex:1,minHeight:48,borderRadius:12,border:'1.5px solid #e0e0e0',background:'white',fontSize:15,fontWeight:700,cursor:'pointer',color:'#555'}}>戻る</button>
+              <button onClick={confirmBulkList}
+                style={{flex:2,minHeight:48,borderRadius:12,border:'none',background:'var(--color-primary)',color:'white',fontSize:15,fontWeight:800,cursor:'pointer',touchAction:'manipulation'}}>出品中にする</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 一括削除確認モーダル */}
       {bulkConfirm && (
