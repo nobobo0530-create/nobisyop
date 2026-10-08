@@ -2811,6 +2811,17 @@ const PurchaseTab = () => {
     setStep(3);
   }, [editingItem]);
 
+  // ★ 「✏️ 中身を入れる」から開いたときは商品名欄にカーソルを置く（仮登録の名前は全選択して打ち替えられる）
+  React.useEffect(() => {
+    if (!editingItem || !window.__focusProductName) return;
+    window.__focusProductName = false;
+    setTimeout(() => {
+      const el = document.querySelector('[data-product-name-input]');
+      if (!el) return;
+      try { el.scrollIntoView({ block: 'center' }); el.focus(); el.select(); } catch (e) {}
+    }, 400);
+  }, [editingItem]);
+
   // ★ 編集モード：下書きが保存済みなら自動復元（タブ切替・クラッシュ後の入力内容を守る）
   React.useEffect(() => {
     if (!editingItem) return;
@@ -4218,7 +4229,7 @@ const PurchaseTab = () => {
                 </span>
               </label>
               <div style={{display:'flex',gap:6}}>
-                <input className="input-field" style={{flex:1}} value={form.productName}
+                <input className="input-field" style={{flex:1}} value={form.productName} data-product-name-input="1"
                   onChange={e => setF('productName', e.target.value)} placeholder="例: ノースフェイス ダウンジャケット ブラック L"/>
                 <button disabled={!form.productName}
                   onClick={() => copyToClipboard(form.productName).then(ok => toast(ok ? '📋 商品名をコピー' : 'コピー失敗'))}
@@ -6863,6 +6874,58 @@ const InventoryTab = () => {
   const allChecked  = sorted.length > 0 && checkedIds.size === sorted.length;
   const someChecked = checkedIds.size > 0 && checkedIds.size < sorted.length;
 
+  // ===== やること（作業キュー）と 絞り込み・表示 =====
+  const [taskSheetOpen, setTaskSheetOpen] = React.useState(false);
+  const [filterSheetOpen, setFilterSheetOpen] = React.useState(false);
+  const taskReturnRef = React.useRef('unlisted');
+  const taskCounts = React.useMemo(() => {
+    const inv = data.inventory || [];
+    return {
+      needsDetail: inv.filter(i => i.needsDetail).length,
+      storePending: storePendingOpen.length,
+      priceUnconfirmed: inv.filter(i => i.priceUnconfirmed).length,
+      auditCheck: auditOpenCount,
+      dupCheck: inv.filter(isDupOpen).length,
+    };
+  }, [data.inventory, storePendingOpen.length, auditOpenCount, dupOpenCounts]);
+  const salesTaskCounts = React.useMemo(() => {
+    const ids = new Set((data.inventory || []).map(i => i.id));
+    const valid = (data.sales || []).filter(sl => !sl.inventoryId || ids.has(sl.inventoryId));
+    return { unlinked: valid.filter(sl => sl.needsLink && !sl.inventoryId).length, noship: valid.filter(sl => sl.shippingUnknown).length };
+  }, [data.sales, data.inventory]);
+  // 仕入れ側（先に片付ける順）→ 売上側
+  const TASK_DEFS = [
+    { key:'needsDetail',      icon:'✏️', label:'中身未入力',       sub:'仮登録の中身を入れる',           bg:'#ffedd5', fg:'#9a3412', line:'#fed7aa' },
+    { key:'storePending',     icon:'🧾', label:'店舗仕入れ未入力', sub:'店舗払いを仕入れとして登録',     bg:'#ede9fe', fg:'#5b21b6', line:'#ddd6fe' },
+    { key:'priceUnconfirmed', icon:'💰', label:'金額未確定',       sub:'仕入れ金額を確定する',           bg:'#fef3c7', fg:'#92400e', line:'#fcd34d' },
+    { key:'auditCheck',       icon:'🔍', label:'要確認',           sub:'金額の食い違いを確認する',       bg:'#fee2e2', fg:'#991b1b', line:'#fecaca' },
+    { key:'dupCheck',         icon:'🔁', label:'重複候補',         sub:'二重登録でないか確認する',       bg:'#fce7f3', fg:'#9d174d', line:'#fbcfe8' },
+  ].map(d => ({ ...d, cnt: taskCounts[d.key] || 0 }));
+  const SALES_TASK_DEFS = [
+    { view:'unlinked', icon:'🔗', label:'売上の未紐付け', sub:'売上と在庫を結びつける（売上タブ）', cnt: salesTaskCounts.unlinked, fg:'#1d4ed8', bg:'#dbeafe' },
+    { view:'noship',   icon:'📦', label:'送料未入力',     sub:'売れた商品の送料を入れる（売上タブ）', cnt: salesTaskCounts.noship,   fg:'#c2410c', bg:'#ffedd5' },
+  ];
+  const taskTotal = TASK_DEFS.reduce((a, d) => a + d.cnt, 0) + SALES_TASK_DEFS.reduce((a, d) => a + d.cnt, 0);
+  const taskDef = TASK_DEFS.find(d => d.key === filter) || null;
+  const applyTask = (key) => {
+    if (!TASK_DEFS.some(d => d.key === filter)) taskReturnRef.current = ['unlisted','listed','sold','all'].includes(filter) ? filter : 'unlisted';
+    setFilter(key); setCheckedIds(new Set()); setSearch(''); setTaskSheetOpen(false);
+    try { window.scrollTo(0, 0); } catch (e) {}
+  };
+  const clearTask = () => { setFilter(taskReturnRef.current || 'unlisted'); setCheckedIds(new Set()); };
+  const goSalesTask = (view) => { window.__salesViewPreset = view; setTaskSheetOpen(false); setTab('sales'); };
+  // 仮登録カードの操作
+  const fillPlaceholder = (item) => { window.__focusProductName = true; openEditFromDetail(item); };
+  const splitPlaceholder = (item) => { setSelected(item); startSplitFromDetail(item); };
+  // 絞り込み・表示の状態（初期値と違うものだけチップで見せる）
+  const activeChips = [];
+  if (filter === 'coupon') activeChips.push({ key:'f', label:'🎟️ クーポン', clear: () => setFilter('unlisted') });
+  if (isBundleFilter(filter)) activeChips.push({ key:'f', label: filter === 'bundleAll' ? '📦 まとめ買い 全部' : filter === 'bundleIndividual' ? '📦 同梱' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類', clear: () => setFilter('unlisted') });
+  if (storeFilter) activeChips.push({ key:'st', label:'仕入れ先: ' + storeFilter, clear: () => setStoreFilter('') });
+  if (sort !== 'new') activeChips.push({ key:'so', label:'並び: ' + (sort === 'old' ? '古い順' : '利益が高い順'), clear: () => setSort('new') });
+  if (!groupBundles) activeChips.push({ key:'gb', label:'まとめ表示OFF', clear: () => { setGroupBundles(true); try { localStorage.setItem('nobushop_group_bundles', '1'); } catch (e) {} } });
+  if (!compact) activeChips.push({ key:'cp', label:'標準表示', clear: () => setCompact(true) });
+
   return (
     <div className="fade-in">
       <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12,flexWrap:'wrap'}}>
@@ -6878,12 +6941,6 @@ const InventoryTab = () => {
           )}
           {!bulkMode ? (
             <>
-            {filter === 'unlisted' && (
-              <button onClick={() => { setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); }}
-                style={{background:'var(--color-primary)',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:700,color:'#fff',cursor:'pointer',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
-                まとめて出品中にする
-              </button>
-            )}
             <button onClick={() => { setBulkKind('delete'); setBulkMode(true); }}
               style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
               まとめて削除
@@ -6950,236 +7007,74 @@ const InventoryTab = () => {
             </button>
           );
         })}
-        {(() => {
-          // ★ 要確認チップ（未解決の auditCheck 数）。特別チップの先頭
-          if (auditOpenCount === 0 && filter !== 'auditCheck') return null;
-          const active = filter === 'auditCheck';
-          return (
-            <button onClick={() => { setFilter('auditCheck'); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
-                background: active ? '#dc2626' : '#fee2e2',
-                color: active ? 'white' : '#991b1b',
-                boxShadow: active ? '0 2px 8px rgba(220,38,38,0.3)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              🔍 要確認
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#fecaca',
-                color: active ? 'white' : '#991b1b',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {auditOpenCount}
-              </span>
-            </button>
-          );
-        })()}
-        {(() => {
-          const puCnt = (data.inventory||[]).filter(i => i.priceUnconfirmed).length;
-          if (puCnt === 0 && filter !== 'priceUnconfirmed') return null;
-          const active = filter === 'priceUnconfirmed';
-          return (
-            <button onClick={() => { setFilter('priceUnconfirmed'); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
-                background: active ? '#b45309' : '#fef3c7',
-                color: active ? 'white' : '#92400e',
-                boxShadow: active ? '0 2px 8px rgba(180,83,9,0.3)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              💰未確定
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#fcd34d',
-                color: active ? 'white' : '#92400e',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {puCnt}
-              </span>
-            </button>
-          );
-        })()}
-        {(() => {
-          // ★ 中身未入力チップ（仮登録した商品。商品名を直すと外れる）
-          const ndCnt = (data.inventory||[]).filter(i => i.needsDetail).length;
-          if (ndCnt === 0 && filter !== 'needsDetail') return null;
-          const active = filter === 'needsDetail';
-          return (
-            <button onClick={() => { setFilter('needsDetail'); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
-                background: active ? '#ea580c' : '#ffedd5',
-                color: active ? 'white' : '#9a3412',
-                boxShadow: active ? '0 2px 8px rgba(234,88,12,0.3)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              ✏️ 中身未入力
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#fed7aa',
-                color: active ? 'white' : '#9a3412',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {ndCnt}
-              </span>
-            </button>
-          );
-        })()}
-        {(() => {
-          // ★ 店舗仕入れ未入力チップ（status が open の件数）。0件のときは非表示（開いている間は残す）
-          const spCnt = storePendingOpen.length;
-          if (spCnt === 0 && filter !== 'storePending') return null;
-          const active = filter === 'storePending';
-          return (
-            <button onClick={() => { setFilter('storePending'); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
-                background: active ? '#7c3aed' : '#ede9fe',
-                color: active ? 'white' : '#5b21b6',
-                boxShadow: active ? '0 2px 8px rgba(124,58,237,0.3)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              🧾 店舗仕入れ未入力
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#ddd6fe',
-                color: active ? 'white' : '#5b21b6',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {spCnt}
-              </span>
-            </button>
-          );
-        })()}
-        {(() => {
-          // ★ 重複候補チップ（open な商品数）
-          const dcCnt = (data.inventory||[]).filter(isDupOpen).length;
-          if (dcCnt === 0 && filter !== 'dupCheck') return null;
-          const active = filter === 'dupCheck';
-          return (
-            <button onClick={() => { setFilter('dupCheck'); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
-                background: active ? '#be185d' : '#fce7f3',
-                color: active ? 'white' : '#9d174d',
-                boxShadow: active ? '0 2px 8px rgba(190,24,93,0.3)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              🔁 重複候補
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#fbcfe8',
-                color: active ? 'white' : '#9d174d',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {dcCnt}
-              </span>
-            </button>
-          );
-        })()}
-        {(() => {
-          // ★ クーポン利用チップ（couponTaxIn > 0 の商品数）
-          const cpCnt = (data.inventory||[]).filter(hasCoupon).length;
-          if (cpCnt === 0 && filter !== 'coupon') return null;
-          const active = filter === 'coupon';
-          return (
-            <button onClick={() => { setFilter('coupon'); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
-                background: active ? '#0f766e' : '#ccfbf1',
-                color: active ? 'white' : '#115e59',
-                boxShadow: active ? '0 2px 8px rgba(15,118,110,0.3)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              🎟️ クーポン
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#99f6e4',
-                color: active ? 'white' : '#115e59',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {cpCnt}
-              </span>
-            </button>
-          );
-        })()}
-        {[
-          ['bundleAll', '📦 まとめ買い 全部', '#4338ca', '#e0e7ff', '#c7d2fe', '#3730a3', 'rgba(67,56,202,0.3)'],
-          ['bundleIndividual', '📦 同梱', '#4338ca', '#eef2ff', '#c7d2fe', '#3730a3', 'rgba(67,56,202,0.3)'],
-          ['bundleSet', '🎁 まとめ仕入れ購入', '#be185d', '#fdf2f8', '#fbcfe8', '#9d174d', 'rgba(190,24,93,0.3)'],
-          ['bundleNone', '❓ 未分類', '#6b7280', '#f3f4f6', '#e5e7eb', '#4b5563', 'rgba(107,114,128,0.3)'],
-        ].map(([key, label, activeBg, bg, badgeBg, badgeColor, shadow]) => {
-          const mem = (data.inventory||[]).filter(i => isInBundle(i) && (key === 'bundleAll' || bundleTypeKey(i) === BUNDLE_FILTERS[key]));
-          const active = filter === key;
-          // 0件でもチップは常に表示（消えたと思われないように）
-          const grpCnt = new Set(mem.map(i => i.bundleGroup)).size;
-          return (
-            <button key={key} onClick={() => { setFilter(key); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap',
-                background: active ? activeBg : bg,
-                color: active ? 'white' : badgeColor,
-                boxShadow: active ? '0 2px 8px ' + shadow : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              {label}
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : badgeBg,
-                color: active ? 'white' : badgeColor,
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {mem.length}点/{grpCnt}組
-              </span>
-            </button>
-          );
-        })}
       </div>
 
-      {/* 並び替えバー */}
-      {!bulkMode && (
-        <div style={{display:'flex',alignItems:'center',gap:6,padding:'8px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
-          <span style={{fontSize:11,color:'#aaa',fontWeight:600,flexShrink:0}}>並び替え</span>
-          {[['old','古い順'],['new','新しい順'],['profit','利益が高い順']].map(([v,l]) => (
-            <button key={v} onClick={() => setSort(v)}
-              style={{padding:'4px 10px',borderRadius:99,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,
-                background: sort===v ? '#1e293b' : '#f3f4f6',
-                color: sort===v ? 'white' : '#777',
-                WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
-              {l}
-            </button>
-          ))}
+      {/* やること・絞り込みの入口（特別チップはここに集約） */}
+      <div style={{padding:'10px 16px 8px',background:'white',borderBottom:'1px solid #f0f0f0'}}>
+        <div style={{display:'flex',gap:8,alignItems:'stretch'}}>
+          <button onClick={() => setTaskSheetOpen(true)}
+            style={{flex:1,minHeight:46,borderRadius:12,border:'none',cursor:'pointer',fontWeight:800,fontSize:15,
+              display:'flex',alignItems:'center',justifyContent:'center',gap:8,whiteSpace:'nowrap',
+              background: taskTotal > 0 ? 'linear-gradient(135deg,#ea580c,#dc2626)' : '#e5e7eb',
+              color: taskTotal > 0 ? '#fff' : '#6b7280',
+              boxShadow: taskTotal > 0 ? '0 2px 8px rgba(220,38,38,0.28)' : 'none',
+              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            📋 やること
+            <span style={{background: taskTotal > 0 ? 'rgba(255,255,255,0.3)' : '#d1d5db',borderRadius:99,padding:'1px 9px',fontSize:13}}>{taskTotal}</span>
+          </button>
+          <button onClick={() => setFilterSheetOpen(true)}
+            style={{flexShrink:0,minHeight:46,padding:'0 14px',borderRadius:12,cursor:'pointer',fontWeight:700,fontSize:13,whiteSpace:'nowrap',
+              border: activeChips.length > 0 ? '1.5px solid #4338ca' : '1.5px solid #e5e7eb',
+              background: activeChips.length > 0 ? '#eef2ff' : '#fff',
+              color: activeChips.length > 0 ? '#3730a3' : '#555',
+              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            ⚙️ 絞り込み・表示{activeChips.length > 0 ? `（${activeChips.length}）` : ''}
+          </button>
         </div>
-      )}
+        {(activeChips.length > 0 || (filter === 'unlisted' && !bulkMode)) && (
+          <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:8}}>
+            {activeChips.map(ch => (
+              <button key={ch.key} onClick={ch.clear}
+                style={{padding:'4px 10px',borderRadius:99,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#3730a3',
+                  fontSize:11,fontWeight:700,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                {ch.label} ✕
+              </button>
+            ))}
+            {filter === 'unlisted' && !bulkMode && (
+              <button onClick={() => { setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); }}
+                style={{marginLeft:'auto',padding:'5px 10px',borderRadius:8,border:'1px solid var(--color-primary)',background:'#fff',
+                  color:'var(--color-primary)',fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                まとめて出品中にする
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
-      {/* まとめ買いグループ化トグル */}
-      {!bulkMode && !isBundleFilter(filter) && (data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
-        <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
-          <button
-            onClick={() => { const v = !groupBundles; setGroupBundles(v); localStorage.setItem('nobushop_group_bundles', v ? '1' : '0'); }}
-            style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:99,border:'none',cursor:'pointer',
-              fontSize:11,fontWeight:700,
-              background: groupBundles ? '#eef2ff' : '#f3f4f6',
-              color: groupBundles ? '#4338ca' : '#9ca3af',
-              WebkitTapHighlightColor:'transparent',transition:'all 0.15s'}}>
-            <span style={{fontSize:13,lineHeight:1}}>📦</span>
-            まとめ買いをまとめて表示
-            <span style={{width:28,height:16,borderRadius:99,display:'inline-flex',alignItems:'center',
-              background: groupBundles ? '#4338ca' : '#d1d5db',
-              position:'relative',transition:'background 0.15s',flexShrink:0}}>
-              <span style={{width:12,height:12,borderRadius:'50%',background:'white',position:'absolute',
-                left: groupBundles ? 14 : 2,transition:'left 0.15s'}}/>
-            </span>
+      {/* やることを開いている間の見出しバー */}
+      {taskDef && (
+        <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',background:taskDef.bg,borderBottom:'1px solid '+taskDef.line}}>
+          <span style={{flex:1,fontWeight:800,fontSize:15,color:taskDef.fg}}>{taskDef.icon} {taskDef.label} {taskDef.cnt}件</span>
+          <button onClick={clearTask}
+            style={{minHeight:36,padding:'0 14px',borderRadius:99,border:'1.5px solid '+taskDef.fg,background:'#fff',color:taskDef.fg,
+              fontSize:13,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            ✕ 解除
           </button>
         </div>
       )}
 
-      {/* ストアで絞り込み */}
-      {!bulkMode && storeOptions.length > 0 && (
+      {/* 仕入れ先を絞り込んでいるときの集計 */}
+      {!bulkMode && storeFilter && (
         <div style={{padding:'8px 16px',background:'#fafafa',borderBottom:'1px solid #f0f0f0'}}>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <span style={{fontSize:11,color:'#aaa',fontWeight:600,flexShrink:0}}>仕入れ先</span>
-            <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
-              style={{flex:1,padding:'5px 8px',borderRadius:8,border:'1.5px solid #e0e0e0',
-                fontSize:12,background:'white',color:'#333'}}>
-              <option value="">すべての仕入れ先</option>
-              {storeOptions.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            {storeFilter && (
-              <button onClick={() => setStoreFilter('')}
-                style={{background:'none',border:'none',color:'#aaa',fontSize:16,cursor:'pointer',padding:'0 4px'}}>×</button>
-            )}
+          <div style={{display:'flex',gap:12,fontSize:11,color:'#666',flexWrap:'wrap'}}>
+            <span style={{fontWeight:700}}>{storeFilter}</span>
+            <span>全{storeFilteredAll.length}件</span>
+            <span>仕入合計 ¥{storeTotal.toLocaleString()}</span>
+            <span>売却済 {storeSold.length}件</span>
+            <span style={{color: storeSoldProfit>=0?'#16a34a':'#dc2626',fontWeight:700}}>
+              利益 ¥{storeSoldProfit.toLocaleString()}
+            </span>
           </div>
-          {storeFilter && (
-            <div style={{display:'flex',gap:12,marginTop:6,fontSize:11,color:'#666'}}>
-              <span>全{storeFilteredAll.length}件</span>
-              <span>仕入合計 ¥{storeTotal.toLocaleString()}</span>
-              <span>売却済 {storeSold.length}件</span>
-              <span style={{color: storeSoldProfit>=0?'#16a34a':'#dc2626',fontWeight:700}}>
-                利益 ¥{storeSoldProfit.toLocaleString()}
-              </span>
-            </div>
-          )}
         </div>
       )}
 
@@ -7378,19 +7273,9 @@ const InventoryTab = () => {
           </div>
         ) : (
           <div style={{display:'flex',flexDirection:'column',gap: compact ? 6 : 10}}>
-            <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:6,fontSize:11,color:'#9ca3af'}}>
-              <span>表示</span>
-              {[[false,'標準'],[true,'コンパクト']].map(([v,l]) => (
-                <button key={l} onClick={() => setCompact(v)}
-                  style={{padding:'4px 10px',borderRadius:99,fontSize:11,fontWeight:700,cursor:'pointer',touchAction:'manipulation',
-                    border: compact === v ? '1.5px solid var(--color-primary)' : '1px solid #e5e7eb',
-                    background: compact === v ? '#fff0f0' : '#fff',
-                    color: compact === v ? 'var(--color-primary)' : '#6b7280'}}>{l}</button>
-              ))}
-            </div>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
-              const useGrouping = groupBundles && (!bulkMode || bulkKind === 'list') && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck';
+              const useGrouping = groupBundles && (!bulkMode || bulkKind === 'list') && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck' && filter !== 'needsDetail';
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
@@ -7756,6 +7641,37 @@ const InventoryTab = () => {
                         </div>
                       )}
                     </React.Fragment>
+                  );
+                }
+
+                if (filter === 'needsDetail' && row.type === 'single' && !bulkMode) {
+                  // ===== 中身未入力カード：仕入れ先・日付・金額を大きく、2つの大ボタンで入力へ =====
+                  const item = row.item;
+                  const amt = Number(item.purchasePrice) || 0;
+                  const isDefaultName = /^店舗仕入れ（中身未入力）/.test(item.productName || '');
+                  const bigBtn = {minHeight:48,borderRadius:12,fontWeight:800,fontSize:15,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'};
+                  return (
+                    <div key={item.id} className="card" style={{padding:'12px 14px',border:'1.5px solid #fed7aa'}}>
+                      <div onClick={() => setSelected(item)} style={{display:'flex',gap:10,alignItems:'center',cursor:'pointer'}}>
+                        {item.photos?.[0] && <ItemThumbnail thumbId={item.photos[0].thumbId} thumbDataUrl={item.photos[0].thumbDataUrl} size={48} fallback="📦" />}
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:800,fontSize:16,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.purchaseStore || '仕入れ先未設定'}</div>
+                          <div style={{fontSize:12,color:'#64748b',marginTop:2}}>
+                            {item.purchaseDate ? item.purchaseDate.replace(/-/g, '/') : '日付なし'}{item.paymentMethod ? ` ・ ${item.paymentMethod}` : ''}
+                          </div>
+                          {!isDefaultName && item.productName && (
+                            <div style={{fontSize:11,color:'#9ca3af',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{item.productName}</div>
+                          )}
+                        </div>
+                        <div style={{fontWeight:800,fontSize:18,flexShrink:0,color: amt > 0 ? '#111' : '#b45309'}}>{amt > 0 ? '¥' + amt.toLocaleString() : '金額未確定'}</div>
+                      </div>
+                      <div style={{display:'flex',gap:8,marginTop:10}}>
+                        <button onClick={() => fillPlaceholder(item)} style={{...bigBtn,flex:2,border:'none',background:'#ea580c',color:'#fff'}}>✏️ 中身を入れる</button>
+                        {item.status !== 'sold' && (
+                          <button onClick={() => splitPlaceholder(item)} style={{...bigBtn,flex:1,border:'1.5px solid #d1d5db',background:'#fff',color:'#374151'}}>✂️ 分割</button>
+                        )}
+                      </div>
+                    </div>
                   );
                 }
 
@@ -8171,6 +8087,129 @@ const InventoryTab = () => {
           </div>
         )}
       </div>
+
+      {/* やることシート */}
+      {taskSheetOpen && (
+        <div className="modal-overlay" onClick={() => setTaskSheetOpen(false)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:420}}>
+            <div className="modal-handle"/>
+            <div style={{fontWeight:800,fontSize:18,marginBottom:4}}>📋 やること {taskTotal}件</div>
+            <div style={{fontSize:12,color:'#6b7280',marginBottom:12}}>仕入れ側から順に片付けると、売上との紐付けが進みます</div>
+            <div style={{fontSize:11,fontWeight:800,color:'#9ca3af',margin:'4px 2px 6px'}}>仕入れ</div>
+            {TASK_DEFS.map(d => (
+              <button key={d.key} disabled={d.cnt === 0} onClick={() => applyTask(d.key)}
+                style={{width:'100%',display:'flex',alignItems:'center',gap:10,minHeight:58,padding:'8px 12px',marginBottom:8,borderRadius:12,textAlign:'left',
+                  border:'1.5px solid ' + (d.cnt > 0 ? d.line : '#e5e7eb'),background: d.cnt > 0 ? d.bg : '#f9fafb',
+                  cursor: d.cnt > 0 ? 'pointer' : 'default',opacity: d.cnt > 0 ? 1 : 0.6,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:22}}>{d.icon}</span>
+                <span style={{flex:1,minWidth:0}}>
+                  <span style={{display:'block',fontWeight:800,fontSize:15,color: d.cnt > 0 ? d.fg : '#6b7280'}}>{d.label}</span>
+                  <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:1}}>{d.sub}</span>
+                </span>
+                <span style={{fontWeight:800,fontSize:16,color: d.cnt > 0 ? d.fg : '#9ca3af'}}>{d.cnt > 0 ? d.cnt + '件 ›' : '完了 ✓'}</span>
+              </button>
+            ))}
+            <div style={{fontSize:11,fontWeight:800,color:'#9ca3af',margin:'12px 2px 6px'}}>売上</div>
+            {SALES_TASK_DEFS.map(d => (
+              <button key={d.view} disabled={d.cnt === 0} onClick={() => goSalesTask(d.view)}
+                style={{width:'100%',display:'flex',alignItems:'center',gap:10,minHeight:58,padding:'8px 12px',marginBottom:8,borderRadius:12,textAlign:'left',
+                  border:'1.5px solid ' + (d.cnt > 0 ? '#e5e7eb' : '#e5e7eb'),background: d.cnt > 0 ? '#fff' : '#f9fafb',
+                  cursor: d.cnt > 0 ? 'pointer' : 'default',opacity: d.cnt > 0 ? 1 : 0.6,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                <span style={{fontSize:22}}>{d.icon}</span>
+                <span style={{flex:1,minWidth:0}}>
+                  <span style={{display:'block',fontWeight:800,fontSize:15,color: d.cnt > 0 ? d.fg : '#6b7280'}}>{d.label}</span>
+                  <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:1}}>{d.sub}</span>
+                </span>
+                <span style={{fontWeight:800,fontSize:16,color: d.cnt > 0 ? d.fg : '#9ca3af'}}>{d.cnt > 0 ? d.cnt + '件 ›' : '完了 ✓'}</span>
+              </button>
+            ))}
+            <button onClick={() => setTaskSheetOpen(false)}
+              style={{width:'100%',minHeight:46,marginTop:6,borderRadius:12,border:'1.5px solid #e0e0e0',background:'white',fontSize:15,fontWeight:700,cursor:'pointer',color:'#555'}}>閉じる</button>
+          </div>
+        </div>
+      )}
+
+      {/* 絞り込み・表示シート */}
+      {filterSheetOpen && (
+        <div className="modal-overlay" onClick={() => setFilterSheetOpen(false)}>
+          <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:420}}>
+            <div className="modal-handle"/>
+            <div style={{fontWeight:800,fontSize:18,marginBottom:12}}>⚙️ 絞り込み・表示</div>
+
+            <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>種類で絞る（もう一度押すと解除）</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:16}}>
+              {[
+                ['coupon', '🎟️ クーポン', (data.inventory||[]).filter(hasCoupon).length + '点'],
+                ...[['bundleAll','📦 まとめ買い 全部'],['bundleIndividual','📦 同梱'],['bundleSet','🎁 まとめ仕入れ購入'],['bundleNone','❓ 未分類']].map(([key, label]) => {
+                  const mem = (data.inventory||[]).filter(i => isInBundle(i) && (key === 'bundleAll' || bundleTypeKey(i) === BUNDLE_FILTERS[key]));
+                  return [key, label, mem.length + '点/' + new Set(mem.map(i => i.bundleGroup)).size + '組'];
+                }),
+              ].map(([key, label, cnt]) => {
+                const on = filter === key;
+                return (
+                  <button key={key} onClick={() => { setFilter(on ? 'unlisted' : key); setCheckedIds(new Set()); setFilterSheetOpen(false); }}
+                    style={{flex:'1 1 45%',minHeight:44,padding:'6px 10px',borderRadius:10,fontWeight:700,fontSize:13,cursor:'pointer',touchAction:'manipulation',
+                      border: on ? '2px solid #4338ca' : '1.5px solid #e5e7eb',background: on ? '#eef2ff' : '#fff',color: on ? '#3730a3' : '#444'}}>
+                    {label}<span style={{display:'block',fontSize:11,fontWeight:600,color:'#9ca3af'}}>{cnt}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {storeOptions.length > 0 && (<>
+              <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>仕入れ先</div>
+              <select value={storeFilter} onChange={e => setStoreFilter(e.target.value)}
+                style={{width:'100%',minHeight:44,padding:'8px 10px',borderRadius:10,border:'1.5px solid #e0e0e0',fontSize:15,background:'white',color:'#333',marginBottom:16}}>
+                <option value="">すべての仕入れ先</option>
+                {storeOptions.map(st => <option key={st} value={st}>{st}</option>)}
+              </select>
+            </>)}
+
+            <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>並び替え</div>
+            <div style={{display:'flex',gap:8,marginBottom:16}}>
+              {[['old','古い順'],['new','新しい順'],['profit','利益が高い順']].map(([v,l]) => (
+                <button key={v} onClick={() => setSort(v)}
+                  style={{flex:1,minHeight:44,borderRadius:10,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,touchAction:'manipulation',
+                    background: sort===v ? '#1e293b' : '#f3f4f6',color: sort===v ? 'white' : '#666'}}>{l}</button>
+              ))}
+            </div>
+
+            <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>表示</div>
+            <div style={{display:'flex',gap:8,marginBottom:10}}>
+              {[[false,'標準'],[true,'コンパクト']].map(([v,l]) => (
+                <button key={l} onClick={() => setCompact(v)}
+                  style={{flex:1,minHeight:44,borderRadius:10,fontSize:13,fontWeight:700,cursor:'pointer',touchAction:'manipulation',
+                    border: compact === v ? '2px solid var(--color-primary)' : '1.5px solid #e5e7eb',
+                    background: compact === v ? '#fff0f0' : '#fff',color: compact === v ? 'var(--color-primary)' : '#6b7280'}}>{l}</button>
+              ))}
+            </div>
+            {(data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
+              <button onClick={() => { const v = !groupBundles; setGroupBundles(v); try { localStorage.setItem('nobushop_group_bundles', v ? '1' : '0'); } catch (e) {} }}
+                style={{width:'100%',minHeight:44,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'0 14px',borderRadius:10,border:'1.5px solid #e5e7eb',
+                  background: groupBundles ? '#eef2ff' : '#f3f4f6',color: groupBundles ? '#4338ca' : '#6b7280',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:16,touchAction:'manipulation'}}>
+                <span>📦 まとめ買いをまとめて表示</span>
+                <span style={{width:36,height:20,borderRadius:99,display:'inline-flex',alignItems:'center',background: groupBundles ? '#4338ca' : '#d1d5db',position:'relative',flexShrink:0}}>
+                  <span style={{width:16,height:16,borderRadius:'50%',background:'white',position:'absolute',left: groupBundles ? 18 : 2,transition:'left 0.15s'}}/>
+                </span>
+              </button>
+            )}
+
+            <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>操作</div>
+            <button onClick={() => { setFilter('unlisted'); setCheckedIds(new Set()); setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); setFilterSheetOpen(false); }}
+              style={{width:'100%',minHeight:46,borderRadius:10,border:'1.5px solid var(--color-primary)',background:'#fff',color:'var(--color-primary)',fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:16,touchAction:'manipulation'}}>
+              まとめて出品中にする（未出品から選ぶ）
+            </button>
+
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={() => { setStoreFilter(''); setSort('new'); if (filter === 'coupon' || isBundleFilter(filter)) setFilter('unlisted'); }}
+                disabled={activeChips.length === 0}
+                style={{flex:1,minHeight:48,borderRadius:12,border:'1.5px solid #e0e0e0',background:'white',fontSize:14,fontWeight:700,cursor:'pointer',color:'#555',opacity: activeChips.length ? 1 : 0.5}}>条件をリセット</button>
+              <button onClick={() => setFilterSheetOpen(false)}
+                style={{flex:2,minHeight:48,borderRadius:12,border:'none',background:'var(--color-primary)',color:'white',fontSize:15,fontWeight:800,cursor:'pointer'}}>閉じる</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* まとめて出品中：下部の固定バー */}
       {bulkMode && bulkKind === 'list' && (
@@ -9677,7 +9716,7 @@ const SalesTab = () => {
   const [showForm, setShowForm] = React.useState(false);
   const [editingSale, setEditingSale] = React.useState(null);
   const [monthDetail, setMonthDetail] = React.useState(null); // 月次詳細モーダル用 "YYYY-MM"
-  const [salesView, setSalesView] = React.useState('all'); // 'all' | 'unlinked'(🔗未紐付け) | 'noship'(送料未入力)
+  const [salesView, setSalesView] = React.useState(() => { const v = window.__salesViewPreset; window.__salesViewPreset = null; return v || 'all'; }); // 'all' | 'unlinked'(🔗未紐付け) | 'noship'(送料未入力)
   const [shipEdit, setShipEdit] = React.useState(null);    // 送料入力モーダル対象の売上
   const emptyForm = { inventoryId: '', platform: 'メルカリ', salePrice: '', feeRate: 0.10, shipping: CONFIG.ESTIMATED_SHIPPING.toString(), saleDate: today(), listDate: '', platformId: '', purchasePrice: '', purchaseDate: '', purchaseStore: '' };
   const [form, setForm] = React.useState(emptyForm);
