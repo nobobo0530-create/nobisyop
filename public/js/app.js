@@ -1281,7 +1281,8 @@ const generateMgmtNo = (purchaseDate, listDate, purchasePrice, divisor = 100) =>
   const pd = purchaseDate.replace(/-/g, '').slice(2); // YYMMDD
   const ld = listDate ? listDate.replace(/-/g, '').slice(4) : '0000'; // MMDD
   const a = Math.floor(purchasePrice / divisor);
-  const b = purchasePrice % divisor;
+  // 余りは割る数の桁にそろえる（100なら 5107 → 51-07。0が落ちると 51-7 で値段が読めない）
+  const b = String(purchasePrice % divisor).padStart(String(divisor - 1).length, '0');
   return `${pd}-${ld}-${a}-${b}`;
 };
 

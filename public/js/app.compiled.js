@@ -1,4 +1,4 @@
-/*APP_SRC_SHA256:1c2a0e40dc3442564cdcd5325e181ed055027d6c98a700ed72cdaf855556879a*/
+/*APP_SRC_SHA256:140882988bed03ffaa51e29def88dfae6627bb8f39051a43ad23cca5d6989763*/
 // ============================================================
 // CONFIG - 変更しやすい設定値を集約
 // ============================================================
@@ -260,7 +260,8 @@ gasUrl:'',googleClientId:'',googleSpreadsheetId:'',googleLastSyncTime:null}});//
 const formatMoney=n=>n?.toLocaleString('ja-JP')??'0';// UTC変換せずローカル日付を返す（JST環境で朝9時前にUTC日付がズレる問題を防ぐ）
 const today=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};const generateMgmtNo=(purchaseDate,listDate,purchasePrice,divisor=100)=>{const pd=purchaseDate.replace(/-/g,'').slice(2);// YYMMDD
 const ld=listDate?listDate.replace(/-/g,'').slice(4):'0000';// MMDD
-const a=Math.floor(purchasePrice/divisor);const b=purchasePrice%divisor;return`${pd}-${ld}-${a}-${b}`;};const calcProfit=(listPrice,purchasePrice,feeRate,shipping)=>{if(!listPrice||!purchasePrice)return 0;return Math.round(listPrice*(1-feeRate)-purchasePrice-(shipping||CONFIG.ESTIMATED_SHIPPING));};const conditionTag=c=>{const map={S:'tag-s',A:'tag-a',B:'tag-b',C:'tag-c'};return/*#__PURE__*/React.createElement("span",{className:`tag ${map[c]||'tag-b'}`},c);};// ============================================================
+const a=Math.floor(purchasePrice/divisor);// 余りは割る数の桁にそろえる（100なら 5107 → 51-07。0が落ちると 51-7 で値段が読めない）
+const b=String(purchasePrice%divisor).padStart(String(divisor-1).length,'0');return`${pd}-${ld}-${a}-${b}`;};const calcProfit=(listPrice,purchasePrice,feeRate,shipping)=>{if(!listPrice||!purchasePrice)return 0;return Math.round(listPrice*(1-feeRate)-purchasePrice-(shipping||CONFIG.ESTIMATED_SHIPPING));};const conditionTag=c=>{const map={S:'tag-s',A:'tag-a',B:'tag-b',C:'tag-c'};return/*#__PURE__*/React.createElement("span",{className:`tag ${map[c]||'tag-b'}`},c);};// ============================================================
 // Claude API
 // ============================================================
 const analyzeImagesWithClaude=async(imageDataList,apiKey,prompt,maxTokens=512)=>{// タイムアウト30秒（無限ループ防止）
