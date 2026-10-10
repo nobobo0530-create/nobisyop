@@ -964,12 +964,29 @@ const rankLinkCandidates = (sale, inventory, linkedIds, topN = 3) => {
   out.sort((a, b) => b.score - a.score);
   return out.slice(0, topN);
 };
+// 検索用の折りたたみ（全角半角・大小文字・カタカナ→ひらがな・空白/記号を無視）
+const searchFold = (s) => String(s || '').normalize('NFKC').toLowerCase()
+  .replace(/[\u30a1-\u30f6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60))
+  .replace(/[,¥￥円\s]+/g, ' ').trim();
+const searchTokens = (q) => searchFold(q).split(' ').filter(Boolean);
+// 全在庫から検索（売却済み・紐付け済みは除外）。空白区切りは全語を含むものだけ(AND)
 const searchInventoryForLink = (q, inventory, linkedIds, limit = 8) => {
-  const nq = normMatchText(q).replace(/\s/g, '');
-  if (!nq) return [];
-  return (inventory || []).filter(it => it.status !== 'sold' && !linkedIds.has(it.id))
-    .filter(it => normMatchText([it.brand, it.brandReading, it.productName, it.mgmtNo, it.modelNumber, it.color].join(' ')).replace(/\s/g, '').includes(nq))
-    .slice(0, limit);
+  const toks = searchTokens(q);
+  if (!toks.length) return [];
+  const out = [];
+  for (const it of (inventory || [])) {
+    if (it.status === 'sold' || linkedIds.has(it.id)) continue;
+    const hay = searchFold([it.brand, it.brandReading, it.productName, it.mgmtNo, it.modelNumber, it.color, it.category, it.purchaseStore, it.listPrice, it.purchasePrice, it.purchaseDate].join(' ')).replace(/\s/g, '');
+    if (toks.every(t => hay.includes(t))) out.push(it);
+  }
+  out.sort((a, b) => (b.status === 'listed') - (a.status === 'listed') || String(b.purchaseDate || '').localeCompare(String(a.purchaseDate || '')));
+  return limit ? out.slice(0, limit) : out;
+};
+// 未紐付け売上の検索用テキスト（タイトル・ブランド・金額・日付・販売先）
+const saleSearchHay = (s) => {
+  const d = String(s.saleDate || ''); const m = d.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  const dateForms = m ? [d, `${+m[2]}/${+m[3]}`, `${+m[2]}月${+m[3]}日`, `${m[1]}年${+m[2]}月${+m[3]}日`] : [d];
+  return searchFold([s.mailTitle, s.productName, s.brand, s.platform, s.salePrice, ...dateForms].join(' ')).replace(/\s/g, '');
 };
 
 // 仕入れの重複候補を探す（タイトル類似度＋価格/日付/仕入れ先の一致度でスコアリング）
@@ -9610,14 +9627,22 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
   const [limit, setLimit] = React.useState(MAIL_LINK_PAGE);
   const [queries, setQueries] = React.useState({});
   const [showNoStock, setShowNoStock] = React.useState(false);
+  const [saleQ, setSaleQ] = React.useState('');
+  const [plat, setPlat] = React.useState('all');
   const linkedIds = React.useMemo(() => new Set((data.sales || []).map(s => s.inventoryId).filter(Boolean)), [data.sales]);
   const pending = React.useMemo(() => (data.sales || [])
     .filter(s => s.needsLink && !s.inventoryId)
     .sort((a, b) => (a.saleDate || '') < (b.saleDate || '') ? 1 : (a.saleDate || '') > (b.saleDate || '') ? -1 : 0),
     [data.sales]);
   const noStock = React.useMemo(() => (data.sales || []).filter(s => s.noStock && !s.inventoryId && !s.needsLink), [data.sales]);
-  const pendingTotal = pending.reduce((a, s) => a + (s.salePrice || 0), 0);
-  const shown = pending.slice(0, limit);
+  const platOf = (s) => /ラクマ/.test(s.platform || '') ? 'ラクマ' : /ヤフオク|Yahoo/i.test(s.platform || '') ? 'ヤフオク' : /メルカリ/.test(s.platform || '') ? 'メルカリ' : 'その他';
+  const platCounts = React.useMemo(() => { const c = { all: pending.length }; pending.forEach(s => { const k = platOf(s); c[k] = (c[k] || 0) + 1; }); return c; }, [pending]);
+  const saleToks = searchTokens(saleQ);
+  const filtered = React.useMemo(() => pending.filter(s => (plat === 'all' || platOf(s) === plat) && (!saleToks.length || (h => saleToks.every(t => h.includes(t)))(saleSearchHay(s)))),
+    [pending, plat, saleQ]);
+  const pendingTotal = filtered.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const isFiltering = plat !== 'all' || saleToks.length > 0;
+  const shown = filtered.slice(0, limit);
 
   const candMap = React.useMemo(() => {
     const m = {};
@@ -9690,16 +9715,32 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
   return (
     <div>
       <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:12,padding:'10px 12px',marginBottom:12,fontSize:12,color:'#1e3a8a',lineHeight:1.6}}>
-        🔗 未紐付け <b>{pending.length}件</b>・¥{formatMoney(pendingTotal)}<br/>
+        🔗 未紐付け <b>{isFiltering ? `${filtered.length}件 / 全${pending.length}件` : `${pending.length}件`}</b>・¥{formatMoney(pendingTotal)}<br/>
         売上には含まれています。紐付けると仕入れ値から利益が計算され、在庫が「売却済み」になります。
       </div>
+      {pending.length > 0 && (
+        <div style={{marginBottom:10}}>
+          <input type="search" className="input-field" placeholder="🔍 売上を探す（商品名・ブランド・金額・日付）" value={saleQ}
+            onChange={e => { setSaleQ(e.target.value); setLimit(MAIL_LINK_PAGE); }} style={{width:'100%',fontSize:14}} />
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
+            {[['all','すべて'],['メルカリ','メルカリ'],['ラクマ','ラクマ'],['ヤフオク','ヤフオク'],...(platCounts['その他'] ? [['その他','その他']] : [])].map(([k, label]) => (
+              <button key={k} type="button" onClick={() => { setPlat(k); setLimit(MAIL_LINK_PAGE); }}
+                style={{padding:'5px 12px',borderRadius:99,fontSize:12,fontWeight:800,cursor:'pointer',touchAction:'manipulation',
+                  border: plat === k ? '1.5px solid #2563eb' : '1.5px solid #e5e7eb', background: plat === k ? '#2563eb' : '#fff', color: plat === k ? '#fff' : '#444'}}>
+                {label} {platCounts[k] || 0}
+              </button>
+            ))}
+          </div>
+          {isFiltering && <div style={{fontSize:11,color:'#6b7280',marginTop:6}}>{filtered.length}件ヒット{filtered.length === 0 ? '（条件を変えてください）' : ''}</div>}
+        </div>
+      )}
       {pending.length === 0 && (
         <div style={{textAlign:'center',color:'#16a34a',fontWeight:700,padding:'30px 0',fontSize:14}}>🎉 未紐付けの売上はありません</div>
       )}
       {shown.map(s => {
         const cands = candMap[s.id] || [];
         const q = queries[s.id] || '';
-        const found = q.trim() ? searchInventoryForLink(q, data.inventory, linkedIds, 8) : [];
+        const found = q.trim() ? searchInventoryForLink(q, data.inventory, linkedIds, 20) : [];
         return (
           <div key={s.id} className="card" style={{padding:'12px 12px',marginBottom:12,borderLeft:'3px solid #2563eb'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
@@ -9723,7 +9764,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
             <input type="search" className="input-field" placeholder="🔍 在庫を探す（商品名・ブランド・管理番号）" value={q}
               onChange={e => setQueries(prev => ({ ...prev, [s.id]: e.target.value }))}
               style={{width:'100%',marginTop:10,fontSize:14}} />
-            {q.trim() && found.length === 0 && <div style={{fontSize:11,color:'#9ca3af',marginTop:6}}>該当なし</div>}
+            {q.trim() && <div style={{fontSize:11,color:'#9ca3af',marginTop:6}}>{found.length === 0 ? '該当なし' : `在庫 ${found.length}件ヒット${found.length >= 20 ? '（上位20件）' : ''}`}</div>}
             {found.map(it => renderItemRow(s, it, null, 'f' + it.id))}
             <button type="button" onClick={() => markNoStock(s)}
               style={{width:'100%',marginTop:10,padding:'9px',borderRadius:10,border:'1px dashed #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:12,cursor:'pointer'}}>
@@ -9732,10 +9773,10 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
           </div>
         );
       })}
-      {pending.length > limit && (
+      {filtered.length > limit && (
         <button type="button" onClick={() => setLimit(l => l + MAIL_LINK_PAGE)}
           style={{width:'100%',padding:12,borderRadius:12,border:'1px solid #d1d5db',background:'#fff',fontWeight:700,fontSize:13,marginBottom:12}}>
-          さらに表示（残り{pending.length - limit}件）
+          さらに表示（残り{filtered.length - limit}件）
         </button>
       )}
       {noStock.length > 0 && (
