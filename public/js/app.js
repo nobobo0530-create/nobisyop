@@ -1072,6 +1072,24 @@ const allocLargestRemainder = (total, weights) => {
   return out;
 };
 
+// 店舗仕入れの「中身未入力」仮在庫か（分割・中身入力の初期値を店舗仕入れ＋決済方法にするため）
+const PAYMENT_OPTIONS = ['現金','クレカ','PayPay','メルペイ','その他'];
+const isStorePlaceholder = (it) => !!(it && it.needsDetail && it.purchaseType === 'store'
+  && String(it.productName || '').startsWith('店舗仕入れ（中身未入力）'));
+// 仮在庫の決済方法 → フォームの選択肢（PayPay銀行/PayPay（彼女）等はPayPay、空・不明はメルペイ）
+const placeholderPayment = (m) => {
+  const v = String(m || '').trim();
+  if (PAYMENT_OPTIONS.includes(v)) return v;
+  if (v.startsWith('PayPay')) return 'PayPay';
+  return 'メルペイ';
+};
+const placeholderDefaults = (it) => isStorePlaceholder(it) ? {
+  purchaseType: 'store',
+  paymentMethod: placeholderPayment(it.paymentMethod),
+  purchaseStore: it.purchaseStore || '',
+  purchaseDate: it.purchaseDate || '',
+} : null;
+
 // 分割登録：元の仕入れ内訳（商品代・送料・クーポン・手数料）を各商品に按分して子データを作る。
 // 各成分の合計が元と1円も違わないことを検証し、ずれる場合は error を返す（保存させない）。
 // 子の purchasePrice = 商品代 + 送料 + 手数料 − クーポン（= 入力された各商品の仕入れ値）
@@ -2711,7 +2729,7 @@ const PurchaseTab = () => {
       purchaseStore:      editingItem.purchaseStore      || '',
       sellerLicense:      editingItem.sellerLicense      || '',
       sellerCompanyName:  editingItem.sellerCompanyName  || '',
-      paymentMethod:      editingItem.paymentMethod      || '現金',
+      paymentMethod:      isStorePlaceholder(editingItem) ? placeholderPayment(editingItem.paymentMethod) : (editingItem.paymentMethod || '現金'),
       listDate:           editingItem.listDate           || today(),
       listPrice:          editingItem.listPrice != null  ? String(editingItem.listPrice) : '',
       estimatedPriceRange: editingItem.estimatedPriceRange || '',
@@ -2734,7 +2752,7 @@ const PurchaseTab = () => {
         ? { ...editingItem.damageLevels }
         : { 汚れ:'無', 擦れ:'無', 傷:'無', 角擦れ:'無', 匂い:'無', 型崩れ:'無' },
     });
-    setPurchaseType(editingItem.purchaseType || 'store');
+    setPurchaseType(isStorePlaceholder(editingItem) ? 'store' : (editingItem.purchaseType || 'store'));
     setRegistrationMode(editingItem.status === 'listed' ? 'listed' : 'unlisted');
     // 仕入れ先マスタとの照合（storeMaster + settings.yahooStores の両方を確認）
     const master = data.settings?.storeMaster || getInitialData().settings.storeMaster;
@@ -6016,6 +6034,7 @@ const InventoryTab = () => {
   const [splitMode, setSplitMode] = React.useState(false);   // 分割登録UI表示フラグ
   const [splitCount, setSplitCount] = React.useState(2);     // 分割数
   const [splitItems, setSplitItems] = React.useState([]);    // [{productName, purchasePrice}]
+  const [splitCommon, setSplitCommon] = React.useState(null); // 店舗仕入れ仮在庫の分割時のみ: {purchaseType,paymentMethod,purchaseStore,purchaseDate}
   const [bulkMode, setBulkMode] = React.useState(false);
   const [bulkKind, setBulkKind] = React.useState('delete'); // 'delete'=まとめて削除 / 'list'=まとめて出品中に
   const [listSheetOpen, setListSheetOpen] = React.useState(false);
@@ -6374,6 +6393,7 @@ const InventoryTab = () => {
       productName: `${item.productName||'商品'} [${String.fromCharCode(65+i)}]`,
       purchasePrice: String(i===n-1 ? base+rem : base),
     })));
+    setSplitCommon(placeholderDefaults(item));
     setSplitMode(true);
   };
   // 商品詳細からの項目タップ編集（updatedAt は setData が編集した行に刻む）
@@ -8671,6 +8691,34 @@ const InventoryTab = () => {
                       </div>
                     </div>
                   ))}
+                  {/* 店舗仕入れ（中身未入力）の分割：仕入れ種別・決済方法・仕入れ先・仕入れ日を初期入力（全商品共通） */}
+                  {splitCommon && (
+                    <div style={{background:'white',borderRadius:10,padding:'10px',marginBottom:8,border:'1px solid #e2e8f0'}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>仕入れ情報（全商品共通）</div>
+                      <div style={{display:'flex',gap:6,marginBottom:6}}>
+                        {[['store','🏪 店舗仕入れ'],['online','💻 電脳仕入れ']].map(([t,l]) => (
+                          <button key={t} type="button" onClick={() => setSplitCommon(c => ({...c, purchaseType:t}))}
+                            style={{flex:1,padding:'7px 6px',borderRadius:8,border:'2px solid',fontSize:12,cursor:'pointer',
+                              borderColor: splitCommon.purchaseType===t ? 'var(--color-primary)' : '#e0e0e0',
+                              background: splitCommon.purchaseType===t ? '#fff0f0' : 'white',
+                              color: splitCommon.purchaseType===t ? 'var(--color-primary)' : '#666',
+                              fontWeight: splitCommon.purchaseType===t ? 700 : 400}}>{l}</button>
+                        ))}
+                      </div>
+                      <select value={splitCommon.paymentMethod} onChange={e => setSplitCommon(c => ({...c, paymentMethod:e.target.value}))}
+                        style={{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid #d1d5db',fontSize:13,marginBottom:6,boxSizing:'border-box'}}>
+                        {PAYMENT_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                      <div style={{display:'flex',gap:6}}>
+                        <input value={splitCommon.purchaseStore} placeholder="仕入れ先"
+                          onChange={e => setSplitCommon(c => ({...c, purchaseStore:e.target.value}))}
+                          style={{flex:1,minWidth:0,padding:'7px 10px',borderRadius:8,border:'1px solid #d1d5db',fontSize:13,boxSizing:'border-box'}}/>
+                        <input type="date" value={splitCommon.purchaseDate}
+                          onChange={e => setSplitCommon(c => ({...c, purchaseDate:e.target.value}))}
+                          style={{flex:1,minWidth:0,padding:'7px 10px',borderRadius:8,border:'1px solid #d1d5db',fontSize:13,boxSizing:'border-box'}}/>
+                      </div>
+                    </div>
+                  )}
                   {/* 合計表示 */}
                   {(() => {
                     const total = splitItems.reduce((s,si) => s + (Number(si.purchasePrice)||0), 0);
@@ -8696,6 +8744,8 @@ const InventoryTab = () => {
                       const nowIsoSplit = new Date().toISOString();
                       const newItems = built.children.map((c, idx) => ({
                         ...c,
+                        // 店舗仕入れ仮在庫の分割：仕入れ種別・決済方法・仕入れ先・仕入れ日・storePendingIdを全員が引き継ぐ
+                        ...(splitCommon ? { purchaseType: splitCommon.purchaseType, paymentMethod: splitCommon.paymentMethod, purchaseStore: splitCommon.purchaseStore, purchaseDate: splitCommon.purchaseDate, ...(selected.storePendingId ? { storePendingId: selected.storePendingId } : {}) } : {}),
                         // 写真は先頭の1点だけが引き継ぐ（base64を複数の子に重複させない）
                         photos: idx === 0 ? (selected.photos || []) : [],
                         bundleGroup: bundleGroupId,
