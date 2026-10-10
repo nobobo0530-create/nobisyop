@@ -6082,6 +6082,8 @@ const InventoryTab = () => {
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
   const [groupBundles, setGroupBundles] = React.useState(() => localStorage.getItem('nobushop_group_bundles') !== '0');
+  const [focusBundle, setFocusBundle] = React.useState(null); // 📦バッジから開いた1グループだけを表示（まとめ買いフィルター内のみ有効）
+  const openBundleView = (bg) => { setFocusBundle(bg); setFilter('bundleAll'); try { window.scrollTo(0, 0); } catch (e) {} };
   const [openBundles, setOpenBundles] = React.useState(() => new Set());
   // 一覧の表示密度（標準／コンパクト）。端末ごとに記憶。既定はコンパクト
   const [compact, setCompactState] = React.useState(() => { try { return localStorage.getItem('invCompact') !== '0'; } catch (e) { return true; } });
@@ -6169,7 +6171,7 @@ const InventoryTab = () => {
 
   const filtered = React.useMemo(() => data.inventory.filter(item => {
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
-    if (isBundleFilter(filter)) { if (!isInBundle(item) || (filter !== 'bundleAll' && bundleTypeKey(item) !== BUNDLE_FILTERS[filter])) return false; }
+    if (isBundleFilter(filter)) { if (!isInBundle(item) || (filter !== 'bundleAll' && bundleTypeKey(item) !== BUNDLE_FILTERS[filter])) return false; if (focusBundle && item.bundleGroup !== focusBundle) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
     else if (filter === 'auditCheck') { if (!isAuditOpen(item)) return false; }
     else if (filter === 'coupon') { if (!hasCoupon(item)) return false; }
@@ -6183,7 +6185,7 @@ const InventoryTab = () => {
              (item.memo||'').toLowerCase().includes(q);
     }
     return true;
-  }), [data.inventory, filter, storeFilter, search, dupOpenCounts, bundleCounts]);
+  }), [data.inventory, filter, storeFilter, search, dupOpenCounts, bundleCounts, focusBundle]);
 
   // 仕入れ先サマリー（storeFilter選択時に表示）※正規化名で照合
   const storeFilteredAll = storeFilter
@@ -6233,6 +6235,8 @@ const InventoryTab = () => {
     if (_rowLimitInit.current) { _rowLimitInit.current = false; return; }
     setRowLimit(ROW_STEP);
   }, [filter, search, storeFilter, sort, groupBundles]);
+
+  React.useEffect(() => { if (focusBundle && filter !== 'bundleAll') setFocusBundle(null); }, [filter]);
 
   const statusLabel = { unlisted: '未出品', listed: '出品中', sold: '売却済' };
   const statusClass = { unlisted: 'tag-unlisted', listed: 'tag-active', sold: 'tag-sold' };
@@ -6958,10 +6962,10 @@ const InventoryTab = () => {
   // 絞り込み・表示の状態（初期値と違うものだけチップで見せる）
   const activeChips = [];
   if (filter === 'coupon') activeChips.push({ key:'f', label:'🎟️ クーポン', clear: () => setFilter('unlisted') });
-  if (isBundleFilter(filter)) activeChips.push({ key:'f', label: filter === 'bundleAll' ? '📦 まとめ買い 全部' : filter === 'bundleIndividual' ? '📦 同梱' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類', clear: () => setFilter('unlisted') });
+  if (isBundleFilter(filter)) activeChips.push({ key:'f', label: focusBundle ? '📦 このまとめだけ' : filter === 'bundleAll' ? '📦 まとめ買い 全部' : filter === 'bundleIndividual' ? '📦 同梱' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類', clear: () => setFilter('unlisted') });
   if (storeFilter) activeChips.push({ key:'st', label:'仕入れ先: ' + storeFilter, clear: () => setStoreFilter('') });
   if (sort !== 'new') activeChips.push({ key:'so', label:'並び: ' + (sort === 'old' ? '古い順' : '利益が高い順'), clear: () => setSort('new') });
-  if (!groupBundles) activeChips.push({ key:'gb', label:'まとめ表示OFF', clear: () => { setGroupBundles(true); try { localStorage.setItem('nobushop_group_bundles', '1'); } catch (e) {} } });
+  if (isBundleFilter(filter) && !groupBundles) activeChips.push({ key:'gb', label:'まとめ表示OFF', clear: () => { setGroupBundles(true); try { localStorage.setItem('nobushop_group_bundles', '1'); } catch (e) {} } });
   if (!compact) activeChips.push({ key:'cp', label:'標準表示', clear: () => setCompact(true) });
 
   return (
@@ -7313,7 +7317,7 @@ const InventoryTab = () => {
           <div style={{display:'flex',flexDirection:'column',gap: compact ? 6 : 10}}>
             {(() => {
               // グループ化条件を満たす場合は描画用配列を組み立てる
-              const useGrouping = groupBundles && (!bulkMode || bulkKind === 'list') && !isBundleFilter(filter) && filter !== 'dupCheck' && filter !== 'auditCheck' && filter !== 'needsDetail';
+              const useGrouping = isBundleFilter(filter) && groupBundles && (!bulkMode || bulkKind === 'list');
               const displayRows = [];
               if (useGrouping) {
                 const seenBundles = new Set();
@@ -7795,7 +7799,7 @@ const InventoryTab = () => {
                           <span style={{fontSize:9.5,fontWeight:800,padding:'0 5px',borderRadius:99,background:'#f0fdfa',color:'#115e59',border:'1px solid #5eead4'}}>🎟️−¥{couponAmt(item).toLocaleString()}</span>
                         )}
                         {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
-                          <span style={{fontSize:9.5,fontWeight:700,padding:'0 5px',borderRadius:99,background:'#eef2ff',color:'#4338ca'}}>📦{bundleCounts[item.bundleGroup]}</span>
+                          <span onClick={e => { e.stopPropagation(); openBundleView(item.bundleGroup); }} style={{fontSize:9.5,fontWeight:700,padding:'0 5px',borderRadius:99,background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦まとめ</span>
                         )}
                         {item.condition ? (
                           <span className={`tag ${({S:'tag-s',A:'tag-a',B:'tag-b',C:'tag-c'})[item.condition] || 'tag-b'}`} style={{fontSize:9.5,padding:'0 5px',lineHeight:'14px'}}>{item.condition}</span>
@@ -7927,9 +7931,9 @@ const InventoryTab = () => {
                           </span>
                         )}
                         {item.bundleGroup && bundleCounts[item.bundleGroup] > 1 && (
-                          <span style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,
+                          <span onClick={e => { e.stopPropagation(); openBundleView(item.bundleGroup); }} style={{fontSize:10,fontWeight:700,padding:'2px 7px',borderRadius:99,cursor:'pointer',
                             background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe'}}>
-                            📦 まとめ{bundleCounts[item.bundleGroup]}点
+                            📦 まとめ
                           </span>
                         )}
                         {conditionTag(item.condition)}
@@ -8221,7 +8225,7 @@ const InventoryTab = () => {
                     background: compact === v ? '#fff0f0' : '#fff',color: compact === v ? 'var(--color-primary)' : '#6b7280'}}>{l}</button>
               ))}
             </div>
-            {(data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
+            {isBundleFilter(filter) && (data.inventory||[]).some(i => i.bundleGroup && bundleCounts[i.bundleGroup] > 1) && (
               <button onClick={() => { const v = !groupBundles; setGroupBundles(v); try { localStorage.setItem('nobushop_group_bundles', v ? '1' : '0'); } catch (e) {} }}
                 style={{width:'100%',minHeight:44,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'0 14px',borderRadius:10,border:'1.5px solid #e5e7eb',
                   background: groupBundles ? '#eef2ff' : '#f3f4f6',color: groupBundles ? '#4338ca' : '#6b7280',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:16,touchAction:'manipulation'}}>
@@ -9582,8 +9586,16 @@ const calcLinkedSaleFields = (sale, item) => {
   return { ship, pp, profit, listDate, turnoverDays };
 };
 
+// 送料のよく使う金額（ここだけ直せば全画面に反映）。2025年時点の公式料金の目安。サイズ超過などは手入力で。
+const SHIPPING_PRESETS = [
+  { group: 'らくらくメルカリ便（ヤマト）', items: [['ネコポス', 210], ['コンパクト', 450], ['60', 750], ['80', 850], ['100', 1050], ['120', 1200], ['140', 1450], ['160', 1700]] },
+  { group: 'ゆうゆうメルカリ便（郵便）', items: [['パケット', 230], ['パケットポスト', 215], ['パケットプラス', 455], ['60', 750], ['80', 870], ['100', 1070]] },
+  { group: 'ラクマ・ヤフオク（目安）', items: [['ネコポス', 210], ['コンパクト', 450], ['60', 750], ['80', 850], ['100', 1050]] },
+];
 const ShippingEditModal = ({ sale, data, setData, toast, onClose }) => {
   const [val, setVal] = React.useState(sale.shippingUnknown ? '' : String(sale.shipping ?? ''));
+  const isRakuma = /ラクマ|ヤフオク|Yahoo/i.test(sale.platform || '');
+  const groups = isRakuma ? [SHIPPING_PRESETS[2], SHIPPING_PRESETS[0], SHIPPING_PRESETS[1]] : [SHIPPING_PRESETS[0], SHIPPING_PRESETS[1], SHIPPING_PRESETS[2]];
   const save = () => {
     const ship = Number(val);
     if (val === '' || isNaN(ship) || ship < 0) { toast('送料を数字で入力してください'); return; }
@@ -9600,22 +9612,27 @@ const ShippingEditModal = ({ sale, data, setData, toast, onClose }) => {
   };
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{padding:18}}>
+      <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{padding:18,maxHeight:'88vh',overflowY:'auto'}}>
         <div style={{fontWeight:800,fontSize:16,marginBottom:4}}>📦 送料を入力</div>
         <div style={{fontSize:12,color:'#6b7280',marginBottom:12,lineHeight:1.5}}>
           {sale.platform} · {sale.saleDate} · ¥{formatMoney(sale.salePrice)}<br/>
           <span style={{color:'#111'}}>{sale.mailTitle || sale.productName || ''}</span>
         </div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
-          {[210, 450, 750, 850, 1050].map(v => (
-            <button key={v} type="button" onClick={() => setVal(String(v))}
-              style={{padding:'6px 12px',borderRadius:99,border:'1px solid #d1d5db',background: String(v) === val ? '#dbeafe' : '#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>¥{v}</button>
-          ))}
-        </div>
+        {groups.map(g => (
+          <div key={g.group} style={{marginBottom:8}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#6b7280',marginBottom:4}}>{g.group}</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {g.items.map(([nm, v]) => (
+                <button key={nm} type="button" onClick={() => setVal(String(v))}
+                  style={{padding:'6px 10px',borderRadius:99,border:'1px solid #d1d5db',background: String(v) === val ? '#dbeafe' : '#fff',fontSize:12,fontWeight:700,cursor:'pointer'}}>{nm} ¥{v}</button>
+              ))}
+            </div>
+          </div>
+        ))}
         <input type="number" inputMode="numeric" className="input-field" value={val} placeholder="送料（円）"
-          onChange={e => setVal(e.target.value)} style={{width:'100%',marginBottom:12,fontSize:16}}/>
+          onChange={e => setVal(e.target.value)} style={{width:'100%',margin:'6px 0 12px',fontSize:16}}/>
         <div style={{display:'flex',gap:8}}>
-          <button type="button" onClick={onClose} style={{flex:1,padding:12,borderRadius:12,border:'1px solid #d1d5db',background:'#fff',fontWeight:700,fontSize:14}}>キャンセル</button>
+          <button type="button" onClick={onClose} style={{flex:1,padding:12,borderRadius:12,border:'1px solid #d1d5db',background:'#fff',fontWeight:700,fontSize:14}}>あとで</button>
           <button type="button" onClick={save} className="btn-primary" style={{flex:2,padding:12,borderRadius:12,fontWeight:800,fontSize:14}}>保存</button>
         </div>
       </div>
@@ -9676,6 +9693,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
       sales: data.sales.map(s => s.id === curSale.id ? linked : s),
     });
     toast('✅ 紐付けました（利益 ¥' + formatMoney(f.profit) + '）');
+    if (curSale.shippingUnknown) onEditShipping(linked); // 送料未定ならその場で入力
   };
 
   const markNoStock = (sale) => {
