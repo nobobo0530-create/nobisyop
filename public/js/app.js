@@ -2219,7 +2219,7 @@ const SummaryPanel = ({ setActiveSection }) => {
 };
 
 const HomeTab = () => {
-  const { data, setTab, setPendingReturnSection, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
+  const { data, setTab, setPendingReturnSection, setPendingInventoryFilter, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
   const now = new Date();
   const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
@@ -2321,24 +2321,6 @@ const HomeTab = () => {
 
       <div style={{padding:'12px 14px 24px',display:'flex',flexDirection:'column',gap:10}}>
 
-        {/* ── 一括仕入れ登録への入口 ── */}
-        <button
-          onClick={() => { setPendingReturnSection('batch'); setTab('other'); }}
-          style={{width:'100%',display:'flex',alignItems:'center',gap:12,
-            padding:'14px 16px',borderRadius:16,border:'none',cursor:'pointer',
-            background:'linear-gradient(135deg,#4338ca,#6366f1)',color:'white',
-            boxShadow:'0 4px 14px rgba(67,56,202,0.28)',textAlign:'left',
-            WebkitTapHighlightColor:'transparent',touchAction:'manipulation'}}>
-          <span style={{fontSize:26,lineHeight:1}}>📦</span>
-          <span style={{flex:1,minWidth:0}}>
-            <span style={{display:'block',fontSize:15,fontWeight:800,letterSpacing:'-0.02em'}}>一括仕入れ登録</span>
-            <span style={{display:'block',fontSize:11,fontWeight:600,opacity:0.85,marginTop:2}}>
-              写真を2枚1組でまとめて登録
-            </span>
-          </span>
-          <span style={{fontSize:20,opacity:0.9}}>›</span>
-        </button>
-
         {/* ── HERO: 今月の純利益（白カード） ── */}
         <div style={{background:'#ffffff',borderRadius:16,overflow:'hidden',
           border:'1.5px solid #e5e7eb',boxShadow:'0 1px 6px rgba(0,0,0,0.05)',
@@ -2424,6 +2406,37 @@ const HomeTab = () => {
 
         {/* ── 利益推移グラフ ── */}
         <ProfitChart summarySales={summarySales} revenueOnlySales={revenueOnlySales} now={now} />
+
+        {/* ── Claudeの確認待ち ── */}
+        {(() => {
+          const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open')
+            .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
+          if (open.length === 0) return (
+            <div style={{textAlign:'center',fontSize:12,color:'#9ca3af',padding:'4px 0'}}>🤖 Claudeの確認待ちはありません</div>
+          );
+          const confStyle = (c) => c === '高' ? {bg:'#dcfce7',fg:'#166534'} : c === '中' ? {bg:'#fef9c3',fg:'#854d0e'} : {bg:'#fee2e2',fg:'#991b1b'};
+          return (
+            <div style={{background:'#ffffff',borderRadius:16,border:'1.5px solid #bae6fd',boxShadow:'0 1px 6px rgba(0,0,0,0.05)',padding:'12px 14px'}}>
+              <div style={{fontSize:14,fontWeight:800,color:'#075985',marginBottom:8}}>🤖 Claudeの確認待ち {open.length}件</div>
+              {open.slice(0, 2).map(pr => {
+                const cs = confStyle(pr.confidence);
+                const amt = Math.round(Number(pr.payment?.amount) || 0);
+                return (
+                  <div key={pr.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #f1f5f9'}}>
+                    <div style={{flex:1,minWidth:0,fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pr.title}</div>
+                    <span style={{flexShrink:0,padding:'2px 8px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:11,fontWeight:800}}>確度 {pr.confidence}</span>
+                    <span style={{flexShrink:0,fontSize:13,fontWeight:800,color:'#0f172a'}}>¥{amt.toLocaleString()}</span>
+                  </div>
+                );
+              })}
+              {open.length > 2 && <div style={{fontSize:11,color:'#9ca3af',marginTop:2}}>ほか {open.length - 2}件</div>}
+              <button onClick={() => { setPendingInventoryFilter('claudeProposals'); setTab('inventory'); }}
+                style={{width:'100%',marginTop:8,minHeight:44,border:'none',borderRadius:10,background:'#0369a1',color:'white',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                確認する
+              </button>
+            </div>
+          );
+        })()}
 
       </div>
 
