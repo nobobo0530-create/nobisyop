@@ -552,6 +552,8 @@ const loadData = () => {
 // medDataUrl は Supabase に保存（localStorageには不要）
 const stripPhotosForStorage = (data) => ({
   ...data,
+  // Claudeの確認待ち：写真(base64)はlocalStorageに入れない（クラウドから毎回戻る。マージは同時刻ならクラウド優先）
+  ...(Array.isArray(data.claudeProposals) ? { claudeProposals: data.claudeProposals.map(pr => ({ ...pr, items: (pr.items || []).map(it => ({ ...it, photo: it.photo ? { stripped: true } : null })) })) } : {}),
   inventory: (data.inventory || []).map(item => ({
     ...item,
     photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
@@ -759,6 +761,7 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
           settings:  json.settings  || getInitialData().settings,
           receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
           storePending: json.storePending || [],   // ★ 店舗仕入れ未入力
+          claudeProposals: json.claudeProposals || [],   // ★ Claudeの確認待ち
         };
       }
       msg = json.error || `HTTP ${resp.status}`;
@@ -769,7 +772,7 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
     if (attempt < 2) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
   }
   console.error('[Cloud] fetch error:', msg);
-  return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [], storePending: [] };
+  return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [], storePending: [], claudeProposals: [] };
 };
 
 // ローカルデータを一括移行（/api/data POST）
@@ -785,6 +788,7 @@ const migrateLocalToSupabase = async (localData) => {
         settings:    localData.settings || null,
         receipts:    localData.receipts || [],   // ★ レシートも一括移行
         storePendingUpsert: localData.storePending || [],
+        proposalsUpsert: localData.claudeProposals || [],
       }),
       cache: 'no-store',
     });
@@ -845,7 +849,11 @@ const syncToSupabase = async (oldData, newData, opts) => {
     const spOld = new Map((oldData?.storePending || []).map(x => [x.id, JSON.stringify(x)]));
     const storePendingUpsert = (newData?.storePending || []).filter(x => x && x.id && spOld.get(x.id) !== JSON.stringify(x));
 
-    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged || storePendingUpsert.length;
+    // ★ Claudeの確認待ち: 同じく変わった行だけ送る
+    const cpOld = new Map((oldData?.claudeProposals || []).map(x => [x.id, JSON.stringify(x)]));
+    const proposalsUpsert = (newData?.claudeProposals || []).filter(x => x && x.id && cpOld.get(x.id) !== JSON.stringify(x));
+
+    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged || storePendingUpsert.length || proposalsUpsert.length;
     if (!hasChanges) {
       // 変更なし → 同期済み扱い
       _onSyncStatus?.({ status: 'ok', time: Date.now() });
@@ -864,6 +872,7 @@ const syncToSupabase = async (oldData, newData, opts) => {
             settings: settingsChanged ? newData.settings : undefined,
             receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
             storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
+            proposalsUpsert: proposalsUpsert.length ? proposalsUpsert : undefined,
           }),
           cache: 'no-store',
         });
@@ -1188,6 +1197,66 @@ const buildSplitChildren = (orig, splitInputs, ts) => {
   return { children, origin };
 };
 
+// Claudeの確認待ち：提案を承認/却下済みにする（写真base64は不要になるので外してクラウドを軽くする）
+const markProposalDone = (pr, status, extra = {}) => ({
+  ...pr, ...extra, status, updatedAt: new Date().toISOString(),
+  items: (pr.items || []).map(it => ({ ...it, photo: null })),
+});
+
+// 分割登録の本体（手動の分割フォームと「Claudeの確認待ち」の承認で共通）。
+// orig を削除して子を作り、まとめ買いグループ(bundleType 'set')にする。dataは変更せず、新しい inventory / settings を返す。
+// splitItems[i] = {productName, purchasePrice, photos?, extra?}（photos 指定時はその子の写真、無ければ先頭の子だけ元の写真を引き継ぐ）
+const applySplitRegistration = (data, orig, splitItems, common, ts) => {
+  const built = buildSplitChildren(orig, splitItems, ts);
+  if (built.error) return { error: built.error };
+  const bundleGroupId = `bundle_${ts}`;
+  const nowIso = new Date().toISOString();
+  const newItems = built.children.map((c, idx) => {
+    const si = splitItems[idx] || {};
+    return {
+      ...c,
+      // 店舗仕入れ仮在庫の分割：仕入れ種別・決済方法・仕入れ先・仕入れ日・storePendingIdを全員が引き継ぐ
+      ...(common ? { purchaseType: common.purchaseType, paymentMethod: common.paymentMethod, purchaseStore: common.purchaseStore, purchaseDate: common.purchaseDate, ...(orig.storePendingId ? { storePendingId: orig.storePendingId } : {}) } : {}),
+      // 写真は先頭の1点だけが引き継ぐ（base64を複数の子に重複させない）。子ごとの写真指定があればそれを使う
+      photos: Array.isArray(si.photos) ? si.photos : (idx === 0 ? (orig.photos || []) : []),
+      // 1点だけの分割は新しいまとめグループを作らない（元がグループ所属ならそのまま維持）
+      ...(splitItems.length > 1 ? { bundleGroup: bundleGroupId, bundleType: 'set', bundleLabel: `商品${String.fromCharCode(65 + idx)}` } : {}),
+      mgmtNo: idx === 0 ? orig.mgmtNo : null,
+      status: 'unlisted',
+      listDate: '',
+      createdAt: new Date(ts + idx).toISOString(),
+      updatedAt: nowIso,
+      ...(si.extra || {}),
+    };
+  });
+  // 元アイテムを削除：トゥームストーン記録（Supabase再起動時に復元されないよう）
+  const newDeletedIds = { ...(data.settings?._deletedIds || {}), [orig.id]: nowIso };
+  const inventory = data.inventory.filter(i => i.id !== orig.id).concat(newItems);
+  // まとめ買いの表紙：元の商品の先頭の写真で固定（子の写真を後で差し替えても変わらない）
+  const origPhoto = splitItems.length > 1 ? (orig.photos || [])[0] : null;
+  const covers = origPhoto ? { ...(data.settings?.bundleCovers || {}), [bundleGroupId]: { photoId: origPhoto.id || null, thumbId: origPhoto.thumbId || null, thumbDataUrl: null, source: 'splitOrigin', setAt: nowIso } } : (data.settings?.bundleCovers || {});
+  return { inventory, newItems, bundleGroupId, nowIso, covers, settings: { ...data.settings, _deletedIds: newDeletedIds, bundleCovers: covers } };
+};
+// 分割結果を即座にlocalStorageへ同期書き込み（saveData は setTimeout(0) のため、アプリを即座に閉じても分割結果が消えないように）
+const persistSplitLocal = (newInventory, origId, nowIso, covers) => {
+  try {
+    const _raw = localStorage.getItem('nobushop_data');
+    const _stored = _raw ? JSON.parse(_raw) : {};
+    const _cu = _stored.currentUser || 'self';
+    // 他ユーザーの在庫は保持、現ユーザーは分割後の新アイテムに置き換え
+    const _otherInv = (_stored.inventory || []).filter(i => (i.userId || 'self') !== _cu);
+    const _strippedNew = newInventory.map(item => ({
+      ...item,
+      photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
+    }));
+    if (!_stored.settings) _stored.settings = {};
+    _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [origId]: nowIso };
+    _stored.settings.bundleCovers = mergeBundleCovers(_stored.settings.bundleCovers, covers);
+    _stored.inventory = [..._otherInv, ..._strippedNew];
+    localStorage.setItem('nobushop_data', JSON.stringify(_stored));
+  } catch(_e) {}
+};
+
 // 出品カテゴリー（説明文のハッシュタグ用・5種）
 const LISTING_CATEGORIES = ['毛皮', 'レディース', 'メンズ', 'バッグ', '小物'];
 
@@ -1250,6 +1319,7 @@ const getInitialData = () => ({
   sales: [],
   receipts: [],
   storePending: [],   // 店舗仕入れ未入力（PayPay/メルペイの店舗払いで在庫未登録のもの）
+  claudeProposals: [],   // Claudeの確認待ち（提案を見て1タップで登録）
   settings: {
     apiKey: '',
     removeBgApiKey: '',
@@ -6032,6 +6102,75 @@ const InventoryTab = () => {
         ? { ...x, status: 'registered', linkedItemIds: makeIds.has(`sp_${x.id}`) ? [...new Set([...(x.linkedItemIds || []), `sp_${x.id}`])] : (x.linkedItemIds || []), updatedAt: now } : x) });
     toast(`✅ ${entries.length}件を登録済みにしました（仮在庫 ${items.length}点）。「✏️ 中身未入力」から後で入力できます`);
   };
+  // ★ Claudeの確認待ち（提案を見て1タップで分割登録）
+  const proposalsAll = data.claudeProposals || [];
+  const proposalsOpen = proposalsAll.filter(pr => pr && pr.status === 'open')
+    .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const [proposalBusy, setProposalBusy] = React.useState(false);
+  const proposalSum = (pr) => (pr.items || []).reduce((s, it) => s + (Math.round(Number(it.allocatedPrice)) || 0), 0);
+  // 承認前の検査：問題があれば日本語の理由を返す（nullなら登録可）
+  const proposalProblem = (pr) => {
+    const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
+    if (!ph) return 'もとの仮登録の商品が見つかりません（すでに分割・削除された可能性があります）';
+    if (ph.status === 'sold') return 'もとの仮登録の商品が売却済みです';
+    const items = pr.items || [];
+    if (items.length < 1) return '商品が入っていません';
+    if (items.some(it => !String(it.name || '').trim())) return '商品名が空の行があります';
+    if (items.some(it => !(Math.round(Number(it.allocatedPrice)) > 0))) return '仕入れ値が0円以下の行があります';
+    const sum = proposalSum(pr), pay = Math.round(Number(pr.payment?.amount) || 0);
+    if (sum !== pay) return `仕入れ値の合計 ¥${sum.toLocaleString()} が支払い ¥${pay.toLocaleString()} と一致しません`;
+    if ((Number(ph.purchasePrice) || 0) !== sum) return `もとの仮登録の仕入れ値 ¥${(Number(ph.purchasePrice) || 0).toLocaleString()} と合計 ¥${sum.toLocaleString()} が一致しません`;
+    return null;
+  };
+  const proposalSplitItems = (pr) => (pr.items || []).map((it, i) => {
+    const th = it.photo && it.photo.thumbDataUrl;
+    return {
+      productName: String(it.name || '').trim(),
+      purchasePrice: String(Math.round(Number(it.allocatedPrice)) || 0),
+      photos: th ? [{ id: `pp_${pr.id}_${i}`, thumbId: `pp_${pr.id}_${i}`, thumbDataUrl: th, medDataUrl: it.photo.medDataUrl || null }] : [],
+      extra: { brand: it.brand || '', category: it.category || '', needsDetail: !String(it.name || '').trim(), priceUnconfirmed: false },
+    };
+  });
+  const proposalCommon = (pr, ph) => ({
+    purchaseType: 'store',
+    paymentMethod: placeholderPayment(pr.payment?.method || ph.paymentMethod),
+    purchaseStore: pr.payment?.store || ph.purchaseStore || '',
+    purchaseDate: pr.payment?.date || ph.purchaseDate || '',
+  });
+  const approveProposal = (pr) => {
+    if (proposalBusy) return;
+    const prob = proposalProblem(pr);
+    if (prob) { alert('❌ ' + prob); return; }
+    const missing = (pr.items || []).filter(it => !(it.photo && it.photo.thumbDataUrl)).length;
+    if (missing > 0 && !confirm(`写真が読み込めていない商品が${missing}点あります（通信待ちかも）。写真なしで登録しますか？`)) return;
+    const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
+    setProposalBusy(true);
+    try {
+      const res = applySplitRegistration(data, ph, proposalSplitItems(pr), proposalCommon(pr, ph), Date.now());
+      if (res.error) { alert('❌ ' + res.error); return; }
+      setData({ ...data, inventory: res.inventory, settings: res.settings,
+        claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: res.newItems.map(i => i.id) })) });
+      persistSplitLocal(res.inventory, ph.id, res.nowIso, res.covers);
+      toast(`✅ ${res.newItems.length}点を登録しました`);
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
+  const editProposal = (pr) => {
+    const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
+    if (!ph) { alert('❌ もとの仮登録の商品が見つかりません'); return; }
+    const items = proposalSplitItems(pr);
+    setSelected(ph);
+    setSplitCount(items.length);
+    setSplitItems(items);
+    setSplitCommon(proposalCommon(pr, ph));
+    setSplitMode(true);
+    setSplitProposalId(pr.id);
+  };
+  const rejectProposal = (pr) => {
+    const reason = window.prompt('どこが違いましたか？（書かなくてもOK・空のままOKを押せば却下）', '');
+    if (reason === null) return;
+    setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: String(reason).trim() })) });
+    toast('❌ 却下しました');
+  };
   const startStorePurchase = (e) => {
     setPendingStorePurchase({ id: e.id, store: e.store || '', date: e.date || '', amount: Number(e.amount) || 0, method: e.method || '' });
     setPendingReturnTab(null);
@@ -6057,6 +6196,8 @@ const InventoryTab = () => {
   const [splitMode, setSplitMode] = React.useState(false);   // 分割登録UI表示フラグ
   const [splitCount, setSplitCount] = React.useState(2);     // 分割数
   const [splitItems, setSplitItems] = React.useState([]);    // [{productName, purchasePrice}]
+  const [splitProposalId, setSplitProposalId] = React.useState(null); // 「Claudeの確認待ち」から直して登録中の提案ID
+  React.useEffect(() => { if (!splitMode) setSplitProposalId(null); }, [splitMode]);
   const [splitCommon, setSplitCommon] = React.useState(null); // 店舗仕入れ仮在庫の分割時のみ: {purchaseType,paymentMethod,purchaseStore,purchaseDate}
   const [bulkMode, setBulkMode] = React.useState(false);
   const [bulkKind, setBulkKind] = React.useState('delete'); // 'delete'=まとめて削除 / 'list'=まとめて出品中に
@@ -6930,12 +7071,13 @@ const InventoryTab = () => {
     const inv = data.inventory || [];
     return {
       needsDetail: inv.filter(i => i.needsDetail).length,
+      claudeProposals: proposalsOpen.length,
       storePending: storePendingOpen.length,
       priceUnconfirmed: inv.filter(i => i.priceUnconfirmed).length,
       auditCheck: auditOpenCount,
       dupCheck: inv.filter(isDupOpen).length,
     };
-  }, [data.inventory, storePendingOpen.length, auditOpenCount, dupOpenCounts]);
+  }, [data.inventory, storePendingOpen.length, proposalsOpen.length, auditOpenCount, dupOpenCounts]);
   const salesTaskCounts = React.useMemo(() => {
     const ids = new Set((data.inventory || []).map(i => i.id));
     const valid = (data.sales || []).filter(sl => !sl.inventoryId || ids.has(sl.inventoryId));
@@ -6943,6 +7085,7 @@ const InventoryTab = () => {
   }, [data.sales, data.inventory]);
   // 仕入れ側（先に片付ける順）→ 売上側
   const TASK_DEFS = [
+    { key:'claudeProposals',  icon:'🤖', label:'Claudeの確認待ち', sub:'提案を見て1タップで登録',         bg:'#e0f2fe', fg:'#075985', line:'#bae6fd' },
     { key:'needsDetail',      icon:'✏️', label:'中身未入力',       sub:'仮登録の中身を入れる',           bg:'#ffedd5', fg:'#9a3412', line:'#fed7aa' },
     { key:'storePending',     icon:'🧾', label:'店舗仕入れ未入力', sub:'店舗払いを仕入れとして登録',     bg:'#ede9fe', fg:'#5b21b6', line:'#ddd6fe' },
     { key:'priceUnconfirmed', icon:'💰', label:'金額未確定',       sub:'仕入れ金額を確定する',           bg:'#fef3c7', fg:'#92400e', line:'#fcd34d' },
@@ -7243,7 +7386,63 @@ const InventoryTab = () => {
             })()}
           </div>
         )}
-        {filter === 'storePending' ? (() => {
+        {filter === 'claudeProposals' ? (() => {
+          // ★ Claudeの確認待ち：1提案＝1カード。内容を見て ✅登録 / ✏️直す / ❌違う
+          const yen = (v) => '¥' + (Math.round(Number(v)) || 0).toLocaleString();
+          if (proposalsOpen.length === 0) return (
+            <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>Claudeの確認待ちはありません</div>
+          );
+          const confStyle = (c) => c === '高' ? {bg:'#dcfce7',fg:'#166534'} : c === '中' ? {bg:'#fef9c3',fg:'#854d0e'} : {bg:'#fee2e2',fg:'#991b1b'};
+          const btn = (bg, color, dis) => ({flex:1,minHeight:48,padding:'10px 8px',border:'none',borderRadius:10,background: dis ? '#e5e7eb' : bg,color: dis ? '#9ca3af' : color,
+            fontWeight:800,fontSize:14,cursor: dis ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'});
+          return (
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              {proposalsOpen.map(pr => {
+                const sum = proposalSum(pr), pay = Math.round(Number(pr.payment?.amount) || 0);
+                const ok = sum === pay;
+                const prob = proposalProblem(pr);
+                const cs = confStyle(pr.confidence);
+                return (
+                  <div key={pr.id} className="card" style={{padding:12}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+                      <div style={{fontWeight:800,fontSize:15,minWidth:0,wordBreak:'break-all'}}>{pr.title}</div>
+                      <div style={{flexShrink:0,padding:'3px 9px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:12,fontWeight:800}}>確度 {pr.confidence}</div>
+                    </div>
+                    {pr.rule && <div style={{fontSize:13,color:'#334155',marginTop:6,padding:'6px 10px',background:'#f1f5f9',borderRadius:8}}>{pr.rule}</div>}
+                    <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:10}}>
+                      {(pr.items || []).map((it, i) => (
+                        <div key={i} style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                          <div style={{width:60,height:60,flexShrink:0,borderRadius:8,overflow:'hidden',background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                            {it.photo && it.photo.thumbDataUrl
+                              ? <img src={it.photo.thumbDataUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+                              : <span style={{fontSize:22,opacity:0.5}}>📷</span>}
+                          </div>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:13,fontWeight:700,wordBreak:'break-all'}}>{it.name}</div>
+                            {it.brand && <div style={{fontSize:11,color:'#64748b'}}>{it.brand}</div>}
+                            <div style={{fontSize:12,color:'#475569',marginTop:2}}>値札 {yen(it.tagPrice)}　<b style={{color:'#0f172a'}}>仕入れ値 {yen(it.allocatedPrice)}</b></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{fontSize:13,fontWeight:800,marginTop:10,color: ok ? '#166534' : '#b45309'}}>
+                      合計 {yen(sum)} ＝ 支払い {yen(pay)} {ok ? '✓' : '⚠️'}
+                    </div>
+                    {pr.note && <div style={{fontSize:12,color:'#64748b',marginTop:6,wordBreak:'break-all'}}>{pr.note}</div>}
+                    {prob && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ {prob}</div>}
+                    <div style={{display:'flex',gap:8,marginTop:10}}>
+                      <button style={btn('#16a34a','white',!!prob || proposalBusy)} disabled={!!prob || proposalBusy} onClick={() => approveProposal(pr)}>✅ この内容で登録</button>
+                    </div>
+                    <div style={{display:'flex',gap:8,marginTop:8}}>
+                      <button style={btn('#e0e7ff','#3730a3',false)} onClick={() => editProposal(pr)}>✏️ 直してから登録</button>
+                      <button style={btn('#fee2e2','#991b1b',false)} onClick={() => rejectProposal(pr)}>❌ 違う</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })() : filter === 'storePending' ? (() => {
           // ★ 店舗仕入れ未入力の一覧（日付の新しい順にグループ表示）
           const yen = (v) => '¥' + (Number(v)||0).toLocaleString();
           const invById = new Map((data.inventory || []).map(i => [i.id, i]));
@@ -8691,7 +8890,7 @@ const InventoryTab = () => {
                     仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます（分割前のデータは「まとめ買い」から見られます）。送料は各商品に均等に、クーポンは金額が最も高い1点だけに自動で割り当てられ、合計は必ず元と一致します。
                   </div>
                   {/* 分割数選択 */}
-                  <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+                  {!splitProposalId && <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
                     {[2,3,4,5,6,7,8,9,10].map(n => (
                       <button key={n} onClick={() => { setSplitCount(n); setSplitItems(initItems(n)); }}
                         style={{flex:'0 0 auto',minWidth:44,padding:'7px 10px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
@@ -8700,11 +8899,15 @@ const InventoryTab = () => {
                         {n}件
                       </button>
                     ))}
-                  </div>
+                  </div>}
+                  {splitProposalId && <div style={{fontSize:12,fontWeight:700,color:'#075985',marginBottom:10}}>🤖 Claudeの提案を元にしています（写真・ブランド付きで登録されます）</div>}
                   {/* 各アイテム入力 */}
                   {splitItems.map((si, idx) => (
                     <div key={idx} style={{background:'white',borderRadius:10,padding:'10px',marginBottom:8,border:'1px solid #e2e8f0'}}>
-                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>商品{String.fromCharCode(65+idx)}</div>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+                        {si.photos && si.photos[0] && si.photos[0].thumbDataUrl && <img src={si.photos[0].thumbDataUrl} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6}}/>}
+                        <span>商品{String.fromCharCode(65+idx)}{si.extra && si.extra.brand ? `（${si.extra.brand}）` : ''}</span>
+                      </div>
                       <input value={si.productName}
                         onChange={e => setSplitItems(prev => prev.map((x,i) => i===idx ? {...x,productName:e.target.value} : x))}
                         placeholder="商品名"
@@ -8765,53 +8968,13 @@ const InventoryTab = () => {
                       if (splitItems.some(si => !si.productName.trim())) { alert('商品名を入力してください'); return; }
                       if (splitItems.some(si => Number(si.purchasePrice) <= 0)) { alert('仕入れ値を入力してください'); return; }
                       const ts = Date.now();
-                      const bundleGroupId = `bundle_${ts}`;
-                      const built = buildSplitChildren(selected, splitItems, ts);
-                      if (built.error) { alert('❌ ' + built.error); return; }
-                      const nowIsoSplit = new Date().toISOString();
-                      const newItems = built.children.map((c, idx) => ({
-                        ...c,
-                        // 店舗仕入れ仮在庫の分割：仕入れ種別・決済方法・仕入れ先・仕入れ日・storePendingIdを全員が引き継ぐ
-                        ...(splitCommon ? { purchaseType: splitCommon.purchaseType, paymentMethod: splitCommon.paymentMethod, purchaseStore: splitCommon.purchaseStore, purchaseDate: splitCommon.purchaseDate, ...(selected.storePendingId ? { storePendingId: selected.storePendingId } : {}) } : {}),
-                        // 写真は先頭の1点だけが引き継ぐ（base64を複数の子に重複させない）
-                        photos: idx === 0 ? (selected.photos || []) : [],
-                        bundleGroup: bundleGroupId,
-                        bundleType: 'set',
-                        bundleLabel: `商品${String.fromCharCode(65+idx)}`,
-                        mgmtNo: idx === 0 ? selected.mgmtNo : null,
-                        status: 'unlisted',
-                        listDate: '',
-                        createdAt: new Date(ts + idx).toISOString(),
-                        updatedAt: nowIsoSplit,
-                      }));
-                      // ★ 元アイテムを削除：トゥームストーン記録（Supabase再起動時に復元されないよう）
-                      const nowTs = new Date().toISOString();
-                      const newDeletedIds = { ...(data.settings?._deletedIds || {}), [selected.id]: nowTs };
-                      const newInventory = data.inventory.filter(i => i.id !== selected.id).concat(newItems);
-                      // まとめ買いの表紙：元の商品の先頭の写真で固定（子の写真を後で差し替えても変わらない）
-                      const _origPhoto = (selected.photos || [])[0];
-                      const _splitCovers = _origPhoto ? { ...(data.settings?.bundleCovers || {}), [bundleGroupId]: { photoId: _origPhoto.id || null, thumbId: _origPhoto.thumbId || null, thumbDataUrl: null, source: 'splitOrigin', setAt: nowTs } } : (data.settings?.bundleCovers || {});
-                      setData({ ...data, inventory: newInventory, settings: { ...data.settings, _deletedIds: newDeletedIds, bundleCovers: _splitCovers } });
-                      // ★ 分割データ全体を即座にlocalStorageへ同期書き込み
-                      // saveData は setTimeout(0) で非同期のため、アプリを即座に閉じると保存されない場合がある。
-                      // トゥームストーンだけでなく新しい分割アイテムも含めて全状態を即時保存することで
-                      // Supabase不通+アプリ終了の組み合わせ時でも分割結果が消えないようにする。
-                      try {
-                        const _raw = localStorage.getItem('nobushop_data');
-                        const _stored = _raw ? JSON.parse(_raw) : {};
-                        const _cu = _stored.currentUser || 'self';
-                        // 他ユーザーの在庫は保持、現ユーザーは分割後の新アイテムに置き換え
-                        const _otherInv = (_stored.inventory || []).filter(i => (i.userId || 'self') !== _cu);
-                        const _strippedNew = newInventory.map(item => ({
-                          ...item,
-                          photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
-                        }));
-                        if (!_stored.settings) _stored.settings = {};
-                        _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [selected.id]: nowTs };
-                        _stored.settings.bundleCovers = mergeBundleCovers(_stored.settings.bundleCovers, _splitCovers);
-                        _stored.inventory = [..._otherInv, ..._strippedNew];
-                        localStorage.setItem('nobushop_data', JSON.stringify(_stored));
-                      } catch(_e) {}
+                      const res = applySplitRegistration(data, selected, splitItems, splitCommon, ts);
+                      if (res.error) { alert('❌ ' + res.error); return; }
+                      // 「Claudeの確認待ち」から「直してから登録」した場合は、その提案も同時に承認済みにする
+                      setData({ ...data, inventory: res.inventory, settings: res.settings,
+                        ...(splitProposalId ? { claudeProposals: (data.claudeProposals || []).map(pr => pr.id !== splitProposalId ? pr : markProposalDone(pr, 'approved', { resultItemIds: res.newItems.map(i => i.id), edited: true })) } : {}) });
+                      persistSplitLocal(res.inventory, selected.id, res.nowIso, res.covers);
+                      setSplitProposalId(null);
                       setSplitMode(false);
                       setSplitItems([]);
                       setSelected(null);
@@ -12799,6 +12962,7 @@ function mergeCloudIntoLocal(localFull, cloudFull) {
     settings:  mergeSettings(localFull.settings, cloudFull.settings),
     receipts:  mergeReceipts(localFull.receipts, cloudFull.receipts),
     storePending: mergeReceipts(localFull.storePending, cloudFull.storePending),   // id単位・updatedAtの新しい方
+    claudeProposals: mergeReceipts(localFull.claudeProposals, cloudFull.claudeProposals),   // 同上（同時刻ならクラウド優先＝写真つき）
   };
   return normalizeStores(cleanOrphans(mergedData));
 }
@@ -18324,7 +18488,7 @@ const CloudAutoSync = () => {
         const invChanged      = stableJson(merged.inventory) !== stableJson(current.inventory);
         const salesChanged    = stableJson(merged.sales)     !== stableJson(current.sales);
         const settingsChanged = stableJson(merged.settings)  !== stableJson(current.settings);
-        const receiptsChanged = stableJson(merged.receipts || []) !== stableJson(current.receipts || []) || stableJson(merged.storePending || []) !== stableJson(current.storePending || []);
+        const receiptsChanged = stableJson(merged.receipts || []) !== stableJson(current.receipts || []) || stableJson(merged.storePending || []) !== stableJson(current.storePending || []) || stableJson(merged.claudeProposals || []) !== stableJson(current.claudeProposals || []);
 
         if (invChanged || salesChanged || settingsChanged || receiptsChanged) {
           setFullDataRaw(prev => {
@@ -18703,7 +18867,7 @@ const App = () => {
           const invChanged      = JSON.stringify(cleanedMerged.inventory) !== JSON.stringify(cloudData.inventory);
           const salesChanged    = JSON.stringify(cleanedMerged.sales)    !== JSON.stringify(cloudData.sales);
           const settingsChanged = JSON.stringify(cleanedMerged.settings) !== JSON.stringify(cloudData.settings);
-          const receiptsChanged = JSON.stringify(cleanedMerged.receipts || []) !== JSON.stringify(cloudData.receipts || []) || JSON.stringify(cleanedMerged.storePending || []) !== JSON.stringify(cloudData.storePending || []);
+          const receiptsChanged = JSON.stringify(cleanedMerged.receipts || []) !== JSON.stringify(cloudData.receipts || []) || JSON.stringify(cleanedMerged.storePending || []) !== JSON.stringify(cloudData.storePending || []) || JSON.stringify(cleanedMerged.claudeProposals || []) !== JSON.stringify(cloudData.claudeProposals || []);
           if (invChanged || salesChanged || settingsChanged || receiptsChanged) {
             syncToSupabase(cloudData, cleanedMerged);
           } else {

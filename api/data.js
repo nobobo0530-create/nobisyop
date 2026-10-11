@@ -262,6 +262,11 @@ export default async function handler(req, res) {
       res.setHeader('Server-Timing', `total;dur=${Date.now() - _tAll}, ` + _timings.join(', '));
       _timings = null;
 
+      // ★ Claudeの確認待ち（id=claudeProposals・小さい）
+      const cp = await sbFetch('app_settings?select=data&id=eq.claudeProposals', {
+        headers: { 'Accept': 'application/vnd.pgrst.object+json' },
+      }).catch(() => null);
+
       res.json({
         ok: true,
         light: !full,
@@ -270,11 +275,12 @@ export default async function handler(req, res) {
         settings:  cfg?.data || null,
         receipts:  (rcp?.data && Array.isArray(rcp.data.list)) ? rcp.data.list : [],
         storePending: (sp?.data && Array.isArray(sp.data.list)) ? sp.data.list : [],
+        claudeProposals: (cp?.data && Array.isArray(cp.data.list)) ? cp.data.list : [],
       });
 
     // ── POST: 差分保存（upsert / delete）──────────────────────
     } else if (req.method === 'POST') {
-      const { invUpsert, invDelete, salesUpsert, salesDelete, settings, receipts, storePendingUpsert } = req.body || {};
+      const { invUpsert, invDelete, salesUpsert, salesDelete, settings, receipts, storePendingUpsert, proposalsUpsert } = req.body || {};
       const ops = [];
 
       const skipped = [];
@@ -365,6 +371,25 @@ export default async function handler(req, res) {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
           body: JSON.stringify([{ id: 'storePending', data: { list: Array.from(map.values()) } }]),
+        }));
+      }
+
+      // ★ Claudeの確認待ち: storePending と同じく id 単位で updatedAt の新しい方を採用
+      if (Array.isArray(proposalsUpsert) && proposalsUpsert.length) {
+        const cur = await sbFetch('app_settings?select=data&id=eq.claudeProposals', {
+          headers: { 'Accept': 'application/vnd.pgrst.object+json' },
+        }).catch(() => null);
+        const map = new Map(((cur?.data && Array.isArray(cur.data.list)) ? cur.data.list : []).filter(x => x && x.id).map(x => [x.id, x]));
+        const ts = (x) => { const t = new Date(x?.updatedAt || 0).getTime(); return isNaN(t) ? 0 : t; };
+        for (const e of proposalsUpsert) {
+          if (!e || !e.id) continue;
+          const ex = map.get(e.id);
+          if (!ex || ts(e) >= ts(ex)) map.set(e.id, e);
+        }
+        ops.push(sbFetch('app_settings', {
+          method: 'POST',
+          headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+          body: JSON.stringify([{ id: 'claudeProposals', data: { list: Array.from(map.values()) } }]),
         }));
       }
 
