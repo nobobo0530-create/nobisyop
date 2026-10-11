@@ -1322,6 +1322,7 @@ const generateMgmtNo = (purchaseDate, listDate, purchasePrice, divisor = 100) =>
 };
 
 // 受取金額(netAmount)が分かる売上は「受取 − 仕入れ値」が正確な利益（ヤフオクの送料差額も含まれる）。無ければ null
+const saleRev = (s) => (Number(s && s.salePrice) || 0) + Math.max(0, Number(s && s.buyerShipReceived) || 0);
 const netProfitOf = (sale, pp) => {
   const n = Number(sale && sale.netAmount);
   return (isFinite(n) && n > 0) ? Math.round(n - (Number(pp) || 0)) : null;
@@ -1731,11 +1732,11 @@ const ProfitChart = ({ summarySales, revenueOnlySales = [], now }) => {
       const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const sales = summarySales.filter(s => s.saleDate?.startsWith(key));
       const profit  = sales.reduce((a, s) => a + (s.profit  || 0), 0);
-      const pRevenue = sales.reduce((a, s) => a + (s.salePrice || 0), 0);
+      const pRevenue = sales.reduce((a, s) => a + saleRev(s), 0);
       const cost    = pRevenue - profit;
       // 未紐付け（利益未計算）の売上は売上額にだけ含める
       const uSales  = revenueOnlySales.filter(s => s.saleDate?.startsWith(key));
-      const uRev    = uSales.reduce((a, s) => a + (s.salePrice || 0), 0);
+      const uRev    = uSales.reduce((a, s) => a + saleRev(s), 0);
       result.push({ key, label:`${d.getMonth()+1}月`,
         yearLabel: d.getMonth() === 0 ? `${d.getFullYear()}` : '',
         profit, revenue: pRevenue + uRev, pRevenue, uRev, uCount: uSales.length, cost,
@@ -1966,7 +1967,7 @@ const SummaryPanel = ({ setActiveSection }) => {
   const summarySales = validSales.filter(s => (s.salePrice||0) > 0 && getEffectivePP(s) > 0);
   const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(currentMonth));
   const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
-  const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const totalRevenue = monthlySales.reduce((a, s) => a + saleRev(s), 0);
   const profitRate   = totalRevenue > 0 ? Math.round(totalProfit / totalRevenue * 100) : 0;
   const _ro          = revenueOnlyOfMonth(validSales, currentMonth); // 未紐付け（売上のみ）
 
@@ -2164,7 +2165,7 @@ const HomeTab = () => {
   // ── 今月データ ──
   const monthlySales = summarySales.filter(s => s.saleDate?.startsWith(currentMonth));
   const totalProfit  = monthlySales.reduce((a, s) => a + (s.profit || 0), 0);
-  const totalRevenue = monthlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
+  const totalRevenue = monthlySales.reduce((a, s) => a + saleRev(s), 0);
   const _ro          = revenueOnlyOfMonth(validSales, currentMonth); // 未紐付け（売上のみ・利益は未計算）
   const revenueOnlySales = validSales.filter(isRevenueOnlySale);
 
@@ -9592,16 +9593,8 @@ const calcLinkedSaleFields = (sale, item) => {
   return { ship, pp, profit, listDate, turnoverDays };
 };
 
-// 送料のよく使う金額（ここだけ直せば全画面に反映）。2025年時点の公式料金の目安。サイズ超過などは手入力で。
-const SHIPPING_PRESETS = [
-  { group: 'らくらくメルカリ便（ヤマト）', items: [['ネコポス', 210], ['コンパクト', 450], ['60', 750], ['80', 850], ['100', 1050], ['120', 1200], ['140', 1450], ['160', 1700]] },
-  { group: 'ゆうゆうメルカリ便（郵便）', items: [['パケット', 230], ['パケットポスト', 215], ['パケットプラス', 455], ['60', 750], ['80', 870], ['100', 1070]] },
-  { group: 'ラクマ・ヤフオク（目安）', items: [['ネコポス', 210], ['コンパクト', 450], ['60', 750], ['80', 850], ['100', 1050]] },
-];
 const ShippingEditModal = ({ sale, data, setData, toast, onClose }) => {
   const [val, setVal] = React.useState(sale.shippingUnknown ? '' : String(sale.shipping ?? ''));
-  const isRakuma = /ラクマ|ヤフオク|Yahoo/i.test(sale.platform || '');
-  const groups = isRakuma ? [SHIPPING_PRESETS[2], SHIPPING_PRESETS[0], SHIPPING_PRESETS[1]] : [SHIPPING_PRESETS[0], SHIPPING_PRESETS[1], SHIPPING_PRESETS[2]];
   const save = () => {
     const ship = Number(val);
     if (val === '' || isNaN(ship) || ship < 0) { toast('送料を数字で入力してください'); return; }
@@ -9624,19 +9617,8 @@ const ShippingEditModal = ({ sale, data, setData, toast, onClose }) => {
           {sale.platform} · {sale.saleDate} · ¥{formatMoney(sale.salePrice)}<br/>
           <span style={{color:'#111'}}>{sale.mailTitle || sale.productName || ''}</span>
         </div>
-        {groups.map(g => (
-          <div key={g.group} style={{marginBottom:8}}>
-            <div style={{fontSize:11,fontWeight:700,color:'#6b7280',marginBottom:4}}>{g.group}</div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {g.items.map(([nm, v]) => (
-                <button key={nm} type="button" onClick={() => setVal(String(v))}
-                  style={{padding:'6px 10px',borderRadius:99,border:'1px solid #d1d5db',background: String(v) === val ? '#dbeafe' : '#fff',fontSize:12,fontWeight:700,cursor:'pointer'}}>{nm} ¥{v}</button>
-              ))}
-            </div>
-          </div>
-        ))}
-        <input type="number" inputMode="numeric" className="input-field" value={val} placeholder="送料（円）"
-          onChange={e => setVal(e.target.value)} style={{width:'100%',margin:'6px 0 12px',fontSize:16}}/>
+        <input type="number" inputMode="numeric" className="input-field" value={val} placeholder="送料（円）" autoFocus
+          onChange={e => setVal(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') save(); }} style={{width:'100%',margin:'6px 0 14px',fontSize:28,fontWeight:800,textAlign:'center',padding:'14px 10px'}}/>
         <div style={{display:'flex',gap:8}}>
           <button type="button" onClick={onClose} style={{flex:1,padding:12,borderRadius:12,border:'1px solid #d1d5db',background:'#fff',fontWeight:700,fontSize:14}}>あとで</button>
           <button type="button" onClick={save} className="btn-primary" style={{flex:2,padding:12,borderRadius:12,fontWeight:800,fontSize:14}}>保存</button>
@@ -10754,7 +10736,7 @@ const SalesTab = () => {
   const noStockSales     = revenueOnlySales.filter(s => !s.needsLink);
   const noShipSales      = validSales.filter(s => s.shippingUnknown);
   const revenueOnlyTotal = revenueOnlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
-  const allRevenueTotal  = summarySales.reduce((a, s) => a + (s.salePrice || 0), 0) + revenueOnlyTotal;
+  const allRevenueTotal  = summarySales.reduce((a, s) => a + saleRev(s), 0) + revenueOnlyTotal;
   const listSales = salesView === 'noship' ? noShipSales : validSales;
 
   // 月次サマリー（集計用のみ使用）
@@ -10762,7 +10744,7 @@ const SalesTab = () => {
   summarySales.forEach(s => {
     const m = s.saleDate?.slice(0,7) || 'unknown';
     if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, pcount: 0, urevenue: 0, ucount: 0, platforms: {} };
-    salesByMonth[m].revenue += s.salePrice || 0;
+    salesByMonth[m].revenue += saleRev(s);
     salesByMonth[m].profit += s.profit || 0;
     salesByMonth[m].count++;
     salesByMonth[m].pcount++;
@@ -10773,8 +10755,8 @@ const SalesTab = () => {
   revenueOnlySales.forEach(s => {
     const m = s.saleDate?.slice(0,7) || 'unknown';
     if (!salesByMonth[m]) salesByMonth[m] = { revenue: 0, profit: 0, count: 0, pcount: 0, urevenue: 0, ucount: 0, platforms: {} };
-    salesByMonth[m].revenue += s.salePrice || 0;
-    salesByMonth[m].urevenue += s.salePrice || 0;
+    salesByMonth[m].revenue += saleRev(s);
+    salesByMonth[m].urevenue += saleRev(s);
     salesByMonth[m].count++;
     salesByMonth[m].ucount++;
     const p = s.platform || 'その他';
@@ -11016,7 +10998,6 @@ const SalesTab = () => {
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
                       <span style={{fontSize:11,color:'#bbb'}}>{s.saleDate}</span>
-                      {s.buyerShipReceived > 0 && <span style={{fontSize:10,background:'#ecfdf5',color:'#047857',borderRadius:99,padding:'1px 7px',fontWeight:700,border:'1px solid #a7f3d0'}}>送料差額 +¥{formatMoney(s.buyerShipReceived)}</span>}
                       {s.shippingUnknown && (
                         <span onClick={(e) => { e.stopPropagation(); setShipEdit(s); }} style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
                           padding:'1px 7px',fontWeight:700,border:'1px solid #fed7aa'}}>📦 送料未入力</span>
@@ -11084,7 +11065,7 @@ const SalesTab = () => {
           .sort((a, b) => (b.saleDate||'') > (a.saleDate||'') ? 1 : -1);
         // 集計は完全データのみ
         const mdCompleteSales = summarySales.filter(s => s.saleDate?.startsWith(monthDetail));
-        const mdProfitRevenue = mdCompleteSales.reduce((s, r) => s + (r.salePrice||0), 0);
+        const mdProfitRevenue = mdCompleteSales.reduce((s, r) => s + saleRev(r), 0);
         const mdUnlinked = revenueOnlyOfMonth(validSales, monthDetail);  // 未紐付け（売上のみ）
         const mdRevenue = mdProfitRevenue + mdUnlinked.revenue;
         const mdProfit  = mdCompleteSales.reduce((s, r) => s + (r.profit||0), 0);
@@ -11150,8 +11131,7 @@ const SalesTab = () => {
                           <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,
                             padding:'2px 8px',fontWeight:700,flexShrink:0}}>{s.platform||'−'}</span>
                           <span style={{fontSize:11,color:'#bbb',flexShrink:0}}>{s.saleDate}</span>
-                          {s.buyerShipReceived > 0 && <span style={{fontSize:10,background:'#ecfdf5',color:'#047857',borderRadius:99,padding:'1px 7px',fontWeight:700,border:'1px solid #a7f3d0'}}>送料差額 +¥{formatMoney(s.buyerShipReceived)}</span>}
-{mdIncomplete && (
+                          {mdIncomplete && (
                             <span style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
                               padding:'1px 6px',fontWeight:700,border:'1px solid #fed7aa',flexShrink:0}}>
                               ⚠ 仕入れ値未入力
@@ -12847,21 +12827,19 @@ const computeTaxSummary = (data, year) => {
   const PLAT = ['メルカリ', 'ラクマ', 'ヤフオク'];
   const platKey = (p) => PLAT.includes(p) ? p : 'その他';
   const mkSales = () => ({ 'メルカリ': 0, 'ラクマ': 0, 'ヤフオク': 0, 'その他': 0 });
-  const byMonth = months.map(m => ({ month: m, sales: mkSales(), salesTotal: 0, salesCount: 0, fee: 0, ship: 0, bsr: 0, buy: { '店舗': 0, 'ヤフオク': 0, 'オンライン他': 0 }, buyTotal: 0, buyCount: 0 }));
+  const byMonth = months.map(m => ({ month: m, sales: mkSales(), salesTotal: 0, salesCount: 0, fee: 0, ship: 0, buy: { '店舗': 0, 'ヤフオク': 0, 'オンライン他': 0 }, buyTotal: 0, buyCount: 0 }));
   const mIdx = (d) => months.indexOf((d || '').slice(0, 7));
   // ── 売上 ──
   const saleRows = [];
-  const recon = { n: 0, calc: 0, net: 0 };
   let feeEstimatedCount = 0, shipUnknown = 0, unlinked = 0, unlinkedYen = 0;
   sales.filter(s => (s.saleDate || '').startsWith(Y)).forEach(s => {
     const item = (s.inventoryId && invById.get(s.inventoryId)) || null;
-    const price = num(s.salePrice);
+    const bsr = Math.max(0, num(s.buyerShipReceived)); // 落札者負担送料の差益（売上に含める）
+    const price = num(s.salePrice) + bsr;
     const hasFee = s.fee != null && s.fee !== '' && isFinite(Number(s.fee)) && !s.feeEstimated;
-    const fee = (s.fee != null && s.fee !== '' && isFinite(Number(s.fee))) ? num(s.fee) : Math.round(price * num(s.feeRate));
+    const fee = (s.fee != null && s.fee !== '' && isFinite(Number(s.fee))) ? num(s.fee) : Math.round(num(s.salePrice) * num(s.feeRate));
     const feeEst = !hasFee;
     const ship = num(s.shipping);
-    const bsr = Math.max(0, num(s.buyerShipReceived));
-    const nAmt = num(s.netAmount);
     const shipUnk = !!s.shippingUnknown && !(ship > 0);
     const isUnlinked = !s.inventoryId && (s.source === 'mail' || s.needsLink === true);
     if (feeEst) feeEstimatedCount++;
@@ -12869,8 +12847,8 @@ const computeTaxSummary = (data, year) => {
     if (isUnlinked && s.needsLink !== false) { unlinked++; unlinkedYen += price; }
     const mi = mIdx(s.saleDate);
     const pk = platKey(s.platform);
-    if (mi >= 0) { const b = byMonth[mi]; b.sales[pk] += price; b.salesTotal += price; b.salesCount++; b.fee += fee; b.ship += ship; b.bsr += bsr; if (nAmt > 0) { recon.n++; recon.calc += price + bsr - fee - ship; recon.net += nAmt; } }
-    saleRows.push({ date: s.saleDate, platform: s.platform || '', title: (item && item.productName) || s.mailTitle || '', price, fee, feeEst, ship, shipUnk, bsr, net: price - fee - ship + bsr,
+    if (mi >= 0) { const b = byMonth[mi]; b.sales[pk] += price; b.salesTotal += price; b.salesCount++; b.fee += fee; b.ship += ship; }
+    saleRows.push({ date: s.saleDate, platform: s.platform || '', title: (item && item.productName) || s.mailTitle || '', price, fee, feeEst, ship, shipUnk, net: price - fee - ship,
       mgmtNo: (item && item.mgmtNo) || '', pp: item ? num(item.purchasePrice) : (num(s.purchasePrice) || ''), linked: !!item });
   });
   saleRows.sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
@@ -12934,13 +12912,13 @@ const computeTaxSummary = (data, year) => {
   const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
   const totals = {
     sales: sum(byMonth, b => b.salesTotal), salesCount: sum(byMonth, b => b.salesCount),
-    fee: sum(byMonth, b => b.fee), ship: sum(byMonth, b => b.ship), bsr: sum(byMonth, b => b.bsr),
+    fee: sum(byMonth, b => b.fee), ship: sum(byMonth, b => b.ship),
     buy: sum(byMonth, b => b.buyTotal), buyCount: sum(byMonth, b => b.buyCount),
     byPlatform: { 'メルカリ': sum(byMonth, b => b.sales['メルカリ']), 'ラクマ': sum(byMonth, b => b.sales['ラクマ']), 'ヤフオク': sum(byMonth, b => b.sales['ヤフオク']), 'その他': sum(byMonth, b => b.sales['その他']) },
     buyByKind: { '店舗': sum(byMonth, b => b.buy['店舗']), 'ヤフオク': sum(byMonth, b => b.buy['ヤフオク']), 'オンライン他': sum(byMonth, b => b.buy['オンライン他']) },
   };
   return {
-    year: Y, byMonth, totals, recon, saleRows, buyRows, closingRows,
+    year: Y, byMonth, totals, saleRows, buyRows, closingRows,
     closing, opening, openingOldItems: openingOld,
     warn: {
       unlinkedCount: unlinked, unlinkedYen, shipUnknown, feeEstimatedCount,
@@ -12990,7 +12968,7 @@ const TaxSummaryPanel = ({ data, setData, toast }) => {
     const manual = ty.openingInventory != null && ty.openingInventory !== '' && isFinite(Number(ty.openingInventory));
     const openingVal = manual ? Number(ty.openingInventory) : sum.opening.sum;
     const cogs = openingVal + t.buy - sum.closing.sum;
-    const gross = t.sales + t.bsr - cogs - t.fee - t.ship;
+    const gross = t.sales - cogs - t.fee - t.ship;
     const warns = [
       ['未紐付け売上（仕入値が不明のまま）', w.unlinkedCount, yen(w.unlinkedYen)],
       ['送料未入力の売上', w.shipUnknown, ''],
@@ -13003,13 +12981,13 @@ const TaxSummaryPanel = ({ data, setData, toast }) => {
       ['売却済みで売却日が不明', w.soldNoDate, ''],
     ];
     const csvMonthly = () => {
-      const h1 = ['月', 'メルカリ売上', 'ラクマ売上', 'ヤフオク売上', 'その他売上', '売上合計', '売上件数', '販売手数料', '販売送料', '送料差額', '仕入(店舗)', '仕入(ヤフオク)', '仕入(オンライン他)', '仕入合計', '仕入件数'];
-      const rows = sum.byMonth.map(b => [b.month, b.sales['メルカリ'], b.sales['ラクマ'], b.sales['ヤフオク'], b.sales['その他'], b.salesTotal, b.salesCount, b.fee, b.ship, b.bsr, b.buy['店舗'], b.buy['ヤフオク'], b.buy['オンライン他'], b.buyTotal, b.buyCount]);
-      rows.push(['合計', t.byPlatform['メルカリ'], t.byPlatform['ラクマ'], t.byPlatform['ヤフオク'], t.byPlatform['その他'], t.sales, t.salesCount, t.fee, t.ship, t.bsr, t.buyByKind['店舗'], t.buyByKind['ヤフオク'], t.buyByKind['オンライン他'], t.buy, t.buyCount]);
+      const h1 = ['月', 'メルカリ売上', 'ラクマ売上', 'ヤフオク売上', 'その他売上', '売上合計', '売上件数', '販売手数料', '販売送料', '仕入(店舗)', '仕入(ヤフオク)', '仕入(オンライン他)', '仕入合計', '仕入件数'];
+      const rows = sum.byMonth.map(b => [b.month, b.sales['メルカリ'], b.sales['ラクマ'], b.sales['ヤフオク'], b.sales['その他'], b.salesTotal, b.salesCount, b.fee, b.ship, b.buy['店舗'], b.buy['ヤフオク'], b.buy['オンライン他'], b.buyTotal, b.buyCount]);
+      rows.push(['合計', t.byPlatform['メルカリ'], t.byPlatform['ラクマ'], t.byPlatform['ヤフオク'], t.byPlatform['その他'], t.sales, t.salesCount, t.fee, t.ship, t.buyByKind['店舗'], t.buyByKind['ヤフオク'], t.buyByKind['オンライン他'], t.buy, t.buyCount]);
       rows.push([]);
       rows.push(['期首棚卸高' + (manual ? '(手入力)' : '(アプリ計算)'), openingVal]);
       rows.push(['仕入高', t.buy]); rows.push(['期末棚卸高', sum.closing.sum]);
-      rows.push(['売上原価', cogs]); rows.push(['粗利(売上+送料差額-原価-手数料-送料)', gross]);
+      rows.push(['売上原価', cogs]); rows.push(['粗利(売上-原価-手数料-送料)', gross]);
       return [h1, ...rows];
     };
     return (
@@ -13018,14 +12996,8 @@ const TaxSummaryPanel = ({ data, setData, toast }) => {
           <div style={h}>売上高</div>
           <div style={row}><span>売上高（{t.salesCount}件）</span><b>{yen(t.sales)}</b></div>
           {Object.keys(t.byPlatform).map(p => <div key={p} style={{ ...row, color: '#6b7280', paddingLeft: 10 }}><span>{p}</span><span>{yen(t.byPlatform[p])}</span></div>)}
-          <div style={row}><span>送料差額（落札者負担分の差益）</span><b>{yen(t.bsr)}</b></div>
           <div style={row}><span>販売手数料{w.feeEstimatedCount > 0 ? '（うち' + w.feeEstimatedCount + '件は料率計算）' : ''}</span><b>{yen(t.fee)}</b></div>
           <div style={row}><span>販売送料{w.shipUnknown > 0 ? '（⚠️' + w.shipUnknown + '件 送料未入力）' : ''}</span><b>{yen(t.ship)}</b></div>
-          {sum.recon.n > 0 && (
-            <div style={{ fontSize: 11, color: '#374151', background: '#f0fdf4', borderRadius: 6, padding: '5px 8px', marginTop: 4, lineHeight: 1.6 }}>
-              受取額の照合（受取額が分かる{sum.recon.n}件）：売上高＋送料差額－手数料－販売送料 {yen(sum.recon.calc)} ／ 実際の受取合計 {yen(sum.recon.net)}（差 {yen(sum.recon.net - sum.recon.calc)}）
-            </div>
-          )}
         </div>
         <div style={box}>
           <div style={h}>仕入高</div>
@@ -13047,7 +13019,7 @@ const TaxSummaryPanel = ({ data, setData, toast }) => {
           <div style={row}><span>＋ 仕入高</span><span>{yen(t.buy)}</span></div>
           <div style={row}><span>－ 期末棚卸高（{year}/12/31・{sum.closing.cnt}点）</span><span>{yen(sum.closing.sum)}</span></div>
           <div style={{ ...row, borderTop: '1px solid #e5e7eb', marginTop: 4, paddingTop: 6 }}><span>売上原価</span><b>{yen(cogs)}</b></div>
-          <div style={row}><span>粗利（売上＋送料差額－原価－手数料－送料）</span><b style={{ color: gross < 0 ? '#dc2626' : '#047857' }}>{yen(gross)}</b></div>
+          <div style={row}><span>粗利（売上－原価－手数料－送料）</span><b style={{ color: gross < 0 ? '#dc2626' : '#047857' }}>{yen(gross)}</b></div>
         </div>
         <div style={{ ...box, borderColor: '#fcd34d', background: '#fffbeb' }}>
           <div style={h}>⚠️ 未完了チェック</div>
@@ -13059,8 +13031,8 @@ const TaxSummaryPanel = ({ data, setData, toast }) => {
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           <button style={btn} onClick={() => taxDownloadCsv(csvMonthly(), '年間まとめ_月別サマリー_' + year + '.csv')}>月別サマリーCSV</button>
-          <button style={btn} onClick={() => taxDownloadCsv([['販売日', '販路', '商品名', '売価', '手数料', '手数料区分', '送料', '送料未入力', '送料差額', '差引(売価+送料差額-手数料-送料)', '紐付け管理番号', '仕入額'],
-            ...sum.saleRows.map(r => [r.date, r.platform, r.title, r.price, r.fee, r.feeEst ? '料率計算' : '実額', r.ship, r.shipUnk ? '未入力' : '', r.bsr, r.net, r.mgmtNo, r.pp])], '年間まとめ_売上明細_' + year + '.csv')}>売上明細CSV</button>
+          <button style={btn} onClick={() => taxDownloadCsv([['販売日', '販路', '商品名', '売価', '手数料', '手数料区分', '送料', '送料未入力', '差引(売価-手数料-送料)', '紐付け管理番号', '仕入額'],
+            ...sum.saleRows.map(r => [r.date, r.platform, r.title, r.price, r.fee, r.feeEst ? '料率計算' : '実額', r.ship, r.shipUnk ? '未入力' : '', r.net, r.mgmtNo, r.pp])], '年間まとめ_売上明細_' + year + '.csv')}>売上明細CSV</button>
           <button style={btn} onClick={() => taxDownloadCsv([['仕入日', '仕入先', '種別', '商品名', '管理番号', '商品代', '送料', 'クーポン', '仕入合計', '支払方法', '注文ID/オークションID'],
             ...sum.buyRows.map(r => [r.date, r.store, r.kind, r.title, r.mgmtNo, r.item, r.ship, r.coupon, r.total, r.pay, r.orderId])], '年間まとめ_仕入明細_' + year + '.csv')}>仕入明細CSV</button>
           <button style={btn} onClick={() => taxDownloadCsv([['仕入日', '仕入先', '商品名', '管理番号', '仕入額', 'ステータス'],
