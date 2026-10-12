@@ -550,15 +550,26 @@ const loadData = () => {
 // 理由: 50件×3枚×50KB = 7.5MB がlocalStorageに書き込まれ、iOS Safari (上限5MB) でフリーズの原因になっていた
 // thumbDataUrl は別キー(THUMBS_KEY)に保存して復元できるようにする
 // medDataUrl は Supabase に保存（localStorageには不要）
-const stripPhotosForStorage = (data) => ({
-  ...data,
-  // Claudeの確認待ち：写真(base64)はlocalStorageに入れない（クラウドから毎回戻る。マージは同時刻ならクラウド優先）
-  ...(Array.isArray(data.claudeProposals) ? { claudeProposals: data.claudeProposals.map(pr => ({ ...pr, items: (pr.items || []).map(it => ({ ...it, photo: it.photo ? { stripped: true } : null })) })) } : {}),
-  inventory: (data.inventory || []).map(item => ({
-    ...item,
-    photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
-  })),
-});
+const stripPhotosForStorage = (data) => {
+  const out = {
+    ...data,
+    inventory: (data.inventory || []).map(item => ({
+      ...item,
+      photos: (item.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })),
+    })),
+  };
+  // Claudeの確認待ち：端末には保存しない（クラウドが正。起動時・画面復帰時に取得して戻る）。
+  //   提案の写真(base64)と、売上の紐付け提案が数百件に増えても端末の容量を使わないため
+  delete out.claudeProposals;
+  // まとめ買いの表紙：サムネイル(base64)は端末に保存しない（約1.3MB）。クラウドと写真DBから戻る
+  const bc = out.settings && out.settings.bundleCovers;
+  if (bc && typeof bc === 'object') {
+    const slim = {};
+    for (const k of Object.keys(bc)) { const v = bc[k]; slim[k] = (v && typeof v === 'object') ? { ...v, thumbDataUrl: null, medDataUrl: null } : v; }
+    out.settings = { ...out.settings, bundleCovers: slim };
+  }
+  return out;
+};
 
 // ★ 容量エラー通知（保存失敗をユーザーに見える形で知らせる）
 // App側の useEffect でハンドラーが登録される（_onSyncStatus と同じパターン）
@@ -19566,7 +19577,7 @@ const App = () => {
             <div style={{position:'fixed',top:0,left:0,right:0,zIndex:10000,background:'#b91c1c',color:'white',
                          textAlign:'center',padding:'8px 16px',fontSize:12,cursor:'pointer'}}
                  onClick={() => setTab('other')}>
-              🚨 端末への保存に失敗しました（容量不足の可能性）。クラウド同期があれば安全です → その他タブで容量を確認
+              🚨 端末への保存に失敗しました（容量不足の可能性）。画面上のデータは消えていません。クラウド同期が完了していれば安全です → その他タブで確認
             </div>
           )}
           {/* ★ バックアップリマインダー（30日以上バックアップなし） */}
