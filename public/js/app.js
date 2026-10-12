@@ -2218,6 +2218,113 @@ const SummaryPanel = ({ setActiveSection }) => {
   );
 };
 
+// ============================================================
+// iOS風 共通パーツ（大見出し・検索欄・セグメント・やること一覧）
+// ============================================================
+const IOS_FILL = 'rgba(118,118,128,0.12)';
+const IOS_LABEL2 = 'rgba(60,60,67,0.6)';
+const IOS_LABEL3 = 'rgba(60,60,67,0.3)';
+const IOS_SEP = 'rgba(60,60,67,0.14)';
+const IosLargeTitle = ({ title, children }) => (
+  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,
+    padding:'calc(10px + env(safe-area-inset-top)) 16px 6px 20px',background:'var(--bg)'}}>
+    <h1 style={{margin:0,fontSize:34,fontWeight:700,letterSpacing:'-0.02em',color:'#000',lineHeight:'41px'}}>{title}</h1>
+    <div style={{display:'flex',alignItems:'center',gap:2,flexShrink:0}}>{children}</div>
+  </div>
+);
+// 44pt の当たり判定を持つ丸いアイコンボタン
+const IosIconBtn = ({ onClick, label, filled, children }) => (
+  <button onClick={onClick} aria-label={label}
+    style={{width:44,height:44,padding:0,border:'none',background:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+      touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+    <span style={{width:32,height:32,borderRadius:16,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:500,lineHeight:1,
+      background: filled ? 'var(--color-primary)' : IOS_FILL, color: filled ? '#fff' : '#000'}}>{children}</span>
+  </button>
+);
+const IosSearch = ({ value, onChange, placeholder }) => (
+  <div style={{padding:'6px 16px 10px',background:'var(--bg)'}}>
+    <div style={{position:'relative',display:'flex',alignItems:'center',background:IOS_FILL,borderRadius:10,height:36}}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={IOS_LABEL2} strokeWidth="2.6" strokeLinecap="round" style={{position:'absolute',left:9,pointerEvents:'none'}}>
+        <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/>
+      </svg>
+      <input type="search" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        style={{width:'100%',height:36,padding:'0 34px 0 32px',border:'none',outline:'none',background:'transparent',
+          fontSize:17,color:'#000',WebkitAppearance:'none',appearance:'none'}}/>
+      {value && (
+        <button onClick={() => onChange('')} aria-label="クリア"
+          style={{position:'absolute',right:0,width:40,height:36,border:'none',background:'none',cursor:'pointer',color:IOS_LABEL3,fontSize:16,padding:0}}>
+          <span style={{display:'inline-flex',width:16,height:16,borderRadius:8,background:IOS_LABEL2,color:'#fff',alignItems:'center',justifyContent:'center',fontSize:11,lineHeight:1,opacity:0.6}}>✕</span>
+        </button>
+      )}
+    </div>
+  </div>
+);
+// セグメント（options: [{value,label,count}]）
+const IosSegmented = ({ options, value, onChange }) => (
+  <div style={{padding:'0 16px 10px',background:'var(--bg)'}}>
+    <div style={{display:'flex',background:IOS_FILL,borderRadius:9,padding:2,gap:2}}>
+      {options.map(o => {
+        const on = o.value === value;
+        return (
+          <button key={o.value} onClick={() => onChange(o.value)}
+            style={{flex:1,minWidth:0,minHeight:44,border:'none',cursor:'pointer',borderRadius:7,padding:'4px 2px',
+              background: on ? '#fff' : 'transparent',
+              boxShadow: on ? '0 3px 8px rgba(0,0,0,0.12), 0 3px 1px rgba(0,0,0,0.04)' : 'none',
+              display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1,
+              color:'#000',transition:'background 0.15s',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            <span style={{fontSize:13,fontWeight: on ? 600 : 500,lineHeight:'16px',whiteSpace:'nowrap'}}>{o.label}</span>
+            {o.count != null && <span style={{fontSize:11,lineHeight:'13px',color:IOS_LABEL2,fontWeight:500}}>{o.count}</span>}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+// ホームの「やること」：iOS設定アプリ風のグループリスト
+const HOME_TASK_ROWS = [
+  { key:'claudeProposals',  icon:'🤖', label:'Claudeの確認待ち', bg:'#e0f2fe' },
+  { key:'needsDetail',      icon:'✏️', label:'中身未入力',       bg:'#ffedd5' },
+  { key:'storePending',     icon:'🧾', label:'店舗仕入れ未入力', bg:'#ede9fe' },
+  { key:'priceUnconfirmed', icon:'💰', label:'金額未確定',       bg:'#fef3c7' },
+  { key:'auditCheck',       icon:'🔍', label:'要確認',           bg:'#fee2e2' },
+  { key:'dupCheck',         icon:'🔁', label:'重複候補',         bg:'#fce7f3' },
+  { key:'unlinked',         icon:'🔗', label:'売上の未紐付け',   bg:'#dbeafe', sales:true },
+  { key:'noship',           icon:'📦', label:'送料未入力',       bg:'#ffedd5', sales:true },
+];
+const HomeTodoList = ({ counts, subs, onOpen }) => {
+  const rows = HOME_TASK_ROWS.filter(r => (counts[r.key] || 0) > 0);
+  const total = rows.reduce((a, r) => a + counts[r.key], 0);
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',padding:'0 16px 6px'}}>
+        <span style={{fontSize:13,color:IOS_LABEL2,textTransform:'uppercase',letterSpacing:'0.02em'}}>やること</span>
+        {total > 0 && <span style={{fontSize:13,color:IOS_LABEL2}}>{total}件</span>}
+      </div>
+      <div style={{background:'#fff',borderRadius:12,overflow:'hidden'}}>
+        {rows.length === 0 && (
+          <div style={{minHeight:52,display:'flex',alignItems:'center',gap:10,padding:'0 16px',color:IOS_LABEL2,fontSize:16}}>
+            <span style={{color:'#34c759',fontWeight:700}}>✓</span>やることはありません
+          </div>
+        )}
+        {rows.map((r, i) => (
+          <button key={r.key} onClick={() => onOpen(r)}
+            style={{width:'100%',minHeight:subs[r.key] ? 60 : 52,display:'flex',alignItems:'center',gap:12,padding:'0 12px 0 16px',border:'none',background:'#fff',
+              cursor:'pointer',textAlign:'left',color:'#000',touchAction:'manipulation',WebkitTapHighlightColor:'rgba(0,0,0,0.06)',position:'relative'}}>
+            <span style={{width:30,height:30,borderRadius:8,background:r.bg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:17,flexShrink:0}}>{r.icon}</span>
+            <span style={{flex:1,minWidth:0}}>
+              <span style={{display:'block',fontSize:17,lineHeight:'22px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.label}</span>
+              {subs[r.key] && <span style={{display:'block',fontSize:13,lineHeight:'18px',color:IOS_LABEL2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{subs[r.key]}</span>}
+            </span>
+            <span style={{fontSize:17,color:IOS_LABEL2,fontVariantNumeric:'tabular-nums'}}>{counts[r.key]}</span>
+            <svg width="8" height="14" viewBox="0 0 8 14" fill="none" stroke={IOS_LABEL3} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}><path d="M1 1l6 6-6 6"/></svg>
+            {i < rows.length - 1 && <span style={{position:'absolute',left:58,right:0,bottom:0,height:0.5,background:IOS_SEP}}/>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const HomeTab = () => {
   const { data, setTab, setPendingReturnSection, setPendingInventoryFilter, currentUser, userProfile, setUserProfile, dbStatus, syncStatus, lastSyncTime, syncError, manualSync } = React.useContext(AppContext);
   const now = new Date();
@@ -2251,6 +2358,36 @@ const HomeTab = () => {
   const progressPct  = monthlyGoal > 0 ? Math.min(100, Math.round(totalProfit / monthlyGoal * 100)) : 0;
   const remaining    = Math.max(0, monthlyGoal - totalProfit);
   const daysInMonth  = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  // ── やること（件数。在庫タブの絞り込みと同じ条件）──
+  const todoCounts = React.useMemo(() => {
+    const inv = data.inventory || [];
+    const dupN = {};
+    inv.forEach(i => { if (i.dupCheck && !i.dupCheck.resolved) dupN[i.dupCheck.group] = (dupN[i.dupCheck.group] || 0) + 1; });
+    const ids = new Set(inv.map(i => i.id));
+    const vs = (data.sales || []).filter(sl => !sl.inventoryId || ids.has(sl.inventoryId));
+    return {
+      claudeProposals: (data.claudeProposals || []).filter(pr => pr && pr.status === 'open').length,
+      needsDetail: inv.filter(i => i.needsDetail).length,
+      storePending: (data.storePending || []).filter(e => e && e.status === 'open').length,
+      priceUnconfirmed: inv.filter(i => i.priceUnconfirmed).length,
+      auditCheck: inv.filter(i => i.auditCheck && !i.auditCheck.resolved).length,
+      dupCheck: inv.filter(i => i.dupCheck && !i.dupCheck.resolved && (dupN[i.dupCheck.group] || 0) >= 2).length,
+      unlinked: vs.filter(sl => sl.needsLink && !sl.inventoryId).length,
+      noship: vs.filter(sl => sl.shippingUnknown).length,
+    };
+  }, [data.inventory, data.sales, data.claudeProposals, data.storePending]);
+  const todoSubs = (() => {
+    const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open')
+      .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
+    if (!open.length) return {};
+    const f = open[0];
+    return { claudeProposals: `${f.title || ''} ¥${Math.round(Number(f.payment?.amount) || 0).toLocaleString()}${open.length > 1 ? ` ほか${open.length - 1}件` : ''}` };
+  })();
+  const openTodo = (r) => {
+    if (r.sales) { window.__salesViewPreset = r.key; setTab('sales'); }
+    else { setPendingInventoryFilter(r.key); setTab('inventory'); }
+  };
 
   // ── 目標編集モーダル ──
   const [editingGoal, setEditingGoal] = React.useState(false);
@@ -2404,39 +2541,13 @@ const HomeTab = () => {
           </div>{/* /flex content */}
         </div>
 
+        {/* ── やること（iOS設定風リスト）── */}
+        <div style={{marginTop:6}}>
+          <HomeTodoList counts={todoCounts} subs={todoSubs} onOpen={openTodo} />
+        </div>
+
         {/* ── 利益推移グラフ ── */}
         <ProfitChart summarySales={summarySales} revenueOnlySales={revenueOnlySales} now={now} />
-
-        {/* ── Claudeの確認待ち ── */}
-        {(() => {
-          const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open')
-            .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
-          if (open.length === 0) return (
-            <div style={{textAlign:'center',fontSize:12,color:'#9ca3af',padding:'4px 0'}}>🤖 Claudeの確認待ちはありません</div>
-          );
-          const confStyle = (c) => c === '高' ? {bg:'#dcfce7',fg:'#166534'} : c === '中' ? {bg:'#fef9c3',fg:'#854d0e'} : {bg:'#fee2e2',fg:'#991b1b'};
-          return (
-            <div style={{background:'#ffffff',borderRadius:16,border:'1.5px solid #bae6fd',boxShadow:'0 1px 6px rgba(0,0,0,0.05)',padding:'12px 14px'}}>
-              <div style={{fontSize:14,fontWeight:800,color:'#075985',marginBottom:8}}>🤖 Claudeの確認待ち {open.length}件</div>
-              {open.slice(0, 2).map(pr => {
-                const cs = confStyle(pr.confidence);
-                const amt = Math.round(Number(pr.payment?.amount) || 0);
-                return (
-                  <div key={pr.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #f1f5f9'}}>
-                    <div style={{flex:1,minWidth:0,fontSize:13,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pr.title}</div>
-                    <span style={{flexShrink:0,padding:'2px 8px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:11,fontWeight:800}}>確度 {pr.confidence}</span>
-                    <span style={{flexShrink:0,fontSize:13,fontWeight:800,color:'#0f172a'}}>¥{amt.toLocaleString()}</span>
-                  </div>
-                );
-              })}
-              {open.length > 2 && <div style={{fontSize:11,color:'#9ca3af',marginTop:2}}>ほか {open.length - 2}件</div>}
-              <button onClick={() => { setPendingInventoryFilter('claudeProposals'); setTab('inventory'); }}
-                style={{width:'100%',marginTop:8,minHeight:44,border:'none',borderRadius:10,background:'#0369a1',color:'white',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                確認する
-              </button>
-            </div>
-          );
-        })()}
 
       </div>
 
@@ -7078,6 +7189,7 @@ const InventoryTab = () => {
 
   // ===== やること（作業キュー）と 絞り込み・表示 =====
   const [taskSheetOpen, setTaskSheetOpen] = React.useState(false);
+  const [invMenuOpen, setInvMenuOpen] = React.useState(false);
   const [filterSheetOpen, setFilterSheetOpen] = React.useState(false);
   const taskReturnRef = React.useRef('unlisted');
   const taskCounts = React.useMemo(() => {
@@ -7132,138 +7244,79 @@ const InventoryTab = () => {
 
   return (
     <div className="fade-in">
-      <div className="header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,paddingRight:12,flexWrap:'wrap'}}>
-        <h1 style={{margin:0,fontSize:18,fontWeight:800,whiteSpace:'nowrap'}}>📋 在庫一覧</h1>
-        <div style={{display:'flex',gap:8,alignItems:'center',flexShrink:0,flexWrap:'wrap'}}>
-          {!bulkMode && (
-            <button onClick={() => setTab('purchase')}
-              style={{background:'white',color:'var(--color-primary)',border:'2px solid var(--color-primary)',
-                borderRadius:10,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer',
-                whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-              ＋ 新規登録
-            </button>
-          )}
-          {!bulkMode ? (
-            <>
-            <button onClick={() => { setBulkKind('delete'); setBulkMode(true); }}
-              style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
-              まとめて削除
-            </button>
-            </>
-          ) : (
-            <button onClick={exitBulkMode}
-              style={{background:'#f3f4f6',border:'none',borderRadius:8,padding:'7px 10px',fontSize:12,fontWeight:600,color:'#555',cursor:'pointer',WebkitTapHighlightColor:'transparent'}}>
-              キャンセル
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 検索バー */}
-      <div style={{padding:'10px 16px',background:'white',borderBottom:'1px solid #f0f0f0'}}>
-        <div style={{position:'relative',display:'flex',alignItems:'center'}}>
-          <span style={{position:'absolute',left:10,fontSize:15,color:'#aaa',pointerEvents:'none'}}>🔍</span>
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="商品名・ブランド名で検索..."
-            style={{width:'100%',padding:'9px 36px 9px 34px',borderRadius:10,border:'1.5px solid #e5e7eb',
-              fontSize:14,outline:'none',background:'#f9fafb',boxSizing:'border-box',
-              WebkitAppearance:'none'}}
-          />
-          {search && (
-            <button onClick={() => setSearch('')}
-              style={{position:'absolute',right:8,background:'none',border:'none',cursor:'pointer',
-                fontSize:16,color:'#aaa',padding:'2px 4px',lineHeight:1}}>×</button>
-          )}
-        </div>
-      </div>
-
-      {/* フィルター */}
-      <div style={{display:'flex',gap:8,padding:'10px 16px',background:'white',borderBottom:'1px solid #f0f0f0',overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
-        {[['unlisted','未出品','#6b7280'],['listed','出品中','#1e40af'],['sold','売却済','#5b21b6'],['all','すべて','#6b7280']].map(([v,l,c]) => {
-          const base = v === 'all' ? data.inventory : data.inventory.filter(i => i.status === v);
-          const cnt = search.trim()
-            ? base.filter(i => {
-                const q = search.trim().toLowerCase();
-                return (i.productName||'').toLowerCase().includes(q) ||
-                       (i.brand||'').toLowerCase().includes(q) ||
-                       (i.memo||'').toLowerCase().includes(q);
-              }).length
-            : base.length;
-          const active = filter === v;
-          return (
-            <button key={v} onClick={() => { setFilter(v); setCheckedIds(new Set()); }}
-              style={{flexShrink:0,padding:'7px 14px',borderRadius:99,border:'none',cursor:'pointer',
-                fontWeight:700,fontSize:13,display:'flex',alignItems:'center',gap:5,
-                background: active ? 'var(--color-primary)' : '#f3f4f6',
-                color: active ? 'white' : '#666',
-                boxShadow: active ? '0 2px 8px rgba(232,64,64,0.25)' : 'none',
-                transition:'all 0.2s', WebkitTapHighlightColor:'transparent'}}>
-              {l}
-              <span style={{
-                background: active ? 'rgba(255,255,255,0.3)' : '#e5e7eb',
-                color: active ? 'white' : '#888',
-                borderRadius:99, padding:'1px 7px', fontSize:11, fontWeight:700}}>
-                {cnt}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* やること・絞り込みの入口（特別チップはここに集約） */}
-      <div style={{padding:'10px 16px 8px',background:'white',borderBottom:'1px solid #f0f0f0'}}>
-        <div style={{display:'flex',gap:8,alignItems:'stretch'}}>
-          <button onClick={() => setTaskSheetOpen(true)}
-            style={{flex:1,minHeight:46,borderRadius:12,border:'none',cursor:'pointer',fontWeight:800,fontSize:15,
-              display:'flex',alignItems:'center',justifyContent:'center',gap:8,whiteSpace:'nowrap',
-              background: taskTotal > 0 ? 'linear-gradient(135deg,#ea580c,#dc2626)' : '#e5e7eb',
-              color: taskTotal > 0 ? '#fff' : '#6b7280',
-              boxShadow: taskTotal > 0 ? '0 2px 8px rgba(220,38,38,0.28)' : 'none',
-              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-            📋 やること
-            <span style={{background: taskTotal > 0 ? 'rgba(255,255,255,0.3)' : '#d1d5db',borderRadius:99,padding:'1px 9px',fontSize:13}}>{taskTotal}</span>
+      <IosLargeTitle title="在庫">
+        {!bulkMode ? (
+          <>
+            <IosIconBtn label="新規登録" filled onClick={() => setTab('purchase')}>＋</IosIconBtn>
+            <IosIconBtn label="その他のメニュー" onClick={() => setInvMenuOpen(o => !o)}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+            </IosIconBtn>
+          </>
+        ) : (
+          <button onClick={exitBulkMode}
+            style={{minHeight:44,padding:'0 8px',border:'none',background:'none',color:'var(--color-primary)',fontSize:17,fontWeight:500,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            キャンセル
           </button>
-          <button onClick={() => setFilterSheetOpen(true)}
-            style={{flexShrink:0,minHeight:46,padding:'0 14px',borderRadius:12,cursor:'pointer',fontWeight:700,fontSize:13,whiteSpace:'nowrap',
-              border: activeChips.length > 0 ? '1.5px solid #4338ca' : '1.5px solid #e5e7eb',
-              background: activeChips.length > 0 ? '#eef2ff' : '#fff',
-              color: activeChips.length > 0 ? '#3730a3' : '#555',
-              touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-            ⚙️ 絞り込み・表示{activeChips.length > 0 ? `（${activeChips.length}）` : ''}
-          </button>
-        </div>
-        {(activeChips.length > 0 || (filter === 'unlisted' && !bulkMode)) && (
-          <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:8}}>
-            {activeChips.map(ch => (
-              <button key={ch.key} onClick={ch.clear}
-                style={{padding:'4px 10px',borderRadius:99,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#3730a3',
-                  fontSize:11,fontWeight:700,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                {ch.label} ✕
+        )}
+      </IosLargeTitle>
+
+      {/* ⋯メニュー（iOSのポップアップ風） */}
+      {invMenuOpen && !bulkMode && (
+        <>
+          <div onClick={() => setInvMenuOpen(false)} style={{position:'fixed',inset:0,zIndex:90}}/>
+          <div style={{position:'fixed',right:12,top:'calc(58px + env(safe-area-inset-top))',zIndex:91,width:260,background:'rgba(255,255,255,0.97)',borderRadius:14,
+            boxShadow:'0 8px 40px rgba(0,0,0,0.22)',overflow:'hidden',backdropFilter:'blur(20px)',WebkitBackdropFilter:'blur(20px)'}}>
+            {[
+              ['⚙️', '絞り込み・表示', () => setFilterSheetOpen(true)],
+              ['📱', 'まとめて出品中にする', () => { setFilter('unlisted'); setCheckedIds(new Set()); setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); }],
+              ['🗑', 'まとめて削除', () => { setBulkKind('delete'); setBulkMode(true); }],
+            ].map(([ic, lb, fn], idx) => (
+              <button key={lb} onClick={() => { setInvMenuOpen(false); fn(); }}
+                style={{width:'100%',minHeight:48,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',border:'none',background:'none',
+                  borderBottom:'0.5px solid '+IOS_SEP,fontSize:17,color: lb === 'まとめて削除' ? '#ff3b30' : '#000',cursor:'pointer',textAlign:'left',touchAction:'manipulation',WebkitTapHighlightColor:'rgba(0,0,0,0.06)'}}>
+                <span>{lb}</span><span style={{fontSize:16}}>{ic}</span>
               </button>
             ))}
-            {filter === 'unlisted' && !bulkMode && (
-              <button onClick={() => { setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); }}
-                style={{marginLeft:'auto',padding:'5px 10px',borderRadius:8,border:'1px solid var(--color-primary)',background:'#fff',
-                  color:'var(--color-primary)',fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                まとめて出品中にする
-              </button>
-            )}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'8px 12px 8px 16px',minHeight:52}}>
+              <span style={{fontSize:17}}>表示</span>
+              <div style={{display:'flex',background:IOS_FILL,borderRadius:8,padding:2,gap:2}}>
+                {[[false,'標準'],[true,'コンパクト']].map(([v,l]) => (
+                  <button key={l} onClick={() => { setCompact(v); setInvMenuOpen(false); }}
+                    style={{minHeight:36,padding:'0 10px',border:'none',borderRadius:6,fontSize:13,fontWeight: compact === v ? 600 : 500,cursor:'pointer',
+                      background: compact === v ? '#fff' : 'transparent',boxShadow: compact === v ? '0 2px 6px rgba(0,0,0,0.12)' : 'none',color:'#000',touchAction:'manipulation'}}>{l}</button>
+                ))}
+              </div>
+            </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
 
-      {/* やることを開いている間の見出しバー */}
-      {taskDef && (
-        <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',background:taskDef.bg,borderBottom:'1px solid '+taskDef.line}}>
-          <span style={{flex:1,fontWeight:800,fontSize:15,color:taskDef.fg}}>{taskDef.icon} {taskDef.label} {taskDef.cnt}件</span>
-          <button onClick={clearTask}
-            style={{minHeight:36,padding:'0 14px',borderRadius:99,border:'1.5px solid '+taskDef.fg,background:'#fff',color:taskDef.fg,
-              fontSize:13,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-            ✕ 解除
-          </button>
+      <IosSearch value={search} onChange={setSearch} placeholder="商品名・ブランド名で検索" />
+
+      <IosSegmented value={filter} onChange={(v) => { setFilter(v); setCheckedIds(new Set()); }}
+        options={[['unlisted','未出品'],['listed','出品中'],['sold','売却済'],['all','すべて']].map(([v,l]) => {
+          const base = v === 'all' ? data.inventory : data.inventory.filter(i => i.status === v);
+          const q = search.trim().toLowerCase();
+          const cnt = q ? base.filter(i => (i.productName||'').toLowerCase().includes(q) || (i.brand||'').toLowerCase().includes(q) || (i.memo||'').toLowerCase().includes(q)).length : base.length;
+          return { value: v, label: l, count: cnt };
+        })} />
+
+      {/* いま効いている絞り込みだけを1行のチップで表示（無ければ出さない） */}
+      {(activeChips.some(ch => ch.key !== 'cp') || taskDef) && (
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'0 16px 10px',background:'var(--bg)'}}>
+          {taskDef && (
+            <button onClick={clearTask}
+              style={{minHeight:36,padding:'0 12px',borderRadius:99,border:'none',background:taskDef.bg,color:taskDef.fg,fontSize:13,fontWeight:600,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+              {taskDef.icon} {taskDef.label} {taskDef.cnt}件　✕
+            </button>
+          )}
+          {activeChips.filter(ch => ch.key !== 'cp').map(ch => (
+            <button key={ch.key} onClick={ch.clear}
+              style={{minHeight:36,padding:'0 12px',borderRadius:99,border:'none',background:'rgba(232,64,64,0.1)',color:'var(--color-primary)',
+                fontSize:13,fontWeight:600,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+              {ch.label}　✕
+            </button>
+          ))}
         </div>
       )}
 
@@ -7952,7 +8005,7 @@ const InventoryTab = () => {
                 return (
                   <React.Fragment key={item.id}>
                   <div className="card"
-                    style={{padding: compact ? '7px 10px' : '12px 14px',display:'flex',alignItems:'center',gap: compact ? 8 : 12,cursor:'pointer',
+                    style={{padding: compact ? '10px 12px' : '12px 14px',display:'flex',alignItems:'center',gap: compact ? 12 : 12,cursor:'pointer',borderRadius:12,boxShadow:'none',
                       background: isChecked ? '#fef2f2'
                                 : isSold ? '#f8f8f8'
                                 : alert?.level==='danger' ? '#fff8f8' : 'white',
@@ -8062,29 +8115,32 @@ const InventoryTab = () => {
                         )}
                       </div>
                     </div>
-                    <div style={{flexShrink:0,width:88,display:'flex',flexDirection:'column',alignItems:'stretch',gap:4}}>
+                    <div style={{flexShrink:0,width:92,display:'flex',flexDirection:'column',alignItems:'stretch',gap:0}}>
                       {bulkMode ? (
-                        <div style={{fontSize:13,fontWeight:700,color:'#555',textAlign:'right'}}>
+                        <div style={{fontSize:15,fontWeight:600,color:'#3c3c43',textAlign:'right'}}>
                           ¥{formatMoney(isSold ? soldPP : (item.purchasePrice||0))}
                         </div>
                       ) : (
-                        <input type="number" inputMode="numeric" placeholder="仕入れ値"
+                        <>
+                        <div style={{fontSize:10.5,color:IOS_LABEL2,textAlign:'right',paddingRight:6,lineHeight:'13px'}}>仕入れ値</div>
+                        <input type="number" inputMode="numeric" placeholder="未入力"
                           value={isInline ? inlineDraft.price
                             : (() => { const p = isSold ? soldPP : (item.purchasePrice||0);
                                        return p > 0 ? String(p) : ''; })()}
                           onClick={e => e.stopPropagation()}
                           onFocus={e => { e.stopPropagation(); if (!isInline) openInlineEdit(item); }}
                           onChange={e => setInlineDraft(d => ({...d, price: e.target.value}))}
-                          style={{width:'100%',boxSizing:'border-box',textAlign:'right',fontSize:13,fontWeight:700,color:'#555',
-                            padding:'3px 6px',height:28,borderRadius:8,background:'#fff',
-                            border: isInline ? '1.5px solid #b45309' : '1px solid #e5e7eb'}}/>
+                          style={{width:'100%',boxSizing:'border-box',textAlign:'right',fontSize:16,fontWeight:600,color:'#000',
+                            padding:'2px 6px',height:30,borderRadius:8,background: isInline ? IOS_FILL : 'transparent',outline:'none',
+                            border: '1px solid transparent'}}/>
+                        </>
                       )}
                       {!bulkMode && item.status === 'unlisted' && (
                         <button onClick={e => { e.stopPropagation(); quickListOne(item); }}
-                          style={{height:34,width:'100%',padding:'0 4px',borderRadius:9,border:'1.5px solid var(--color-primary)',
-                            background:'#fff',color:'var(--color-primary)',fontWeight:800,fontSize:12,cursor:'pointer',
-                            touchAction:'manipulation',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
-                          📱 出品中へ
+                          style={{minHeight:44,margin:'-6px 0 -10px',width:'100%',padding:0,border:'none',background:'none',cursor:'pointer',
+                            display:'flex',alignItems:'center',justifyContent:'flex-end',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                          <span style={{height:28,padding:'0 12px',borderRadius:99,background:'rgba(232,64,64,0.1)',color:'var(--color-primary)',
+                            fontWeight:600,fontSize:13,display:'inline-flex',alignItems:'center',whiteSpace:'nowrap'}}>出品中へ</span>
                         </button>
                       )}
                     </div>
@@ -8253,10 +8309,10 @@ const InventoryTab = () => {
                       )}
                       {!bulkMode && item.status === 'unlisted' ? (
                         <button onClick={e => { e.stopPropagation(); quickListOne(item); }}
-                          style={{marginTop:6,minHeight:44,minWidth:96,padding:'0 10px',borderRadius:10,border:'1.5px solid var(--color-primary)',
-                            background:'#fff',color:'var(--color-primary)',fontWeight:800,fontSize:13,cursor:'pointer',
+                          style={{marginTop:6,minHeight:44,minWidth:96,padding:'0 14px',borderRadius:99,border:'none',
+                            background:'rgba(232,64,64,0.1)',color:'var(--color-primary)',fontWeight:600,fontSize:14,cursor:'pointer',
                             touchAction:'manipulation',WebkitTapHighlightColor:'transparent',whiteSpace:'nowrap'}}>
-                          📱 出品中へ
+                          出品中へ
                         </button>
                       ) : !bulkMode && <div style={{fontSize:10,color:'#ccc',marginTop:1}}>→</div>}
                     </div>
@@ -10913,7 +10969,14 @@ const SalesTab = () => {
   const noShipSales      = validSales.filter(s => s.shippingUnknown);
   const revenueOnlyTotal = revenueOnlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
   const allRevenueTotal  = summarySales.reduce((a, s) => a + saleRev(s), 0) + revenueOnlyTotal;
-  const listSales = salesView === 'noship' ? noShipSales : validSales;
+  const [salesSearch, setSalesSearch] = React.useState('');
+  const _sq = salesSearch.trim().toLowerCase();
+  const _salesMatch = (sl) => {
+    if (!_sq) return true;
+    const it = (data.inventory || []).find(i => i.id === sl.inventoryId);
+    return [it?.productName, it?.brand, sl.productName, sl.brand, sl.mailTitle, sl.memo, sl.platform].some(v => String(v || '').toLowerCase().includes(_sq));
+  };
+  const listSales = (salesView === 'noship' ? noShipSales : validSales).filter(_salesMatch);
 
   // 月次サマリー（集計用のみ使用）
   const salesByMonth = {};
@@ -10942,31 +11005,20 @@ const SalesTab = () => {
 
   return (
     <div className="fade-in">
-      <div className="header" style={{position:'sticky',top:0,zIndex:50,display:'flex',justifyContent:'space-between',alignItems:'center',paddingRight:12}}>
-        <h1 style={{margin:0,fontSize:20,fontWeight:800,letterSpacing:'-0.02em'}}>💰 売上記録</h1>
-        <button className="btn-primary" style={{padding:'8px 16px',fontSize:14,fontWeight:700,borderRadius:12,flexShrink:0,touchAction:'manipulation'}}
-          onClick={openNew}>
-          ＋ 登録
-        </button>
-      </div>
+      <IosLargeTitle title="売上">
+        <IosIconBtn label="売上を登録" filled onClick={openNew}>＋</IosIconBtn>
+      </IosLargeTitle>
+      <IosSearch value={salesSearch} onChange={setSalesSearch} placeholder="商品名・ブランド・販路で検索" />
+      {(unlinkedPending.length > 0 || noShipSales.length > 0 || noStockSales.length > 0) && (
+        <IosSegmented value={salesView} onChange={setSalesView}
+          options={[
+            { value:'all', label:'全て' },
+            { value:'unlinked', label:'未紐付け', count: unlinkedPending.length },
+            ...(noShipSales.length > 0 ? [{ value:'noship', label:'送料未入力', count: noShipSales.length }] : []),
+          ]} />
+      )}
 
-      <div style={{padding:'12px 16px'}}>
-        {/* 表示切り替えチップ（メール取込の未紐付け／送料未入力） */}
-        {(unlinkedPending.length > 0 || noShipSales.length > 0 || noStockSales.length > 0) && (
-          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
-            {[
-              ['all', '全て', null],
-              ['unlinked', `🔗 未紐付け ${unlinkedPending.length}`, '#2563eb'],
-              ...(noShipSales.length > 0 ? [['noship', `📦 送料未入力 ${noShipSales.length}`, '#c2410c']] : []),
-            ].map(([k, label, col]) => (
-              <button key={k} type="button" onClick={() => setSalesView(k)}
-                style={{padding:'7px 14px',borderRadius:99,fontSize:13,fontWeight:800,cursor:'pointer',touchAction:'manipulation',
-                  border: salesView === k ? `1.5px solid ${col || '#111'}` : '1.5px solid #e5e7eb',
-                  background: salesView === k ? (col || '#111') : '#fff',
-                  color: salesView === k ? '#fff' : (col || '#444')}}>{label}</button>
-            ))}
-          </div>
-        )}
+      <div style={{padding:'4px 16px 12px'}}>
         {salesView === 'unlinked' && (
           <UnlinkedSalesView data={data} setData={setData} toast={toast} onEditShipping={setShipEdit} />
         )}
