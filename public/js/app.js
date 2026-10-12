@@ -802,8 +802,81 @@ const fetchCloudSig = async () => {
     return (resp.ok && json && json.ok && typeof json.sig === 'string' && json.sig) ? json.sig : null;
   } catch(_) { return null; }
 };
+// ── Claudeの確認待ち：承認/却下の結果を確実にクラウドへ送る ──
+// 以前は大きな在庫差分と同じPOSTに相乗りし、失敗・アプリ終了・サーバー側の同時書き込みで提案だけが
+// 'open' のまま残ることがあった（提案は端末に保存しないため、再起動すると open に戻って見える）。
+// → 提案だけ別POSTにして再送キューに積む。成功するまで端末に控えを残し、起動時・復帰時に再送する。
+const PENDING_PROPOSALS_KEY = 'nobushop_pending_proposals_v1';
+const _pendingProposals = new Map();   // id -> 提案（メモリ上は完全版）
+let _pendingProposalsLoaded = false, _pendingFlushing = false;
+const _loadPendingProposals = () => {
+  if (_pendingProposalsLoaded) return;
+  _pendingProposalsLoaded = true;
+  try {
+    const arr = JSON.parse(localStorage.getItem(PENDING_PROPOSALS_KEY) || '[]');
+    (Array.isArray(arr) ? arr : []).forEach(x => { if (x && x.id && !_pendingProposals.has(x.id)) _pendingProposals.set(x.id, x); });
+  } catch(_) {}
+};
+const _persistPendingProposals = () => {
+  try {
+    // 控えは承認/却下済みのみ・写真なし（小さい）。open の提案は端末に残さない
+    const arr = [..._pendingProposals.values()].filter(x => x.status !== 'open')
+      .map(x => ({ ...x, items: (x.items || []).map(it => ({ ...it, photo: null })) }));
+    if (arr.length) localStorage.setItem(PENDING_PROPOSALS_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(PENDING_PROPOSALS_KEY);
+  } catch(_) {}
+};
+const flushPendingProposals = async () => {
+  if (!_cloudEnabled) return true;
+  _loadPendingProposals();
+  if (_pendingFlushing) return true;   // 送信中のループが追加分も拾う
+  if (!_pendingProposals.size) return true;
+  _pendingFlushing = true;
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const sent = [..._pendingProposals.values()];
+      if (!sent.length) return true;
+      try {
+        const resp = await fetch(`${_API_BASE}/api/data`, {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ proposalsUpsert: sent }),
+          cache: 'no-store',
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // 送っている間に更新された提案は残す
+        sent.forEach(x => { if (_pendingProposals.get(x.id) === x) _pendingProposals.delete(x.id); });
+        _persistPendingProposals();
+        if (!_pendingProposals.size) return true;
+      } catch(e) {
+        console.warn(`[Cloud] proposals push attempt ${attempt + 1} failed:`, e.message);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+      }
+    }
+    return false;
+  } finally { _pendingFlushing = false; }
+};
+const queueProposals = (list) => {
+  _loadPendingProposals();
+  (list || []).forEach(x => { if (x && x.id) _pendingProposals.set(x.id, x); });
+  _persistPendingProposals();
+  return flushPendingProposals().then(ok => {
+    if (ok) _onSyncStatus?.({ status: 'ok', time: Date.now() });
+    else _onSyncStatus?.({ status: 'error', error: '確認待ちの保存に失敗（あとで自動で再送します）' });
+    return ok;
+  });
+};
+// クラウド側が古いまま（同時書き込みで更新が消えた等）の承認/却下済み提案を、手元の新しい方で再送する
+const repushNewerProposals = (cloudList, mergedList) => {
+  const ts = (x) => { const t = new Date(x?.updatedAt || 0).getTime(); return isNaN(t) ? 0 : t; };
+  const cm = new Map((cloudList || []).filter(x => x && x.id).map(x => [x.id, x]));
+  const stale = (mergedList || []).filter(m => m && m.id && m.status !== 'open' && cm.has(m.id) && cm.get(m.id).status !== m.status && ts(m) > ts(cm.get(m.id)));
+  if (stale.length) queueProposals(stale);
+};
+
 // 署名を先に取ってから全件取得。成功したら署名を記録（接続エラー時は記録を消す）
 const fetchSupabaseDataTracked = async (sigKnown) => {
+  try { await flushPendingProposals(); } catch(_) {}   // 未送信の承認/却下があれば先に送る
   const sig = sigKnown !== undefined ? sigKnown : await fetchCloudSig();
   const cloudData = await fetchSupabaseData();
   if (cloudData && !cloudData._connError) {
@@ -893,10 +966,12 @@ const syncToSupabase = async (oldData, newData, opts) => {
     const cpOld = new Map((oldData?.claudeProposals || []).map(x => [x.id, JSON.stringify(x)]));
     const proposalsUpsert = (newData?.claudeProposals || []).filter(x => x && x.id && cpOld.get(x.id) !== JSON.stringify(x));
 
-    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged || storePendingUpsert.length || proposalsUpsert.length;
+    // ★ 提案の変更は別POST＋再送キューで確実に送る（在庫の大きな差分と相乗りしない）
+    if (proposalsUpsert.length) queueProposals(proposalsUpsert);
+    const hasChanges = invUpsert.length || invDelete.length || salesUpsert.length || salesDelete.length || settingsChanged || receiptsChanged || storePendingUpsert.length;
     if (!hasChanges) {
-      // 変更なし → 同期済み扱い
-      _onSyncStatus?.({ status: 'ok', time: Date.now() });
+      // 変更なし → 同期済み扱い（提案だけの変更は queueProposals 側で結果を通知）
+      if (!proposalsUpsert.length) _onSyncStatus?.({ status: 'ok', time: Date.now() });
       return;
     }
 
@@ -912,7 +987,6 @@ const syncToSupabase = async (oldData, newData, opts) => {
             settings: settingsChanged ? newData.settings : undefined,
             receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
             storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
-            proposalsUpsert: proposalsUpsert.length ? proposalsUpsert : undefined,
           }),
           cache: 'no-store',
         });
@@ -6275,6 +6349,38 @@ const InventoryTab = () => {
   const proposalsLinkOpen = proposalsOpen.filter(pr => pr.type === 'saleLink')
     .sort((a, b) => ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
+  // ★ 自己修復：実際には登録済みなのに 'open' のまま残った提案を、状態から判断して承認済みにして保存し直す
+  //   （保存の取りこぼし・同時書き込みで更新が消えても、画面を開けば自然に直る）
+  //   分割：元の仮登録が消えていて、splitOrigin.id（または storePendingId）が一致する子の仕入れ値合計が支払額と一致
+  //   売上の紐付け：売上がすでに在庫に紐付いている
+  React.useEffect(() => {
+    const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open');
+    if (!open.length) return;
+    const inv = data.inventory || [], sales = data.sales || [];
+    if (!inv.length) return;   // 在庫が未読込のうちは判断しない
+    const invIds = new Set(inv.map(i => i.id));
+    const healed = new Map();
+    for (const pr of open) {
+      if (pr.type === 'saleLink') {
+        const sl = sales.find(x => x.id === pr.saleId);
+        if (sl && sl.inventoryId && !sl.needsLink && invIds.has(sl.inventoryId)) {
+          healed.set(pr.id, markProposalDone(pr, 'approved', { resultItemIds: [sl.inventoryId], linkedItemId: sl.inventoryId, autoHealed: true }));
+        }
+        continue;
+      }
+      const tid = pr.targetItemId;
+      if (!tid || invIds.has(tid)) continue;
+      const spId = String(tid).startsWith('sp_') ? String(tid).slice(3) : null;
+      const kids = inv.filter(i => (i.splitOrigin && i.splitOrigin.id === tid) || (spId && i.storePendingId === spId && i.splitOrigin));
+      const pay = Math.round(Number(pr.payment?.amount) || 0);
+      const sum = kids.reduce((a, i) => a + (Number(i.purchasePrice) || 0), 0);
+      if (kids.length && pay > 0 && Math.round(sum) === pay) {
+        healed.set(pr.id, markProposalDone(pr, 'approved', { resultItemIds: kids.map(i => i.id), autoHealed: true }));
+      }
+    }
+    if (!healed.size) return;
+    setData({ ...data, claudeProposals: (data.claudeProposals || []).map(x => healed.get(x.id) || x) });
+  }, [data.claudeProposals, data.inventory, data.sales]);
   const [linkShipEdit, setLinkShipEdit] = React.useState(null);   // 売上の紐付け提案：送料入力モーダルの対象売上
   // 売上の紐付け提案：承認前の検査（売上がまだ未紐付けで、在庫が売れていないか）
   const saleLinkProblem = (pr, itemId) => {
@@ -18677,6 +18783,7 @@ const CloudAutoSync = () => {
       // 編集中はスキップ（データ上書きを防止）
       if (editingItem || pendingEditSaleId) return;
       // 120秒スロットル + 取得中は重ねない（サーバー負荷・通信量の抑制。以前は30秒）
+      flushPendingProposals().catch(() => {});   // 未送信の承認/却下を再送
       if (inFlightRef.current) return;
       if (Date.now() - lastFetchRef.current < 120000) return;
       lastFetchRef.current = Date.now();
@@ -18693,6 +18800,7 @@ const CloudAutoSync = () => {
 
         const current = dataRef.current;
         const merged = mergeCloudIntoLocal(current, cloudData);
+        repushNewerProposals(cloudData.claudeProposals, merged.claudeProposals);
 
         // 内容として変化があった場合のみ setFullDataRaw
         // （マージでキー順が変わるだけの差分を拾わないよう stableJson で比較）
