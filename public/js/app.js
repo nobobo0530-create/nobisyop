@@ -2408,10 +2408,11 @@ const HomeTab = () => {
   }, [data.inventory, data.sales, data.claudeProposals, data.storePending]);
   const todoSubs = (() => {
     const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open')
-      .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
+      .sort((a, b) => (a.type === 'saleLink' ? 1 : 0) - (b.type === 'saleLink' ? 1 : 0) || String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
     if (!open.length) return {};
     const f = open[0];
-    return { claudeProposals: `${f.title || ''} ¥${Math.round(Number(f.payment?.amount) || 0).toLocaleString()}${open.length > 1 ? ` ほか${open.length - 1}件` : ''}` };
+    const fAmt = f.type === 'saleLink' ? f.sale?.price : f.payment?.amount;
+    return { claudeProposals: `${f.title || ''} ¥${Math.round(Number(fAmt) || 0).toLocaleString()}${open.length > 1 ? ` ほか${open.length - 1}件` : ''}` };
   })();
   const openTodo = (r) => {
     if (r.sales) { window.__salesViewPreset = r.key; setTab('sales'); }
@@ -6259,7 +6260,38 @@ const InventoryTab = () => {
   const proposalsAll = data.claudeProposals || [];
   const proposalsOpen = proposalsAll.filter(pr => pr && pr.status === 'open')
     .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const proposalsStoreOpen = proposalsOpen.filter(pr => pr.type !== 'saleLink');
+  const proposalsLinkOpen = proposalsOpen.filter(pr => pr.type === 'saleLink')
+    .sort((a, b) => ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
+  const [linkShipEdit, setLinkShipEdit] = React.useState(null);   // 売上の紐付け提案：送料入力モーダルの対象売上
+  // 売上の紐付け提案：承認前の検査（売上がまだ未紐付けで、在庫が売れていないか）
+  const saleLinkProblem = (pr, itemId) => {
+    const sl = (data.sales || []).find(x => x.id === pr.saleId);
+    if (!sl) return '売上が見つかりません（削除された可能性があります）';
+    if (sl.inventoryId || !sl.needsLink) return 'この売上はすでに紐付け済み（または対象外）です';
+    const it = (data.inventory || []).find(x => x.id === itemId);
+    if (!it) return '在庫が見つかりません（削除された可能性があります）';
+    if (it.status === 'sold' || (data.sales || []).some(x => x.inventoryId === it.id)) return 'この商品はすでに売却済み／紐付け済みです';
+    return null;
+  };
+  const approveSaleLink = (pr, itemId) => {
+    if (proposalBusy) return;
+    const prob = saleLinkProblem(pr, itemId);
+    if (prob) { alert('❌ ' + prob); return; }
+    const sl = (data.sales || []).find(x => x.id === pr.saleId);
+    const it = (data.inventory || []).find(x => x.id === itemId);
+    setProposalBusy(true);
+    try {
+      const linked = linkSaleToItem({ data, setData, toast, onEditShipping: setLinkShipEdit }, sl, it,
+        { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [itemId], linkedItemId: itemId })) });
+      void linked;
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
+  const rejectSaleLink = (pr) => {
+    setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: 'どれでもない' })) });
+    toast('❌ 「どれでもない」にしました');
+  };
   const proposalSum = (pr) => (pr.items || []).reduce((s, it) => s + (Math.round(Number(it.allocatedPrice)) || 0), 0);
   // 承認前の検査：問題があれば日本語の理由を返す（nullなら登録可）
   const proposalProblem = (pr) => {
@@ -7485,14 +7517,17 @@ const InventoryTab = () => {
           // ★ Claudeの確認待ち：1提案＝1カード。内容を見て ✅登録 / ✏️直す / ❌違う
           const yen = (v) => '¥' + (Math.round(Number(v)) || 0).toLocaleString();
           if (proposalsOpen.length === 0) return (
-            <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>Claudeの確認待ちはありません</div>
+            <div>
+              <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>Claudeの確認待ちはありません</div>
+              {linkShipEdit && <ShippingEditModal sale={linkShipEdit} data={data} setData={setData} toast={toast} onClose={() => setLinkShipEdit(null)} />}
+            </div>
           );
           const confStyle = (c) => c === '高' ? {bg:'#dcfce7',fg:'#166534'} : c === '中' ? {bg:'#fef9c3',fg:'#854d0e'} : {bg:'#fee2e2',fg:'#991b1b'};
           const btn = (bg, color, dis) => ({flex:1,minHeight:48,padding:'10px 8px',border:'none',borderRadius:10,background: dis ? '#e5e7eb' : bg,color: dis ? '#9ca3af' : color,
             fontWeight:800,fontSize:14,cursor: dis ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'});
           return (
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
-              {proposalsOpen.map(pr => {
+              {proposalsStoreOpen.map(pr => {
                 const sum = proposalSum(pr), pay = Math.round(Number(pr.payment?.amount) || 0);
                 const ok = sum === pay;
                 const prob = proposalProblem(pr);
@@ -7535,6 +7570,67 @@ const InventoryTab = () => {
                   </div>
                 );
               })}
+              {proposalsLinkOpen.length > 0 && (
+                <div style={{fontSize:13,fontWeight:800,color:'#1d4ed8',margin:'8px 2px 0',padding:'6px 10px',background:'#dbeafe',borderRadius:8}}>
+                  🔗 売上の紐付け（{proposalsLinkOpen.length}件）
+                </div>
+              )}
+              {proposalsLinkOpen.map(pr => {
+                const cs = confStyle(pr.confidence);
+                const sl = pr.sale || {};
+                const curSale = (data.sales || []).find(x => x.id === pr.saleId);
+                const saleGone = !curSale || curSale.inventoryId || !curSale.needsLink;
+                return (
+                  <div key={pr.id} className="card" style={{padding:12,borderLeft:'3px solid #2563eb'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+                      <div style={{minWidth:0,flex:1}}>
+                        <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+                          <span style={{fontSize:11,color:'#6b7280',fontWeight:700}}>{sl.date}</span>
+                          <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{sl.platform}</span>
+                          <span style={{padding:'2px 8px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:11,fontWeight:800}}>確度 {pr.confidence}</span>
+                        </div>
+                        <div style={{fontSize:13,fontWeight:700,color:'#111',lineHeight:1.4,wordBreak:'break-all'}}>{sl.mailTitle || pr.title}</div>
+                      </div>
+                      <div style={{fontWeight:800,fontSize:16,color:'#111',flexShrink:0}}>{yen(sl.price)}</div>
+                    </div>
+                    {pr.note && <div style={{fontSize:12,color:'#64748b',marginTop:6,wordBreak:'break-all'}}>{pr.note}</div>}
+                    {saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ この売上はすでに紐付け済み（または削除済み）です。「どれでもない」で片付けてください</div>}
+                    {(pr.candidates || []).map((c, i) => {
+                      const it = (data.inventory || []).find(x => x.id === c.itemId);
+                      if (!it) return (
+                        <div key={c.itemId || i} style={{fontSize:12,color:'#b45309',marginTop:8}}>⚠️ 候補{i + 1}の在庫が見つかりません</div>
+                      );
+                      const prob = saleLinkProblem(pr, it.id);
+                      const f = curSale ? calcLinkedSaleFields(curSale, it) : null;
+                      return (
+                        <div key={it.id} style={{marginTop:8,padding:8,borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
+                          <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                            <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={64} fallback="📦" />
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:13,fontWeight:700,color:'#111',wordBreak:'break-all'}}>
+                                {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
+                              </div>
+                              <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+                                <span>{it.mgmtNo || '管理番号なし'}</span>
+                                <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
+                                {(it.listPrice || 0) > 0 && <span style={{color: it.listPrice === Number(sl.price) ? '#b45309' : '#6b7280', fontWeight: it.listPrice === Number(sl.price) ? 800 : 400}}>出品 {yen(it.listPrice)}{it.listPrice === Number(sl.price) ? '（価格一致）' : ''}</span>}
+                              </div>
+                              <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yen(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}{f ? `　→ 利益 ${yen(f.profit)}` : ''}</div>
+                              {c.reason && <div style={{fontSize:11,color:'#2563eb',marginTop:2,wordBreak:'break-all'}}>{c.reason}</div>}
+                            </div>
+                          </div>
+                          {prob && !saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ {prob}</div>}
+                          <button style={{...btn('#16a34a','white',!!prob || proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={!!prob || proposalBusy} onClick={() => approveSaleLink(pr, it.id)}>✅ これで紐付け</button>
+                        </div>
+                      );
+                    })}
+                    <div style={{display:'flex',gap:8,marginTop:8}}>
+                      <button style={btn('#fee2e2','#991b1b',false)} onClick={() => rejectSaleLink(pr)}>❌ どれでもない</button>
+                    </div>
+                  </div>
+                );
+              })}
+              {linkShipEdit && <ShippingEditModal sale={linkShipEdit} data={data} setData={setData} toast={toast} onClose={() => setLinkShipEdit(null)} />}
             </div>
           );
         })() : filter === 'storePending' ? (() => {
@@ -9854,6 +9950,38 @@ const calcLinkedSaleFields = (sale, item) => {
   return { ship, pp, profit, listDate, turnoverDays };
 };
 
+// 未紐付け売上⇔在庫の紐付け本体（売上タブの未紐付け画面と「Claudeの確認待ち」で共通）。成功したら紐付け後の売上を返す
+const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, extraData = {}) => {
+  const curSale = (data.sales || []).find(s => s.id === sale.id);
+  const curItem = (data.inventory || []).find(i => i.id === item.id);
+  if (!curSale || curSale.inventoryId) { toast('この売上はすでに紐付け済みです'); return null; }
+  if (!curItem || curItem.status === 'sold' || (data.sales || []).some(s => s.inventoryId === curItem.id)) { toast('この商品はすでに売却済み／紐付け済みです'); return null; }
+  const f = calcLinkedSaleFields(curSale, curItem);
+  const nm = `${curItem.brand ? curItem.brand + ' ' : ''}${curItem.productName || ''}`.trim();
+  const msg = `この売上に紐付けます\n\n売上：${curSale.platform} ¥${formatMoney(curSale.salePrice)}\n${(curSale.mailTitle || '').slice(0, 40)}\n\n在庫：${nm}\n${curItem.mgmtNo || ''}\n\n仕入れ ¥${formatMoney(f.pp)} → 利益 ¥${formatMoney(f.profit)}${curSale.shippingUnknown ? '（送料は仮' + CONFIG.ESTIMATED_SHIPPING + '円）' : ''}\n在庫は「売却済み」になります。`;
+  if (!window.confirm(msg)) return null;
+  const nowIso = new Date().toISOString();
+  const linked = {
+    ...curSale,
+    inventoryId: curItem.id, needsLink: false, noStock: false,
+    purchasePrice: f.pp, purchaseDate: curItem.purchaseDate || '', purchaseStore: curItem.purchaseStore || '',
+    listDate: f.listDate, turnoverDays: f.turnoverDays,
+    shipping: f.ship, profit: f.profit,
+    productName: curItem.productName || '', brand: curItem.brand || '',
+    updatedAt: nowIso,
+  };
+  // 売上と在庫を1回の setData でまとめて保存
+  setData({
+    ...data,
+    ...extraData,
+    inventory: data.inventory.map(i => i.id === curItem.id ? { ...i, status: 'sold', soldAt: nowIso, soldDate: curSale.saleDate || '' } : i),
+    sales: data.sales.map(s => s.id === curSale.id ? linked : s),
+  });
+  toast('✅ 紐付けました（利益 ¥' + formatMoney(f.profit) + '）');
+  if (curSale.shippingUnknown && onEditShipping) onEditShipping(linked); // 送料未定ならその場で入力
+  return linked;
+};
+
 const ShippingEditModal = ({ sale, data, setData, toast, onClose }) => {
   const [val, setVal] = React.useState(sale.shippingUnknown ? '' : String(sale.shipping ?? ''));
   const save = () => {
@@ -9916,34 +10044,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
     return m;
   }, [shown.map(s => s.id).join(','), data.inventory, linkedIds]);
 
-  const doLink = (sale, item) => {
-    const curSale = (data.sales || []).find(s => s.id === sale.id);
-    const curItem = (data.inventory || []).find(i => i.id === item.id);
-    if (!curSale || curSale.inventoryId) { toast('この売上はすでに紐付け済みです'); return; }
-    if (!curItem || curItem.status === 'sold' || (data.sales || []).some(s => s.inventoryId === curItem.id)) { toast('この商品はすでに売却済み／紐付け済みです'); return; }
-    const f = calcLinkedSaleFields(curSale, curItem);
-    const nm = `${curItem.brand ? curItem.brand + ' ' : ''}${curItem.productName || ''}`.trim();
-    const msg = `この売上に紐付けます\n\n売上：${curSale.platform} ¥${formatMoney(curSale.salePrice)}\n${(curSale.mailTitle || '').slice(0, 40)}\n\n在庫：${nm}\n${curItem.mgmtNo || ''}\n\n仕入れ ¥${formatMoney(f.pp)} → 利益 ¥${formatMoney(f.profit)}${curSale.shippingUnknown ? '（送料は仮' + CONFIG.ESTIMATED_SHIPPING + '円）' : ''}\n在庫は「売却済み」になります。`;
-    if (!window.confirm(msg)) return;
-    const nowIso = new Date().toISOString();
-    const linked = {
-      ...curSale,
-      inventoryId: curItem.id, needsLink: false, noStock: false,
-      purchasePrice: f.pp, purchaseDate: curItem.purchaseDate || '', purchaseStore: curItem.purchaseStore || '',
-      listDate: f.listDate, turnoverDays: f.turnoverDays,
-      shipping: f.ship, profit: f.profit,
-      productName: curItem.productName || '', brand: curItem.brand || '',
-      updatedAt: nowIso,
-    };
-    // 売上と在庫を1回の setData でまとめて保存
-    setData({
-      ...data,
-      inventory: data.inventory.map(i => i.id === curItem.id ? { ...i, status: 'sold', soldAt: nowIso, soldDate: curSale.saleDate || '' } : i),
-      sales: data.sales.map(s => s.id === curSale.id ? linked : s),
-    });
-    toast('✅ 紐付けました（利益 ¥' + formatMoney(f.profit) + '）');
-    if (curSale.shippingUnknown) onEditShipping(linked); // 送料未定ならその場で入力
-  };
+  const doLink = (sale, item) => linkSaleToItem({ data, setData, toast, onEditShipping }, sale, item);
 
   const markNoStock = (sale) => {
     if (!window.confirm('在庫なし（記録だけ）にしますか？\n\n売上には含まれたまま、利益は計算されません。\n（2025年の仕入れ分など、在庫に無い商品用）')) return;
