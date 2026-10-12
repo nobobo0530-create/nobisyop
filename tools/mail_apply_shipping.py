@@ -23,14 +23,8 @@ API = 'https://nobisyop.vercel.app/api/data'
 
 
 def get_inventory():
-    for attempt in range(5):
-        try:
-            with urllib.request.urlopen(API, timeout=60) as fh:
-                return json.load(fh)['inventory']
-        except Exception as e:
-            print(f'  取得リトライ {attempt + 1}: {e}', file=sys.stderr)
-            time.sleep(3)
-    raise SystemExit('クラウドから在庫を取得できませんでした')
+    import cloud_get
+    return cloud_get.get_cloud()['inventory']
 
 
 def allocate(total, weights):

@@ -31,14 +31,9 @@ SOLD_WITHOUT_SALE_OK = {
 
 
 def fetch():
-    for attempt in range(5):
-        try:
-            with urllib.request.urlopen(API, timeout=120) as fh:
-                return json.load(fh)
-        except Exception as e:
-            print(f'  取得リトライ {attempt + 1}: {e}', file=sys.stderr)
-            time.sleep(3)
-    raise SystemExit('クラウドから取得できませんでした')
+    import cloud_get
+    cloud_get.invalidate()  # 点検は毎回かならず最新を取る（2回目の押し戻し確認のため）
+    return cloud_get.get_cloud()
 
 
 def check(d):

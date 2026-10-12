@@ -775,6 +775,35 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
   return { _connError: msg, inventory: [], sales: [], settings: getInitialData().settings, receipts: [], storePending: [], claudeProposals: [] };
 };
 
+// ★ 変更チェック（Supabaseの転送量削減）
+// 全件取得（約2MB）の前に /api/data?sig=1（数百バイト）で「クラウドの内容が変わったか」だけ見る。
+// 署名は全件取得の「直前」に取る → 間に誰かが書き込んでも、次回は署名が違うので必ず取り直す（安全側）。
+// 署名が取れない（関数未設定・通信失敗）ときは null → 従来どおり全件取得に戻る。
+// 起動時は必ず全件取得する（写真のクラウド有無フラグ _cloudPhotoFlags をここで作るため）
+let _lastFullSig = null;      // { sig, t } 直近の全件取得に対応する署名
+let _lastFullFetchAt = 0;     // 直近の全件取得に成功した時刻(ms)
+const SIG_FORCE_FULL_MS = 24 * 3600 * 1000; // 署名が同じでも24時間に1回は全件取得（保険）
+const FULL_FETCH_MIN_MS = 10 * 60 * 1000;   // 全件取得の最小間隔（復帰時）
+const fetchCloudSig = async () => {
+  try {
+    const resp = await fetch(`${_API_BASE}/api/data?sig=1`, { cache: 'no-store', headers: authHeaders() });
+    const json = await resp.json();
+    return (resp.ok && json && json.ok && typeof json.sig === 'string' && json.sig) ? json.sig : null;
+  } catch(_) { return null; }
+};
+// 署名を先に取ってから全件取得。成功したら署名を記録（接続エラー時は記録を消す）
+const fetchSupabaseDataTracked = async (sigKnown) => {
+  const sig = sigKnown !== undefined ? sigKnown : await fetchCloudSig();
+  const cloudData = await fetchSupabaseData();
+  if (cloudData && !cloudData._connError) {
+    _lastFullSig = sig ? { sig, t: Date.now() } : null;
+    _lastFullFetchAt = Date.now();
+  } else {
+    _lastFullSig = null;
+  }
+  return cloudData;
+};
+
 // ローカルデータを一括移行（/api/data POST）
 const migrateLocalToSupabase = async (localData) => {
   if (!_cloudEnabled) return;
@@ -18542,7 +18571,12 @@ const CloudAutoSync = () => {
       inFlightRef.current = true;
 
       try {
-        const cloudData = await fetchSupabaseData();
+        // ★ まず変更チェック（数百バイト）。前回の全件取得と署名が同じなら取得しない（24時間に1回は強制取得）
+        const sig = await fetchCloudSig();
+        if (sig && _lastFullSig && _lastFullSig.sig === sig && Date.now() - _lastFullSig.t < SIG_FORCE_FULL_MS) return;
+        // 変更あり（または署名が取れない）でも、全件取得は10分に1回まで
+        if (Date.now() - _lastFullFetchAt < FULL_FETCH_MIN_MS) return;
+        const cloudData = await fetchSupabaseDataTracked(sig);
         if (!cloudData || cloudData._connError) return;
 
         const current = dataRef.current;
@@ -18884,7 +18918,7 @@ const App = () => {
     (async () => {
       try {
         // /api/data はサーバー側でSupabaseに接続するため CORS問題なし
-        const cloudData = await fetchSupabaseData();
+        const cloudData = await fetchSupabaseDataTracked();
 
         // 接続エラー詳細あり
         if (cloudData?._connError) {

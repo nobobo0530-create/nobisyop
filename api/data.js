@@ -2,6 +2,8 @@
 // クライアントはSupabaseに直接アクセスしない構造にすることで
 // iOS Safari の CORS / Load failed 問題を完全に解消する
 
+import { createHash } from 'node:crypto';
+
 const SB_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const SB_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 // ★ 同期トークン認証: Vercel環境変数 SYNC_TOKEN を設定すると有効になる
@@ -215,6 +217,20 @@ export default async function handler(req, res) {
       //  - 写真の復元は ?photoIds=<商品id,...>（最大20件）でその商品だけ取得
       //  - どうしても全件base64が要るときだけ ?full=1（通常は使わない）
       //  - DBに `light` 列があればそれを読む（data列の巨大TOASTに触らない）。無ければ従来の読み方に自動で戻る
+      // ★ 変更チェック（?sig=1）: Supabase側の関数 nobushop_sig()（SQLは tools/sql/nobushop_sig.sql）が
+      //   在庫(light)・売上・設定4行の内容ハッシュだけを返す（数百バイト）。
+      //   中身が1バイトでも変われば署名が変わる。関数が無い/失敗のときは sig:null（クライアントは必ず全件取得に戻る）
+      if (req.query?.sig === '1') {
+        try {
+          const r = await sbFetch('rpc/nobushop_sig', { method: 'POST', body: '{}' });
+          const sig = 'r1:' + createHash('md5').update(JSON.stringify(r)).digest('hex');
+          res.json({ ok: true, sig, n: { inventory: r?.inv?.n ?? null, sales: r?.sales?.n ?? null } });
+        } catch(e) {
+          res.json({ ok: true, sig: null, reason: String(e.message || e).slice(0, 120) });
+        }
+        return;
+      }
+
       const full = req.query?.full === '1';
       const photoIds = String(req.query?.photoIds || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 20);
       const lightenItem = (item) => (full || !Array.isArray(item.photos)) ? item

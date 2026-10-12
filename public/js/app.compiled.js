@@ -1,4 +1,4 @@
-/*APP_SRC_SHA256:cb130fbcce7db832e0e4eaa8f54bd81dac222995973c23c4c70a51d2185e8385*/
+/*APP_SRC_SHA256:e713fa0edf8bb027e86d68fde6afa77a6777c74d81d81c8f3f955581ffbd302a*/
 // ============================================================
 // CONFIG - 変更しやすい設定値を集約
 // ============================================================
@@ -192,7 +192,17 @@ let msg='通信エラー';for(let attempt=0;attempt<3;attempt++){try{const resp=
 const inventory=(json.inventory||[]).map(it=>{if(!Array.isArray(it.photos)||!it.photos.some(p=>p&&('hasThumb'in p||'hasMed'in p)))return it;return{...it,photos:it.photos.map(p=>{if(!p)return p;if('hasThumb'in p||'hasMed'in p){_cloudPhotoFlags.set(p.id,{hasThumb:!!p.hasThumb,hasMed:!!p.hasMed});const{hasThumb,hasMed,...rest}=p;return rest;}return p;})};});return{inventory,sales:json.sales||[],settings:json.settings||getInitialData().settings,receipts:json.receipts||[],// ★ クラウドからレシートも取得
 storePending:json.storePending||[],// ★ 店舗仕入れ未入力
 claudeProposals:json.claudeProposals||[]// ★ Claudeの確認待ち
-};}msg=json.error||`HTTP ${resp.status}`;}catch(e){msg=e?.message||String(e);}console.warn(`[Cloud] fetch attempt ${attempt+1} failed:`,msg);if(attempt<2)await new Promise(r=>setTimeout(r,2000*(attempt+1)));}console.error('[Cloud] fetch error:',msg);return{_connError:msg,inventory:[],sales:[],settings:getInitialData().settings,receipts:[],storePending:[],claudeProposals:[]};};// ローカルデータを一括移行（/api/data POST）
+};}msg=json.error||`HTTP ${resp.status}`;}catch(e){msg=e?.message||String(e);}console.warn(`[Cloud] fetch attempt ${attempt+1} failed:`,msg);if(attempt<2)await new Promise(r=>setTimeout(r,2000*(attempt+1)));}console.error('[Cloud] fetch error:',msg);return{_connError:msg,inventory:[],sales:[],settings:getInitialData().settings,receipts:[],storePending:[],claudeProposals:[]};};// ★ 変更チェック（Supabaseの転送量削減）
+// 全件取得（約2MB）の前に /api/data?sig=1（数百バイト）で「クラウドの内容が変わったか」だけ見る。
+// 署名は全件取得の「直前」に取る → 間に誰かが書き込んでも、次回は署名が違うので必ず取り直す（安全側）。
+// 署名が取れない（関数未設定・通信失敗）ときは null → 従来どおり全件取得に戻る。
+// 起動時は必ず全件取得する（写真のクラウド有無フラグ _cloudPhotoFlags をここで作るため）
+let _lastFullSig=null;// { sig, t } 直近の全件取得に対応する署名
+let _lastFullFetchAt=0;// 直近の全件取得に成功した時刻(ms)
+const SIG_FORCE_FULL_MS=24*3600*1000;// 署名が同じでも24時間に1回は全件取得（保険）
+const FULL_FETCH_MIN_MS=10*60*1000;// 全件取得の最小間隔（復帰時）
+const fetchCloudSig=async()=>{try{const resp=await fetch(`${_API_BASE}/api/data?sig=1`,{cache:'no-store',headers:authHeaders()});const json=await resp.json();return resp.ok&&json&&json.ok&&typeof json.sig==='string'&&json.sig?json.sig:null;}catch(_){return null;}};// 署名を先に取ってから全件取得。成功したら署名を記録（接続エラー時は記録を消す）
+const fetchSupabaseDataTracked=async sigKnown=>{const sig=sigKnown!==undefined?sigKnown:await fetchCloudSig();const cloudData=await fetchSupabaseData();if(cloudData&&!cloudData._connError){_lastFullSig=sig?{sig,t:Date.now()}:null;_lastFullFetchAt=Date.now();}else{_lastFullSig=null;}return cloudData;};// ローカルデータを一括移行（/api/data POST）
 const migrateLocalToSupabase=async localData=>{if(!_cloudEnabled)return;try{await fetch(`${_API_BASE}/api/data`,{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({invUpsert:(localData.inventory||[]).map(item=>({id:item.id,data:item})),salesUpsert:(localData.sales||[]).map(s=>({id:s.id,data:s})),settings:localData.settings||null,receipts:localData.receipts||[],// ★ レシートも一括移行
 storePendingUpsert:localData.storePending||[],proposalsUpsert:localData.claudeProposals||[]}),cache:'no-store'});console.log('[Cloud] ローカルデータ移行完了');}catch(e){console.error('[Cloud] migrate error:',e.message);}};// 差分をサーバーに同期（/api/data POST）
 // 比較にはstripItemPhotosを使い（base64でJSON.stringifyが重くなるのを防ぐ）
@@ -1423,7 +1433,9 @@ const MercariPanelRoot=()=>{const{mercariItem,setMercariItem}=React.useContext(A
 const CloudAutoSync=()=>{const{setFullDataRaw,dataRef,editingItem,pendingEditSaleId,dbStatus}=React.useContext(AppContext);const toast=useToast();// ── visibilitychange クラウド再取得（120秒スロットル）──
 const lastFetchRef=React.useRef(0);const inFlightRef=React.useRef(false);React.useEffect(()=>{const onVisible=async()=>{if(document.visibilityState!=='visible')return;// 編集中はスキップ（データ上書きを防止）
 if(editingItem||pendingEditSaleId)return;// 120秒スロットル + 取得中は重ねない（サーバー負荷・通信量の抑制。以前は30秒）
-if(inFlightRef.current)return;if(Date.now()-lastFetchRef.current<120000)return;lastFetchRef.current=Date.now();inFlightRef.current=true;try{const cloudData=await fetchSupabaseData();if(!cloudData||cloudData._connError)return;const current=dataRef.current;const merged=mergeCloudIntoLocal(current,cloudData);// 内容として変化があった場合のみ setFullDataRaw
+if(inFlightRef.current)return;if(Date.now()-lastFetchRef.current<120000)return;lastFetchRef.current=Date.now();inFlightRef.current=true;try{// ★ まず変更チェック（数百バイト）。前回の全件取得と署名が同じなら取得しない（24時間に1回は強制取得）
+const sig=await fetchCloudSig();if(sig&&_lastFullSig&&_lastFullSig.sig===sig&&Date.now()-_lastFullSig.t<SIG_FORCE_FULL_MS)return;// 変更あり（または署名が取れない）でも、全件取得は10分に1回まで
+if(Date.now()-_lastFullFetchAt<FULL_FETCH_MIN_MS)return;const cloudData=await fetchSupabaseDataTracked(sig);if(!cloudData||cloudData._connError)return;const current=dataRef.current;const merged=mergeCloudIntoLocal(current,cloudData);// 内容として変化があった場合のみ setFullDataRaw
 // （マージでキー順が変わるだけの差分を拾わないよう stableJson で比較）
 const invChanged=stableJson(merged.inventory)!==stableJson(current.inventory);const salesChanged=stableJson(merged.sales)!==stableJson(current.sales);const settingsChanged=stableJson(merged.settings)!==stableJson(current.settings);const receiptsChanged=stableJson(merged.receipts||[])!==stableJson(current.receipts||[])||stableJson(merged.storePending||[])!==stableJson(current.storePending||[])||stableJson(merged.claudeProposals||[])!==stableJson(current.claudeProposals||[]);if(invChanged||salesChanged||settingsChanged||receiptsChanged){setFullDataRaw(prev=>{const nf={...merged,currentUser:prev.currentUser,userProfiles:prev.userProfiles};dataRef.current=nf;saveData(nf);return nf;});toast('☁️ 最新データを取得しました');}}catch(e){console.warn('[CloudAutoSync] visibilitychange 再取得失敗:',e.message);}finally{inFlightRef.current=false;}};document.addEventListener('visibilitychange',onVisible);return()=>document.removeEventListener('visibilitychange',onVisible);// editingItem / pendingEditSaleId が変わるたびに最新値を参照するため依存配列に含める
 },[editingItem,pendingEditSaleId,setFullDataRaw]);// ── 起動時スプレッドシート自動同期（クラウドロード完了後・24時間以上未同期時）──
@@ -1480,7 +1492,7 @@ document.addEventListener('visibilitychange',forceSave);// pagehide: ページ�
 window.addEventListener('pagehide',forceSave);// beforeunload: デスクトップブラウザのタブ閉じ・リロード
 window.addEventListener('beforeunload',forceSave);return()=>{document.removeEventListener('visibilitychange',forceSave);window.removeEventListener('pagehide',forceSave);window.removeEventListener('beforeunload',forceSave);};},[]);// ── クラウドデータ読み込み（/api/data 経由・iOS Safari対応）──
 React.useEffect(()=>{(async()=>{try{// /api/data はサーバー側でSupabaseに接続するため CORS問題なし
-const cloudData=await fetchSupabaseData();// 接続エラー詳細あり
+const cloudData=await fetchSupabaseDataTracked();// 接続エラー詳細あり
 if(cloudData?._connError){setDbError(cloudData._connError);setDbStatus('error');return;}// サーバー側でenv未設定の場合
 if(!cloudData){setDbStatus('offline');return;}// initSupabase で cloudEnabled フラグを立てる（url/keyはサーバーが持つ）
 initSupabase('server','server');const localData=dataRef.current;const hasLocal=localData.inventory.length>0||localData.sales.length>0;const hasCloud=cloudData.inventory.length>0||cloudData.sales.length>0;// 孤立売上クリーンアップ（起動時に一度実行）

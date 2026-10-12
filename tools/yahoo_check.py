@@ -218,8 +218,8 @@ def dice(a, b):
 
 
 def fetch_inventory():
-    with urllib.request.urlopen(API_URL, timeout=60) as r:
-        d = json.loads(r.read().decode())
+    import cloud_get
+    d = cloud_get.get_cloud()
     if not d.get('ok'):
         sys.exit('クラウドからデータを取れませんでした: ' + str(d))
     out = []
