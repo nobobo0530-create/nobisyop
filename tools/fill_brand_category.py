@@ -29,6 +29,8 @@ BRANDS = [
     ('PRADA', ['prada', 'プラダ']),
     ('Vivienne Westwood', ['vivienne westwood', 'ヴィヴィアンウエストウッド', 'ヴィヴィアン・ウエストウッド', 'ヴィヴィアン']),
     ('Burberrys', ['burberrys', 'バーバリーズ']),
+    ('BURBERRY BLUE LABEL', ['burberry blue label', 'バーバリーブルーレーベル', 'バーバリー ブルーレーベル']),
+    ('BURBERRY BLACK LABEL', ['burberry black label', 'バーバリーブラックレーベル', 'バーバリー ブラックレーベル']),
     ('BURBERRY', ['burberry', 'バーバリー']),
     ('Cartier', ['cartier', 'カルティエ']),
     ('FENDI', ['fendi', 'フェンディ']),
@@ -46,14 +48,15 @@ BRANDS = [
     ('DIESEL', ['diesel', 'ディーゼル']),
     ('Stella McCartney', ['stella mccartney', 'ステラマッカートニー', 'ステラ・マッカートニー']),
     ('GIVENCHY', ['givenchy', 'ジバンシィ', 'ジバンシー']),
-    ('COMME des GARCONS', ['comme des garcons', 'コムデギャルソン']),
+    ('PLAY COMME des GARCONS', ['play comme des garcons', 'play comme des garçons', 'play comme de garcons', 'play comme de garçons', 'play cdg', 'プレイコムデギャルソン', 'プレイ コムデギャルソン']),
+    ('COMME des GARCONS', ['comme des garcons', 'comme des garçons', 'comme de garcons', 'comme de garçons', 'コムデギャルソン', 'コム・デ・ギャルソン', 'toricot', 'tricot comme', 'cdg']),
     ('Salvatore Ferragamo', ['ferragamo', 'フェラガモ']),
     ('Dolce&Gabbana', ['dolce&gabbana', 'dolce & gabbana', 'ドルチェ&ガッバーナ', 'ドルチェアンドガッバーナ', 'ドルガバ']),
     ('CELINE', ['celine', 'céline', 'セリーヌ']),
     ('MCM', ['mcm']),
     ('Paul Smith', ['paul smith', 'ポールスミス']),
     ('Y-3', ['y-3', 'y－3']),
-    ('Polo Ralph Lauren', ['ralph lauren', 'ラルフローレン']),
+    ('Polo Ralph Lauren', ['ralph lauren', 'ラルフローレン', 'polo by ralph']),
     ('CHANEL', ['chanel', 'シャネル']),
     ('HERMES', ['hermes', 'hermès', 'エルメス']),
     ('BALENCIAGA', ['balenciaga', 'バレンシアガ']),
@@ -77,6 +80,28 @@ BRANDS = [
     ('AIGNER', ['aigner', 'アイグナー']),
     ('BRIEFING', ['briefing', 'ブリーフィング']),
     ('Rambulton', ['rambulton', 'ランブルトン']),
+    ('PORTER', ['porter', 'ポーター']),
+    ('45rpm', ['45rpm', '45r', 'フォーティファイブアールピーエム']),
+    ('RRL', ['rrl', 'ダブルアールエル']),
+    ("Y's", ["y's", 'y’s', 'ワイズ']),
+    ('Yohji Yamamoto', ['yohji yamamoto', 'ヨウジヤマモト']),
+    ('agnes b.', ['agnes b', 'agnès b', 'アニエスベー']),
+    ('Patagonia', ['patagonia', 'パタゴニア']),
+    ('MARC JACOBS', ['marc jacobs', 'マークジェイコブス']),
+    ('VERSACE', ['versace', 'ヴェルサーチ', 'ベルサーチ']),
+    ('CHROME HEARTS', ['chrome hearts', 'クロムハーツ']),
+    ('Jimmy Choo', ['jimmy choo', 'ジミーチュウ']),
+    ('sacai', ['sacai', 'サカイ']),
+    ('ISSEY MIYAKE', ['issey miyake', 'イッセイミヤケ', 'pleats please', 'プリーツプリーズ']),
+    ('WIND AND SEA', ['wind and sea', 'wind and sea']),
+    ('A BATHING APE', ['bathing ape', 'アベイシングエイプ']),
+    ('WACKO MARIA', ['wacko maria', 'ワコマリア']),
+    ('Fred Perry', ['fred perry', 'フレッドペリー']),
+    ('MACKINTOSH', ['mackintosh', 'マッキントッシュ']),
+    ('THE NORTH FACE PURPLE LABEL', ['north face purple label', 'ノースフェイス パープルレーベル', 'ノースフェイスパープルレーベル']),
+    ('Helen Kaminski', ['helenkaminski', 'helen kaminski', 'ヘレンカミンスキー']),
+    ('Felisi', ['felisi', 'フェリージ']),
+    ('Thomas Wylde', ['thomas wylde']),
     ('F.C.Real Bristol', ['f.c.real bristol', 'fcrb', 'f.c.r.b', 'ブリストル']),
 ]
 
@@ -138,6 +163,20 @@ def guess_brand(title):
         hits.remove('GUCCI')
     if 'Yves Saint Laurent' in hits and 'Saint Laurent' in hits:
         hits.remove('Saint Laurent')
+    # 上位ブランド（ライン名）が当たったら親ブランドは外す
+    for child, parent in (('BURBERRY BLUE LABEL', 'BURBERRY'), ('BURBERRY BLACK LABEL', 'BURBERRY'),
+                          ('PLAY COMME des GARCONS', 'COMME des GARCONS'),
+                          ('THE NORTH FACE PURPLE LABEL', None)):
+        if child in hits and parent in hits:
+            hits.remove(parent)
+    # 「バーバリー」の中の「バリー」は BALLY ではない
+    if 'BALLY' in hits and not _kw_hit(re.sub('バーバリー', '', t), 'バリー') and not _kw_hit(t, 'bally'):
+        hits.remove('BALLY')
+    # サガ（SAGA FURS 銀サガ/金サガ）: 種類で SAGA MINK / SAGA FOX に振り分け
+    if not hits and 'サガ' in t:
+        if 'ミンク' in t: hits.append('SAGA MINK')
+        elif 'フォックス' in t or 'fox' in t: hits.append('SAGA FOX')
+        else: hits.append('SAGA FURS')
     if len(hits) == 1:
         return hits[0], ''
     if not hits:

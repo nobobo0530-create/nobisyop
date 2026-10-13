@@ -1039,6 +1039,30 @@ const diceSimilarity = (a, b) => {
 // ── メール取込の売上（在庫に未紐付け）──────────────────────────
 // source:'mail' / inventoryId:null / needsLink:true(要紐付け) / shippingUnknown / feeEstimated / platformId / mailTitle / buyer
 // 利益は null（未計算）。売上額の合計には含め、利益の合計からは除外する。
+// ── 売上タイトルからのブランド自動判定（tools/fill_brand_category.py の BRANDS と同じ辞書）──
+// 在庫のブランド表記に揃える。判断できない（まとめ売り・複数ブランド・名前なし）は '' を返す
+const _BRAND_DICT = [["Emilio GUCCI",["emilio gucci","エミリオグッチ"]],["jun ashida",["jun ashida","ジュンアシダ"]],["GUCCI",["gucci","グッチ"]],["PRADA",["prada","プラダ"]],["Vivienne Westwood",["vivienne westwood","ヴィヴィアン・ウエストウッド","ヴィヴィアンウエストウッド","ヴィヴィアン"]],["Burberrys",["burberrys","バーバリーズ"]],["BURBERRY BLUE LABEL",["burberry blue label","バーバリー ブルーレーベル","バーバリーブルーレーベル"]],["BURBERRY BLACK LABEL",["burberry black label","バーバリー ブラックレーベル","バーバリーブラックレーベル"]],["BURBERRY",["burberry","バーバリー"]],["Cartier",["cartier","カルティエ"]],["FENDI",["fendi","フェンディ"]],["SAGA MINK",["saga mink","サガミンク"]],["SAGA FOX",["saga fox","サガフォックス"]],["SAGA FURS",["saga furs","サガファーズ"]],["Christian Dior",["christian dior","ディオール","dior"]],["Yves Saint Laurent",["yves saint laurent","イヴサンローラン","イブサンローラン","ysl"]],["Saint Laurent",["saint laurent","サンローラン"]],["EMBA",["emba","エンバ"]],["Louis Vuitton",["louis vuitton","ルイ・ヴィトン","ルイヴィトン","ヴィトン"]],["COACH",["coach","コーチ"]],["Chloe",["chloe","chloé","クロエ"]],["Jean Paul Gaultier",["jean paul gaultier","gaultier","ゴルチエ","ゴルチェ"]],["DIESEL",["diesel","ディーゼル"]],["Stella McCartney",["stella mccartney","ステラ・マッカートニー","ステラマッカートニー"]],["GIVENCHY",["givenchy","ジバンシィ","ジバンシー"]],["PLAY COMME des GARCONS",["play comme des garcons","play comme des garçons","play comme de garcons","play comme de garçons","プレイ コムデギャルソン","プレイコムデギャルソン","play cdg"]],["COMME des GARCONS",["comme des garcons","comme des garçons","comme de garcons","comme de garçons","tricot comme","コム・デ・ギャルソン","コムデギャルソン","toricot","cdg"]],["Salvatore Ferragamo",["ferragamo","フェラガモ"]],["Dolce&Gabbana",["dolce & gabbana","dolce&gabbana","ドルチェアンドガッバーナ","ドルチェ&ガッバーナ","ドルガバ"]],["CELINE",["celine","céline","セリーヌ"]],["MCM",["mcm"]],["Paul Smith",["paul smith","ポールスミス"]],["Y-3",["y-3","y-3"]],["Polo Ralph Lauren",["polo by ralph","ralph lauren","ラルフローレン"]],["CHANEL",["chanel","シャネル"]],["HERMES",["hermes","hermès","エルメス"]],["BALENCIAGA",["balenciaga","バレンシアガ"]],["BOTTEGA VENETA",["bottega veneta","ボッテガ"]],["LOEWE",["loewe","ロエベ"]],["MIU MIU",["miu miu","miumiu","ミュウミュウ"]],["Valentino",["valentino","ヴァレンティノ","バレンティノ"]],["HYSTERIC GLAMOUR",["hysteric glamour","ヒステリックグラマー"]],["SAFURON",["safuron","サフロン"]],["Stussy",["stussy","ステューシー"]],["CHEVAREINE",["chevareine","シュヴァレーヌ"]],["BONAVENTURA",["bonaventura","ボナベンチュラ"]],["TOD'S",["tod's","トッズ"]],["MARNI",["marni","マルニ"]],["kate spade",["kate spade","ケイトスペード"]],["MICHAEL KORS",["michael kors","マイケルコース"]],["BVLGARI",["bvlgari","bulgari","ブルガリ"]],["TIFFANY",["tiffany","ティファニー"]],["Anya Hindmarch",["anya hindmarch","アニヤハインドマーチ"]],["BALLY",["bally","バリー"]],["AIGNER",["aigner","アイグナー"]],["BRIEFING",["briefing","ブリーフィング"]],["Rambulton",["rambulton","ランブルトン"]],["PORTER",["porter","ポーター"]],["45rpm",["フォーティファイブアールピーエム","45rpm","45r"]],["RRL",["ダブルアールエル","rrl"]],["Y's",["y's","y’s","ワイズ"]],["Yohji Yamamoto",["yohji yamamoto","ヨウジヤマモト"]],["agnes b.",["agnes b","agnès b","アニエスベー"]],["Patagonia",["patagonia","パタゴニア"]],["MARC JACOBS",["marc jacobs","マークジェイコブス"]],["VERSACE",["versace","ヴェルサーチ","ベルサーチ"]],["CHROME HEARTS",["chrome hearts","クロムハーツ"]],["Jimmy Choo",["jimmy choo","ジミーチュウ"]],["sacai",["sacai","サカイ"]],["ISSEY MIYAKE",["pleats please","issey miyake","プリーツプリーズ","イッセイミヤケ"]],["WIND AND SEA",["wind and sea","wind and sea"]],["A BATHING APE",["bathing ape","アベイシングエイプ"]],["WACKO MARIA",["wacko maria","ワコマリア"]],["Fred Perry",["fred perry","フレッドペリー"]],["MACKINTOSH",["mackintosh","マッキントッシュ"]],["THE NORTH FACE PURPLE LABEL",["north face purple label","ノースフェイス パープルレーベル","ノースフェイスパープルレーベル"]],["Helen Kaminski",["helen kaminski","helenkaminski","ヘレンカミンスキー"]],["Felisi",["felisi","フェリージ"]],["Thomas Wylde",["thomas wylde"]],["F.C.Real Bristol",["f.c.real bristol","f.c.r.b","ブリストル","fcrb"]]];
+const _brandKwHit = (t, kw) => /[a-z]/.test(kw)
+  ? new RegExp('(?<![a-z])' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![a-z])').test(t)
+  : t.includes(kw);
+const guessBrandFromTitle = (title) => {
+  const t = String(title || '').normalize('NFKC').toLowerCase();
+  if (!t || t.includes('ノーブランド') || t.includes('no brand')) return '';
+  if (/[/／・]\s*他/.test(t)) return '';
+  let hits = [];
+  for (const [name, kws] of _BRAND_DICT) if (kws.some(k => _brandKwHit(t, k))) hits.push(name);
+  const rm = (x) => { hits = hits.filter(h => h !== x); };
+  if (hits.includes('Burberrys')) rm('BURBERRY');
+  if (hits.includes('Emilio GUCCI')) rm('GUCCI');
+  if (hits.includes('Yves Saint Laurent')) rm('Saint Laurent');
+  [['BURBERRY BLUE LABEL', 'BURBERRY'], ['BURBERRY BLACK LABEL', 'BURBERRY'], ['PLAY COMME des GARCONS', 'COMME des GARCONS']]
+    .forEach(([c, p]) => { if (hits.includes(c)) rm(p); });
+  if (hits.includes('BALLY') && !_brandKwHit(t.replace(/バーバリー/g, ''), 'バリー') && !_brandKwHit(t, 'bally')) rm('BALLY');
+  if (!hits.length && t.includes('サガ')) hits.push(t.includes('ミンク') ? 'SAGA MINK' : (t.includes('フォックス') || t.includes('fox')) ? 'SAGA FOX' : 'SAGA FURS');
+  return hits.length === 1 ? hits[0] : '';
+};
+// 売上に表示するブランド：紐付け済みは在庫の値、未紐付けは売上自身の値→タイトルから自動判定
+const saleBrandOf = (s, item) => (item && item.brand) || (s && s.brand) || guessBrandFromTitle((s && (s.mailTitle || s.productName)) || '');
 const isMailSale = (s) => !s.inventoryId && (s.source === 'mail' || s.needsLink === true);
 const isRevenueOnlySale = (s) => isMailSale(s) && (s.salePrice || 0) > 0 && !((s.purchasePrice || 0) > 0);
 const revenueOnlyOfMonth = (sales, prefix) => {
@@ -12896,7 +12920,7 @@ const _saleRow = (s, invMap, rowNum) => {
     rowNum,
     inv.purchaseDate||'',
     inv.productName||(ro ? ('【未紐付け】' + (s.mailTitle||'')) : ''),
-    inv.brand||'',
+    saleBrandOf(s, inv),
     inv.category||'',
     (s.purchasePrice||0) > 0 ? s.purchasePrice : (inv.purchasePrice||0),
     inv.listPrice||'',
@@ -13324,7 +13348,7 @@ const computeTaxSummary = (data, year) => {
     const mi = mIdx(s.saleDate);
     const pk = platKey(s.platform);
     if (mi >= 0) { const b = byMonth[mi]; b.sales[pk] += price; b.salesTotal += price; b.salesCount++; b.fee += fee; b.ship += ship; }
-    saleRows.push({ date: s.saleDate, platform: s.platform || '', title: (item && item.productName) || s.mailTitle || '', price, fee, feeEst, ship, shipUnk, net: price - fee - ship,
+    saleRows.push({ date: s.saleDate, platform: s.platform || '', title: (item && item.productName) || s.mailTitle || '', brand: saleBrandOf(s, item), price, fee, feeEst, ship, shipUnk, net: price - fee - ship,
       mgmtNo: (item && item.mgmtNo) || '', pp: item ? num(item.purchasePrice) : (num(s.purchasePrice) || ''), linked: !!item });
   });
   saleRows.sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
@@ -13507,8 +13531,8 @@ const TaxSummaryPanel = ({ data, setData, toast }) => {
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           <button style={btn} onClick={() => taxDownloadCsv(csvMonthly(), '年間まとめ_月別サマリー_' + year + '.csv')}>月別サマリーCSV</button>
-          <button style={btn} onClick={() => taxDownloadCsv([['販売日', '販路', '商品名', '売価', '手数料', '手数料区分', '送料', '送料未入力', '差引(売価-手数料-送料)', '紐付け管理番号', '仕入額'],
-            ...sum.saleRows.map(r => [r.date, r.platform, r.title, r.price, r.fee, r.feeEst ? '料率計算' : '実額', r.ship, r.shipUnk ? '未入力' : '', r.net, r.mgmtNo, r.pp])], '年間まとめ_売上明細_' + year + '.csv')}>売上明細CSV</button>
+          <button style={btn} onClick={() => taxDownloadCsv([['販売日', '販路', '商品名', 'ブランド', '売価', '手数料', '手数料区分', '送料', '送料未入力', '差引(売価-手数料-送料)', '紐付け管理番号', '仕入額'],
+            ...sum.saleRows.map(r => [r.date, r.platform, r.title, r.brand, r.price, r.fee, r.feeEst ? '料率計算' : '実額', r.ship, r.shipUnk ? '未入力' : '', r.net, r.mgmtNo, r.pp])], '年間まとめ_売上明細_' + year + '.csv')}>売上明細CSV</button>
           <button style={btn} onClick={() => taxDownloadCsv([['仕入日', '仕入先', '種別', '商品名', '管理番号', '商品代', '送料', 'クーポン', '仕入合計', '支払方法', '注文ID/オークションID'],
             ...sum.buyRows.map(r => [r.date, r.store, r.kind, r.title, r.mgmtNo, r.item, r.ship, r.coupon, r.total, r.pay, r.orderId])], '年間まとめ_仕入明細_' + year + '.csv')}>仕入明細CSV</button>
           <button style={btn} onClick={() => taxDownloadCsv([['仕入日', '仕入先', '商品名', '管理番号', '仕入額', 'ステータス'],
@@ -13997,7 +14021,7 @@ const ExportPanel = ({ data, settings, setSetting, toast, exportAll, exportCSV, 
                   const roP = isRevenueOnlySale(s);
                   const nProfit = s.profit != null ? s.profit : (sProfit - effPP);
                   const rate = sp>0 ? Math.round(nProfit/sp*100) : 0;
-                  const brand = item.brand || s.brand || '';
+                  const brand = saleBrandOf(s, item);
                   const productName = item.productName || s.productName || s.mailTitle || s.memo || '−';
                   const store = item.purchaseStore || s.purchaseStore || '';
                   const td = (extra={}) => ({padding:'4px 6px',whiteSpace:'nowrap',...extra});
@@ -16975,7 +16999,7 @@ const OtherTab = ({ mode }) => {
         const saleDay = s.saleDate ? ['日','月','火','水','木','金','土'][new Date(s.saleDate).getDay()] : '';
         const month   = s.saleDate ? s.saleDate.slice(0,7) : '';
         return [
-          i+1, item.mgmtNo||'', item.brand||'', item.productName||(ro ? ('【未紐付け】' + (s.mailTitle||'')) : ''), item.category||'',
+          i+1, item.mgmtNo||'', saleBrandOf(s, item), item.productName||(ro ? ('【未紐付け】' + (s.mailTitle||'')) : ''), item.category||'',
           item.purchaseDate||'', item.purchaseStore||'', item.purchasePrice||0, item.listDate||'',
           s.saleDate||'', saleDay, month, s.platform||'',
           sp, ((s.feeRate||0)*100).toFixed(1), fee, ship,
