@@ -1064,6 +1064,9 @@ const guessBrandFromTitle = (title) => {
 // 売上に表示するブランド：紐付け済みは在庫の値、未紐付けは売上自身の値→タイトルから自動判定
 const saleBrandOf = (s, item) => (item && item.brand) || (s && s.brand) || guessBrandFromTitle((s && (s.mailTitle || s.productName)) || '');
 const isMailSale = (s) => !s.inventoryId && (s.source === 'mail' || s.needsLink === true);
+// 取引中＝メール由来で取引完了メールがまだ来ていない売上（手入力など mailStatus なしは完了扱い）
+const isSaleInProgress = (s) => !!(s && s.mailStatus && !String(s.mailStatus).startsWith('completed'));
+const saleStatusLabel = (s) => !isSaleInProgress(s) ? '' : (s.mailStatus === 'pending_payment' ? '入金待ち' : '取引中');
 const isRevenueOnlySale = (s) => isMailSale(s) && (s.salePrice || 0) > 0 && !((s.purchasePrice || 0) > 0);
 const revenueOnlyOfMonth = (sales, prefix) => {
   let revenue = 0, count = 0;
@@ -10257,6 +10260,9 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
                 <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
                   <span style={{fontSize:11,color:'#6b7280',fontWeight:700}}>{s.saleDate}</span>
                   <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
+                  {isSaleInProgress(s) && (
+                    <span style={{fontSize:10,background:'#fef3c7',color:'#b45309',borderRadius:99,padding:'1px 7px',fontWeight:700,border:'1px solid #fde68a'}}>{s.mailStatus === 'pending_payment' ? '💴' : '🚚'} {saleStatusLabel(s)}</span>
+                  )}
                   {s.shippingUnknown && (
                     <span onClick={() => onEditShipping(s)} style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,padding:'2px 8px',fontWeight:700,border:'1px solid #fed7aa',cursor:'pointer'}}>📦 送料未入力</span>
                   )}
@@ -11240,6 +11246,8 @@ const SalesTab = () => {
   const noShipSales      = validSales.filter(s => s.shippingUnknown);
   const revenueOnlyTotal = revenueOnlySales.reduce((a, s) => a + (s.salePrice || 0), 0);
   const allRevenueTotal  = summarySales.reduce((a, s) => a + saleRev(s), 0) + revenueOnlyTotal;
+  const tradingSales     = validSales.filter(isSaleInProgress);
+  const tradingAmt       = tradingSales.reduce((a, s) => a + saleRev(s), 0);
   const [salesSearch, setSalesSearch] = React.useState('');
   const _sq = salesSearch.trim().toLowerCase();
   const _salesMatch = (sl) => {
@@ -11247,7 +11255,7 @@ const SalesTab = () => {
     const it = (data.inventory || []).find(i => i.id === sl.inventoryId);
     return [it?.productName, it?.brand, sl.productName, sl.brand, sl.mailTitle, sl.memo, sl.platform].some(v => String(v || '').toLowerCase().includes(_sq));
   };
-  const listSales = (salesView === 'noship' ? noShipSales : validSales).filter(_salesMatch);
+  const listSales = (salesView === 'noship' ? noShipSales : salesView === 'trading' ? tradingSales : validSales).filter(_salesMatch);
 
   // 月次サマリー（集計用のみ使用）
   const salesByMonth = {};
@@ -11280,11 +11288,12 @@ const SalesTab = () => {
         <IosIconBtn label="売上を登録" filled onClick={openNew}>＋</IosIconBtn>
       </IosLargeTitle>
       <IosSearch value={salesSearch} onChange={setSalesSearch} placeholder="商品名・ブランド・販路で検索" />
-      {(unlinkedPending.length > 0 || noShipSales.length > 0 || noStockSales.length > 0) && (
+      {(unlinkedPending.length > 0 || noShipSales.length > 0 || noStockSales.length > 0 || tradingSales.length > 0) && (
         <IosSegmented value={salesView} onChange={setSalesView}
           options={[
             { value:'all', label:'全て' },
             { value:'unlinked', label:'未紐付け', count: unlinkedPending.length },
+            ...(tradingSales.length > 0 ? [{ value:'trading', label:'🚚 取引中', count: tradingSales.length }] : []),
             ...(noShipSales.length > 0 ? [{ value:'noship', label:'送料未入力', count: noShipSales.length }] : []),
           ]} />
       )}
@@ -11303,6 +11312,9 @@ const SalesTab = () => {
               {noStockSales.length > 0 && <>　在庫なし記録 {noStockSales.length}件 ¥{formatMoney(noStockSales.reduce((a, s) => a + (s.salePrice || 0), 0))}</>}
               <span style={{color:'#2563eb',fontWeight:700}}>　紐付ける →</span></div>
             <div style={{color:'#64748b'}}>売上には含み、利益の合計・平均からは除外しています</div>
+            {tradingSales.length > 0 && (
+              <div onClick={(e) => { e.stopPropagation(); setSalesView('trading'); }} style={{color:'#b45309',fontWeight:700}}>うち取引中 {tradingSales.length}件 ¥{formatMoney(tradingAmt)}</div>
+            )}
           </div>
         )}
         {/* 販売履歴一括取込ボタン（主導線） */}
@@ -11469,7 +11481,7 @@ const SalesTab = () => {
         {/* 売上記録一覧（仕入れ日順） */}
         {listSales.length > 0 && (
           <>
-            <div className="section-title">{salesView === 'noship' ? '送料未入力の売上（タップで入力）' : '売上記録一覧'}</div>
+            <div className="section-title">{salesView === 'noship' ? '送料未入力の売上（タップで入力）' : salesView === 'trading' ? '取引中の売上（取引完了メールが来るまで）' : '売上記録一覧'}</div>
             {[...listSales].sort((a, b) => {
               const ia = data.inventory.find(i => i.id === a.inventoryId) || {};
               const ib = data.inventory.find(i => i.id === b.inventoryId) || {};
@@ -11497,6 +11509,9 @@ const SalesTab = () => {
                     <div style={{display:'flex',alignItems:'center',gap:5,flexWrap:'wrap'}}>
                       <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{s.platform}</span>
                       <span style={{fontSize:11,color:'#bbb'}}>{s.saleDate}</span>
+                      {isSaleInProgress(s) && (
+                        <span style={{fontSize:10,background:'#fef3c7',color:'#b45309',borderRadius:99,padding:'1px 7px',fontWeight:700,border:'1px solid #fde68a'}}>{s.mailStatus === 'pending_payment' ? '💴' : '🚚'} {saleStatusLabel(s)}</span>
+                      )}
                       {s.shippingUnknown && (
                         <span onClick={(e) => { e.stopPropagation(); setShipEdit(s); }} style={{fontSize:10,background:'#fff7ed',color:'#c2410c',borderRadius:99,
                           padding:'1px 7px',fontWeight:700,border:'1px solid #fed7aa'}}>📦 送料未入力</span>
@@ -11546,6 +11561,9 @@ const SalesTab = () => {
               );
             })}
           </>
+        )}
+        {salesView === 'trading' && tradingSales.length === 0 && (
+          <div style={{textAlign:'center',color:'#16a34a',fontWeight:700,padding:'30px 0',fontSize:14}}>取引中の売上はありません</div>
         )}
         {salesView === 'noship' && noShipSales.length === 0 && (
           <div style={{textAlign:'center',color:'#16a34a',fontWeight:700,padding:'30px 0',fontSize:14}}>送料未入力の売上はありません</div>
