@@ -6376,6 +6376,7 @@ const InventoryTab = () => {
   const proposalsLinkOpen = proposalsOpen.filter(pr => pr.type === 'saleLink')
     .sort((a, b) => ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
+  const [propEdit, setPropEdit] = React.useState(null);   // 「修正して登録」中の提案 {id, items:[{name,brand,category,price}]}
   // ★ 自己修復：実際には登録済みなのに 'open' のまま残った提案を、状態から判断して承認済みにして保存し直す
   //   （保存の取りこぼし・同時書き込みで更新が消えても、画面を開けば自然に直る）
   //   分割：元の仮登録が消えていて、splitOrigin.id（または storePendingId）が一致する子の仕入れ値合計が支払額と一致
@@ -6466,8 +6467,10 @@ const InventoryTab = () => {
     purchaseStore: pr.payment?.store || ph.purchaseStore || '',
     purchaseDate: pr.payment?.date || ph.purchaseDate || '',
   });
-  const approveProposal = (pr) => {
+  // 承認の本体。override があれば（「修正して登録」）その内容で登録。1点だけの提案は分割せず仮在庫をその場で本登録に変える
+  const approveProposal = (pr0, override) => {
     if (proposalBusy) return;
+    const pr = override ? { ...pr0, items: (pr0.items || []).map((it, i) => ({ ...it, ...(override[i] || {}) })) } : pr0;
     const prob = proposalProblem(pr);
     if (prob) { alert('❌ ' + prob); return; }
     const missing = (pr.items || []).filter(it => !(it.photo && it.photo.thumbDataUrl)).length;
@@ -6475,14 +6478,37 @@ const InventoryTab = () => {
     const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
     setProposalBusy(true);
     try {
+      if ((pr.items || []).length === 1) {
+        const si = proposalSplitItems(pr)[0];
+        const nowIso = new Date().toISOString();
+        const common = proposalCommon(pr, ph);
+        const upd = { ...ph, ...common, productName: si.productName, brand: si.extra.brand, category: si.extra.category || ph.category,
+          photos: si.photos.length ? si.photos : (ph.photos || []), needsDetail: false, priceUnconfirmed: false, updatedAt: nowIso };
+        const inventory = (data.inventory || []).map(i => i.id === ph.id ? upd : i);
+        setData({ ...data, inventory,
+          claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [ph.id], ...(override ? { edited: true } : {}) })) });
+        try {
+          const raw = localStorage.getItem('nobushop_data');
+          const st = raw ? JSON.parse(raw) : null;
+          if (st && Array.isArray(st.inventory)) {
+            st.inventory = st.inventory.map(i => i.id === ph.id ? { ...upd, photos: (upd.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })) } : i);
+            localStorage.setItem('nobushop_data', JSON.stringify(st));
+          }
+        } catch (_e) {}
+        setPropEdit(null);
+        toast('✅ 1点を登録しました');
+        return;
+      }
       const res = applySplitRegistration(data, ph, proposalSplitItems(pr), proposalCommon(pr, ph), Date.now());
       if (res.error) { alert('❌ ' + res.error); return; }
       setData({ ...data, inventory: res.inventory, settings: res.settings,
-        claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: res.newItems.map(i => i.id) })) });
+        claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: res.newItems.map(i => i.id), ...(override ? { edited: true } : {}) })) });
       persistSplitLocal(res.inventory, ph.id, res.nowIso, res.covers);
+      setPropEdit(null);
       toast(`✅ ${res.newItems.length}点を登録しました`);
     } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
+  const startPropEdit = (pr) => setPropEdit({ id: pr.id, items: (pr.items || []).map(it => ({ name: String(it.name || ''), brand: String(it.brand || ''), category: String(it.category || ''), price: String(Math.round(Number(it.allocatedPrice)) || 0) })) });
   const editProposal = (pr) => {
     const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
     if (!ph) { alert('❌ もとの仮登録の商品が見つかりません'); return; }
@@ -7683,6 +7709,44 @@ const InventoryTab = () => {
                       <div style={{flexShrink:0,padding:'3px 9px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:12,fontWeight:800}}>確度 {pr.confidence}</div>
                     </div>
                     {pr.rule && <div style={{fontSize:13,color:'#334155',marginTop:6,padding:'6px 10px',background:'#f1f5f9',borderRadius:8}}>{pr.rule}</div>}
+                    {propEdit && propEdit.id === pr.id ? (() => {
+                      const eItems = propEdit.items;
+                      const eSum = eItems.reduce((a, x) => a + (Math.round(Number(x.price)) || 0), 0);
+                      const eOk = eSum === pay && eItems.every(x => String(x.name).trim() && (Math.round(Number(x.price)) || 0) > 0);
+                      const setE = (i, k, v) => setPropEdit({ ...propEdit, items: eItems.map((x, n) => n === i ? { ...x, [k]: v } : x) });
+                      const fld = {width:'100%',boxSizing:'border-box',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,marginTop:4};
+                      const CATS = ['バッグ','衣類','小物','シューズ','毛皮','その他'];
+                      return (
+                        <div style={{marginTop:10,display:'flex',flexDirection:'column',gap:10}}>
+                          {eItems.map((x, i) => (
+                            <div key={i} style={{padding:10,background:'#f8fafc',borderRadius:10,border:'1px solid #e2e8f0'}}>
+                              <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                                <div style={{width:48,height:48,flexShrink:0,borderRadius:8,overflow:'hidden',background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                                  {(pr.items[i] || {}).photo && pr.items[i].photo.thumbDataUrl ? <img src={pr.items[i].photo.thumbDataUrl} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/> : <span style={{opacity:0.5}}>📷</span>}
+                                </div>
+                                <div style={{fontSize:12,fontWeight:800,color:'#475569'}}>商品{i + 1}</div>
+                              </div>
+                              <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6}}>商品名<input style={fld} value={x.name} onChange={e => setE(i, 'name', e.target.value)} /></label>
+                              <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6}}>ブランド<input style={fld} value={x.brand} onChange={e => setE(i, 'brand', e.target.value)} /></label>
+                              <div style={{display:'flex',gap:8}}>
+                                <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6,flex:1}}>カテゴリ
+                                  <select style={fld} value={x.category} onChange={e => setE(i, 'category', e.target.value)}>
+                                    {[...(x.category && !CATS.includes(x.category) ? [x.category] : []), ...(x.category ? [] : ['']), ...CATS].map(c => <option key={c} value={c}>{c || '（未選択）'}</option>)}
+                                  </select>
+                                </label>
+                                <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6,flex:1}}>仕入れ値（円）<input style={fld} type="number" inputMode="numeric" value={x.price} onChange={e => setE(i, 'price', e.target.value)} /></label>
+                              </div>
+                            </div>
+                          ))}
+                          <div style={{fontSize:13,fontWeight:800,color: eSum === pay ? '#166534' : '#b45309'}}>合計 {yen(eSum)} ＝ 支払い {yen(pay)} {eSum === pay ? '✓' : '⚠️ 一致させてください'}</div>
+                          <div style={{display:'flex',gap:8}}>
+                            <button style={btn('#16a34a','white',!eOk || proposalBusy)} disabled={!eOk || proposalBusy}
+                              onClick={() => approveProposal(pr, eItems.map(x => ({ name: x.name.trim(), brand: x.brand.trim(), category: x.category, allocatedPrice: Math.round(Number(x.price)) || 0, nameUncertain: false })))}>この内容で登録</button>
+                            <button style={btn('#e5e7eb','#374151',false)} onClick={() => setPropEdit(null)}>キャンセル</button>
+                          </div>
+                        </div>
+                      );
+                    })() : (
                     <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:10}}>
                       {(pr.items || []).map((it, i) => (
                         <div key={i} style={{display:'flex',gap:10,alignItems:'flex-start'}}>
@@ -7692,13 +7756,14 @@ const InventoryTab = () => {
                               : <span style={{fontSize:22,opacity:0.5}}>📷</span>}
                           </div>
                           <div style={{flex:1,minWidth:0}}>
-                            <div style={{fontSize:13,fontWeight:700,wordBreak:'break-all'}}>{it.name}</div>
+                            <div style={{fontSize:13,fontWeight:700,wordBreak:'break-all'}}>{it.name}{it.nameUncertain && <span style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginLeft:4}}>（名前は仮）</span>}</div>
                             {it.brand && <div style={{fontSize:11,color:'#64748b'}}>{it.brand}</div>}
                             <div style={{fontSize:12,color:'#475569',marginTop:2}}>値札 {yen(it.tagPrice)}　<b style={{color:'#0f172a'}}>仕入れ値 {yen(it.allocatedPrice)}</b></div>
                           </div>
                         </div>
                       ))}
                     </div>
+                    )}
                     <div style={{fontSize:13,fontWeight:800,marginTop:10,color: ok ? '#166534' : '#b45309'}}>
                       合計 {yen(sum)} ＝ 支払い {yen(pay)} {ok ? '✓' : '⚠️'}
                     </div>
@@ -7708,7 +7773,7 @@ const InventoryTab = () => {
                       <button style={btn('#16a34a','white',!!prob || proposalBusy)} disabled={!!prob || proposalBusy} onClick={() => approveProposal(pr)}>✅ この内容で登録</button>
                     </div>
                     <div style={{display:'flex',gap:8,marginTop:8}}>
-                      <button style={btn('#e0e7ff','#3730a3',false)} onClick={() => editProposal(pr)}>✏️ 直してから登録</button>
+                      <button style={btn('#e0e7ff','#3730a3',false)} onClick={() => startPropEdit(pr)}>✏️ 修正して登録</button>
                       <button style={btn('#fee2e2','#991b1b',false)} onClick={() => rejectProposal(pr)}>❌ 違う</button>
                     </div>
                   </div>
