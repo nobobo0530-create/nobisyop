@@ -7826,6 +7826,32 @@ const InventoryTab = () => {
                         )}
                       </div>
                     )}
+                    {!(propEdit && propEdit.id === pr.id) && Array.isArray(pr.alreadyRegistered) && pr.alreadyRegistered.length > 0 && (() => {
+                      // 同じ会計で登録済みの商品（支払いの一部だけが今回の提案）
+                      const ar = pr.alreadyRegistered;
+                      const arSum = ar.reduce((a, x) => a + (Math.round(Number(x.price)) || 0), 0);
+                      const full = Math.round(Number(pr.payment?.fullAmount)) || (arSum + pay);
+                      const fullOk = full === arSum + pay;
+                      return (
+                        <div style={{marginTop:10,padding:8,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10}}>
+                          <div style={{fontSize:12,fontWeight:800,color:'#166534',marginBottom:6}}>この会計で登録済み</div>
+                          {ar.map((x, n) => {
+                            const reg = (data.inventory || []).find(i => i && i.id === x.itemId);
+                            const ph = reg && reg.photos && reg.photos[0];
+                            return (
+                              <div key={x.itemId || n} style={{display:'flex',gap:10,alignItems:'center',marginTop: n ? 6 : 0}}>
+                                <ItemThumbnail thumbId={ph?.thumbId} thumbDataUrl={ph?.thumbDataUrl} size={44} fallback="📦" />
+                                <div style={{flex:1,minWidth:0,fontSize:13,fontWeight:700,wordBreak:'break-all'}}>{x.name || reg?.productName || reg?.brand || '（名前なし）'}</div>
+                                <div style={{flexShrink:0,fontSize:13,fontWeight:800}}>{yen(x.price)}</div>
+                              </div>
+                            );
+                          })}
+                          <div style={{fontSize:13,fontWeight:800,marginTop:8,color: fullOk ? '#166534' : '#b45309'}}>
+                            会計の合計 {yen(full)} ＝ 登録済み {yen(arSum)} ＋ 今回 {yen(pay)} {fullOk ? '✓' : '⚠️'}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <div style={{fontSize:13,fontWeight:800,marginTop:10,color: ok ? '#166534' : '#b45309'}}>
                       合計 {yen(sum)} ＝ 支払い {yen(pay)} {ok ? '✓' : '⚠️'}
                     </div>
