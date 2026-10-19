@@ -25,7 +25,8 @@ def get_inventory():
 
 def mgmt_no(purchase_date, price, divisor=100):
     pd = purchase_date.replace('-', '')[2:]
-    return f'{pd}-0000-{price // divisor}-{price % divisor}'
+    # 余りは割る数の桁にそろえる（アプリと同じ: 14700 → 147-00）
+    return f'{pd}-0000-{price // divisor}-{str(price % divisor).zfill(len(str(divisor - 1)))}'
 
 
 def tax_ex(tax_in, rate=10):
