@@ -6375,7 +6375,7 @@ const InventoryTab = () => {
     .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const proposalsStoreOpen = proposalsOpen.filter(pr => pr.type !== 'saleLink');
   const proposalsLinkOpen = proposalsOpen.filter(pr => pr.type === 'saleLink')
-    .sort((a, b) => ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')));
+    .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
   const [altOpen, setAltOpen] = React.useState({});     // 「ほかの候補」を開いている提案 {提案id: true}
   const [propEdit, setPropEdit] = React.useState(null);   // 「修正して登録」中の提案 {id, items:[{name,brand,category,price}]}
@@ -7711,7 +7711,10 @@ const InventoryTab = () => {
                 return (
                   <div key={pr.id} className="card" style={{padding:12}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
-                      <div style={{fontWeight:800,fontSize:15,minWidth:0,wordBreak:'break-all'}}>{pr.title}</div>
+                      <div style={{minWidth:0}}>
+                        {pr.payment?.date && <div style={{fontSize:11,color:'#6b7280',fontWeight:700,marginBottom:2}}>{pr.payment.date}</div>}
+                        <div style={{fontWeight:800,fontSize:15,wordBreak:'break-all'}}>{pr.title}</div>
+                      </div>
                       <div style={{flexShrink:0,padding:'3px 9px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:12,fontWeight:800}}>確度 {pr.confidence}</div>
                     </div>
                     {pr.rule && <div style={{fontSize:13,color:'#334155',marginTop:6,padding:'6px 10px',background:'#f1f5f9',borderRadius:8}}>{pr.rule}</div>}
