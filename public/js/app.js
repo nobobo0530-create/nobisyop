@@ -3466,7 +3466,7 @@ const PurchaseTab = () => {
 
   // サイズ合成（表記サイズ＋実寸）
   const measureNow = getMeasure(form);
-  const measureParts = measureEntries(measureNow).map(([l, v]) => `${l}${v}cm`);
+  const measureParts = measureEntries(measureNow).map(([l, v]) => `${l}：${v}cm`);
   const computedSize = [form.sizeTag, ...measureParts].filter(Boolean).join(' / ');
 
   // 税抜計算ヘルパー（Math.roundで 3190÷1.1=2900 を正確に出す）
@@ -6021,7 +6021,7 @@ const measureEntries = (m) => {
   }
   return e;
 };
-const measureLinesOf = (it) => measureEntries(getMeasure(it)).map(([l, v]) => `${l} ${v}cm`);
+const measureLinesOf = (it) => measureEntries(getMeasure(it)).map(([l, v]) => `${l}：${v}cm`);
 const applyMeasure = (m) => {
   const cloth = measureIsCloth(m.type);
   const v = cloth ? [m.length, m.chest, m.shoulder, m.sleeve] : [m.h, m.w, m.d, m.strapMax || m.strapMin];
@@ -6040,7 +6040,7 @@ const MeasureForm = ({ value, onChange, big }) => {
   );
   const lab = (t) => <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:3}}>{t}</div>;
   const cloth = measureIsCloth(m.type);
-  const lines = measureEntries(m).map(([l, v]) => `${l} ${v}cm`);
+  const lines = measureEntries(m).map(([l, v]) => `${l}：${v}cm`);
   return (
     <div>
       <div style={{display:'flex',gap:6,marginBottom:10}}>
@@ -6102,7 +6102,8 @@ const buildArrivalBoxes = (inventory) => {
     const hay = searchFold([store, normShop(store), aids.join(' '), oids.join(' '), ...members.map(i => [i.productName, i.brand, i.mgmtNo, i.bundleLabel].join(' '))].join(' ')).replace(/\s/g, '');
     const created = members.reduce((m, i) => { const c = String(i.createdAt || ''); return c > m ? c : m; }, '');
     const idn = members.reduce((m, i) => { const n = Number(i.id); return n > m ? n : m; }, 0);
-    out.push({ key, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay, created, idn });
+    const shopKey = normShop(store) || searchFold(store).replace(/\s/g, '') || '-';
+    out.push({ key, shopKey, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay, created, idn });
   });
   // 新しい順：購入日の新しい順 → 同日は登録(createdAt)の新しい順 → id数値の大きい順
   out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) || (a.created < b.created ? 1 : a.created > b.created ? -1 : 0) || (b.idn - a.idn));
@@ -6145,6 +6146,101 @@ const MeasureSheet = ({ item, boxItems, position, onClose, onSave }) => {
   );
 };
 
+const ARRIVAL_PAGE = 40;
+const localYmd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+// 日付見出し：今日／昨日／10/17(金)（別年は 2025/10/17(金)）
+const arrivalDateLabel = (ymd) => {
+  if (!ymd) return '日付なし';
+  const now = new Date();
+  const y = new Date(now); y.setDate(y.getDate() - 1);
+  if (ymd === localYmd(now)) return '今日';
+  if (ymd === localYmd(y)) return '昨日';
+  const [yy, mm, dd] = ymd.split('-').map(Number);
+  if (!yy || !mm || !dd) return ymd;
+  const w = '日月火水木金土'[new Date(yy, mm - 1, dd).getDay()];
+  return (yy !== now.getFullYear() ? yy + '/' : '') + mm + '/' + dd + '(' + w + ')';
+};
+
+// 箱1つ分の行（折りたたみ＋展開）。props が変わらなければ再描画しない
+const ArrivalBoxRow = React.memo(({ b, open, selMode, selected, onToggle, onSelect, onArrive, onSheet }) => {
+  const pend = b.members.filter(i => !isItemArrived(i));
+  const ids = b.members.map(i => i.id);
+  const first = b.members[0];
+  const expanded = open && !selMode;
+  const accent = b.done ? '#16a34a' : '#4338ca';
+  const mdDate = b.date ? b.date.slice(5).replace('-', '/').replace(/^0/, '').replace(/\/0/, '/') : '日付なし';
+  return (
+    <div className="card" style={{marginBottom:8,overflow:'hidden',outline: selMode && selected ? '3px solid #4338ca' : 'none',
+      border: b.done ? '1.5px solid #bbf7d0' : '1.5px solid #e0e7ff',borderLeft:'4px solid ' + accent}}>
+      <div role="button" onClick={() => selMode ? onSelect(b) : onToggle(b)}
+        style={{display:'flex',alignItems:'center',gap:10,minHeight:60,padding:'6px 10px',cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+        {selMode && (
+          <span style={{width:30,height:30,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:800,color:'#fff',
+            border: b.done ? '2px solid #d1d5db' : selected ? 'none' : '2.5px solid #4338ca',background: b.done ? '#f3f4f6' : selected ? '#4338ca' : '#fff'}}>{selected ? '✓' : ''}</span>
+        )}
+        <div style={{position:'relative',width:46,height:46,flexShrink:0}}>
+          {b.members.length > 1 && <span style={{position:'absolute',left:4,top:-3,width:46,height:46,borderRadius:10,background:'#e5e7eb',border:'1px solid #d1d5db'}}/>}
+          <div style={{position:'relative',width:46,height:46,borderRadius:10,overflow:'hidden',background:'#f3f4f6'}}>
+            <ItemThumbnail thumbId={first.photos?.[0]?.thumbId} thumbDataUrl={first.photos?.[0]?.thumbDataUrl} size={46} fallback="📦" />
+          </div>
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontWeight:800,fontSize:16,lineHeight:'21px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.store || '仕入れ先未設定'}</div>
+          <div style={{fontSize:12,color:'#6b7280',lineHeight:'17px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{b.members.length}点 · {mdDate} · ¥{b.total.toLocaleString()}</div>
+        </div>
+        <span style={{flexShrink:0,minWidth:36,textAlign:'center',padding:'3px 8px',borderRadius:99,fontSize:12,fontWeight:800,
+          background: b.done ? '#dcfce7' : '#eef2ff',color: b.done ? '#15803d' : '#4338ca'}}>{b.done ? '✓' : b.arrived + '/' + b.members.length}</span>
+        {!selMode && (
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            style={{flexShrink:0,transform: expanded ? 'rotate(90deg)' : 'none',transition:'transform 0.15s'}}><path d="M4 1.5L8.5 6L4 10.5"/></svg>
+        )}
+      </div>
+      {expanded && (
+        <div style={{padding:'0 10px 10px'}}>
+          {(b.aids.length > 0 || b.oids.length > 0) && (
+            <div style={{fontSize:11,color:'#9ca3af',marginBottom:6,wordBreak:'break-all'}}>
+              {b.aids.slice(0, 3).join('　')}{b.aids.length > 3 ? ` 他${b.aids.length - 3}` : ''}{b.oids.length > 0 ? `　注文${b.oids.slice(0, 2).join('・')}` : ''}
+            </div>
+          )}
+          {b.members.map(i => {
+            const auto = !i.arrivedAt && i.status && i.status !== 'unlisted';
+            const ok = isItemArrived(i);
+            return (
+              <div key={i.id} style={{display:'flex',alignItems:'center',gap:10,padding:6,marginBottom:6,borderRadius:10,
+                border: ok ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',background: ok ? '#f0fdf4' : '#fff'}}>
+                <button onClick={() => onSheet({ ids, pos: ids.indexOf(i.id) })} aria-label="採寸する"
+                  style={{position:'relative',padding:0,border:'none',background:'none',cursor:'pointer',flexShrink:0,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  <ItemThumbnail thumbId={i.photos?.[0]?.thumbId} thumbDataUrl={i.photos?.[0]?.thumbDataUrl} size={84} fallback="📦" />
+                  <span style={{position:'absolute',right:3,bottom:3,background:'rgba(0,0,0,0.62)',color:'#fff',fontSize:10,fontWeight:700,borderRadius:6,padding:'1px 5px'}}>📏採寸{measureLinesOf(i).length ? '✓' : ''}</span>
+                </button>
+                <button disabled={auto} onClick={() => onArrive([i.id], !i.arrivedAt)}
+                  style={{flex:1,minWidth:0,minHeight:84,display:'flex',alignItems:'center',gap:8,padding:0,border:'none',background:'none',textAlign:'left',cursor: auto ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  <span style={{flex:1,minWidth:0}}>
+                    <span style={{fontSize:14,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical'}}>
+                      {i.bundleLabel ? <span style={{color:'#4338ca'}}>{i.bundleLabel} </span> : null}{i.productName || '(名称なし)'}
+                    </span>
+                    <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:2}}>
+                      {i.mgmtNo ? i.mgmtNo + '　' : ''}¥{(Number(i.purchasePrice) || 0).toLocaleString()}{auto ? (i.status === 'sold' ? '　売却済' : '　出品中') : i.arrivedAt ? '　届いた' : ''}
+                    </span>
+                  </span>
+                  <span style={{width:32,height:32,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:800,
+                    border: ok ? 'none' : '2px solid #9ca3af',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
+                </button>
+              </div>
+            );
+          })}
+          {!b.done && pend.length > 1 && (
+            <button onClick={() => onArrive(pend.map(i => i.id), true)}
+              style={{width:'100%',minHeight:44,marginTop:2,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
+              残り{pend.length}点を全部「届いた」にする
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
+
 const ArrivalTab = () => {
   const { data, setData } = React.useContext(AppContext);
   const dataRefArr = React.useRef(data);
@@ -6152,12 +6248,21 @@ const ArrivalTab = () => {
   const [seg, setSeg] = React.useState('pending'); // pending | done | all
   const [search, setSearch] = React.useState('');
   const [showOld, setShowOld] = React.useState(false);
-  const [limit, setLimit] = React.useState(20);
+  const [limit, setLimit] = React.useState(ARRIVAL_PAGE);
   const [sheet, setSheet] = React.useState(null); // { ids:[...], pos }
   const toast = useToast();
   const [selMode, setSelMode] = React.useState(false);
   const [sel, setSel] = React.useState(() => new Set()); // 選んだ箱の key
   const [beforeDate, setBeforeDate] = React.useState('');
+  const [expKey, setExpKey] = React.useState(null);   // 展開中の箱（1つだけ）
+  const [autoOff, setAutoOff] = React.useState(null); // 1件だけの自動展開を手で閉じた箱
+  const [shopSel, setShopSel] = React.useState(null); // 店名チップ（shopKey）
+  const [barH, setBarH] = React.useState(120);
+  const barRef = React.useRef(null);
+  React.useLayoutEffect(() => {
+    const h = barRef.current ? barRef.current.offsetHeight : 0;
+    if (h && Math.abs(h - barH) > 1) setBarH(h);
+  });
   const boxes = getArrivalBoxes(data.inventory);
   const cutoff = React.useMemo(arrivalCutoff, []);
   const toks = React.useMemo(() => searchFold(search).split(' ').filter(Boolean).map(t => [t.replace(/\s/g, ''), normShop(t)]), [search]);
@@ -6167,17 +6272,26 @@ const ArrivalTab = () => {
     boxes.forEach(b => { if (b.done) d++; else if (searching || showOld || b.date >= cutoff) p++; });
     return { p, d, a: p + d };
   }, [boxes, showOld, cutoff, searching]);
-  const shown = React.useMemo(() => boxes.filter(b => {
+  // 区分・検索・日付範囲で絞った箱（店名チップはこの中で数える）
+  const base = React.useMemo(() => boxes.filter(b => {
     if (seg === 'pending' && b.done) return false;
     if (seg === 'done' && !b.done) return false;
     if (searching) return toks.every(([t, n]) => b.hay.includes(t) || (n && b.hay.includes(n)));
     if (seg !== 'done' && !showOld && !b.done && b.date < cutoff) return false;
     return true;
   }), [boxes, seg, toks, searching, showOld, cutoff]);
+  const chips = React.useMemo(() => {
+    const m = new Map();
+    base.forEach(b => { const c = m.get(b.shopKey); if (c) c.n++; else m.set(b.shopKey, { key: b.shopKey, label: b.store || '仕入れ先未設定', n: 1 }); });
+    return [...m.values()].sort((a, b) => b.n - a.n || a.label.localeCompare(b.label, 'ja'));
+  }, [base]);
+  const shopEff = shopSel && chips.some(c => c.key === shopSel) ? shopSel : null;
+  const shown = React.useMemo(() => shopEff ? base.filter(b => b.shopKey === shopEff) : base, [base, shopEff]);
   const hiddenOld = React.useMemo(() => (seg === 'done' || searching || showOld) ? 0 : boxes.filter(b => !b.done && b.date < cutoff).length, [boxes, seg, searching, showOld, cutoff]);
+  const singleAuto = shown.length === 1 && (searching || !!shopEff);
 
   // 届いた確認の保存：通常の setData 経由（編集した行に updatedAt が刻まれ、クラウド同期される）
-  const setItemsArrived = (ids, on) => {
+  const setItemsArrived = React.useCallback((ids, on) => {
     const cur = dataRefArr.current;
     const idSet = new Set(ids);
     const now = new Date().toISOString();
@@ -6186,11 +6300,15 @@ const ArrivalTab = () => {
       if (on) return i.arrivedAt ? i : { ...i, arrivedAt: now };
       return i.arrivedAt ? { ...i, arrivedAt: null } : i;
     }) });
-  };
+  }, [setData]);
   // 選択モード
   const selectable = shown.filter(b => !b.done);
   const exitSel = () => { setSelMode(false); setSel(new Set()); setBeforeDate(''); };
-  const toggleSel = (b) => { if (b.done) return; setSel(prev => { const n = new Set(prev); if (n.has(b.key)) n.delete(b.key); else n.add(b.key); return n; }); };
+  const toggleSel = React.useCallback((b) => { if (b.done) return; setSel(prev => { const n = new Set(prev); if (n.has(b.key)) n.delete(b.key); else n.add(b.key); return n; }); }, []);
+  const toggleOpen = React.useCallback((b) => {
+    const isOpen = expKey === b.key || (singleAuto && shown[0] && shown[0].key === b.key && autoOff !== b.key);
+    if (isOpen) { setExpKey(null); setAutoOff(b.key); } else { setExpKey(b.key); setAutoOff(null); }
+  }, [expKey, autoOff, singleAuto, shown]);
   const selBoxes = boxes.filter(b => sel.has(b.key) && !b.done);
   const selItems = selBoxes.reduce((a, b) => a.concat(b.members.filter(i => !isItemArrived(i))), []);
   const selectBefore = (d) => {
@@ -6233,97 +6351,87 @@ const ArrivalTab = () => {
   const sheetItem = sheet ? (data.inventory || []).find(i => i.id === sheet.ids[sheet.pos]) : null;
   const sheetBoxItems = sheet ? sheet.ids.map(id => ({ id })) : [];
 
+  const page = shown.slice(0, limit);
+  const rows = [];
+  let lastDate = null;
+  page.forEach(b => {
+    if (b.date !== lastDate) {
+      lastDate = b.date;
+      rows.push(
+        <div key={'h' + (b.date || 'none')} style={{position:'sticky',top:`calc(env(safe-area-inset-top) + ${barH}px)`,zIndex:4,background:'var(--bg)',padding:'6px 2px 4px',fontSize:13,fontWeight:800,color:'#6b7280'}}>{arrivalDateLabel(b.date)}</div>
+      );
+    }
+    const open = expKey === b.key || (singleAuto && autoOff !== b.key);
+    rows.push(<ArrivalBoxRow key={b.key} b={b} open={open} selMode={selMode} selected={sel.has(b.key)}
+      onToggle={toggleOpen} onSelect={toggleSel} onArrive={setItemsArrived} onSheet={setSheet} />);
+  });
+  const segOpts = [['pending', '未着', counts.p], ['done', '届いた', counts.d], ['all', 'すべて', counts.a]];
+
   return (
     <div>
-      <div style={{padding:'12px 16px 0',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-        <div style={{fontSize:28,fontWeight:800}}>入荷</div>
-        <button onClick={() => selMode ? exitSel() : setSelMode(true)}
-          style={{minHeight:40,padding:'0 16px',borderRadius:99,border:'1.5px solid #4338ca',background: selMode ? '#4338ca' : '#fff',color: selMode ? '#fff' : '#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>{selMode ? '終了' : '選択'}</button>
+      <div ref={barRef} style={{position:'sticky',top:'env(safe-area-inset-top)',zIndex:6,background:'var(--bg)',padding:'8px 16px 6px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+          <div style={{flex:1,minWidth:0,position:'relative',display:'flex',alignItems:'center',background:IOS_FILL,borderRadius:10,height:36}}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={IOS_LABEL2} strokeWidth="2.6" strokeLinecap="round" style={{position:'absolute',left:9,pointerEvents:'none'}}>
+              <circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/>
+            </svg>
+            <input type="search" value={search} onChange={e => { setSearch(e.target.value); setLimit(ARRIVAL_PAGE); }} placeholder="店名・商品名・IDで検索"
+              style={{width:'100%',height:36,padding:'0 34px 0 32px',border:'none',outline:'none',background:'transparent',fontSize:17,color:'#000',WebkitAppearance:'none',appearance:'none'}}/>
+            {search && (
+              <button onClick={() => setSearch('')} aria-label="クリア"
+                style={{position:'absolute',right:0,width:40,height:36,border:'none',background:'none',cursor:'pointer',padding:0}}>
+                <span style={{display:'inline-flex',width:16,height:16,borderRadius:8,background:IOS_LABEL2,color:'#fff',alignItems:'center',justifyContent:'center',fontSize:11,lineHeight:1,opacity:0.6}}>✕</span>
+              </button>
+            )}
+          </div>
+          <button onClick={() => selMode ? exitSel() : setSelMode(true)}
+            style={{flexShrink:0,minHeight:36,padding:'0 14px',borderRadius:99,border:'1.5px solid #4338ca',background: selMode ? '#4338ca' : '#fff',color: selMode ? '#fff' : '#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>{selMode ? '終了' : '選択'}</button>
+        </div>
+        <div style={{display:'flex',background:IOS_FILL,borderRadius:9,padding:2,gap:2,marginBottom:6}}>
+          {segOpts.map(([v, label, n]) => {
+            const on = seg === v;
+            return (
+              <button key={v} onClick={() => { setSeg(v); setLimit(ARRIVAL_PAGE); }}
+                style={{flex:1,minWidth:0,minHeight:32,border:'none',cursor:'pointer',borderRadius:7,padding:'2px',background: on ? '#fff' : 'transparent',
+                  boxShadow: on ? '0 3px 8px rgba(0,0,0,0.12), 0 3px 1px rgba(0,0,0,0.04)' : 'none',color:'#000',fontSize:13,fontWeight: on ? 600 : 500,whiteSpace:'nowrap',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                {label} <span style={{fontSize:12,color:IOS_LABEL2,fontWeight:500}}>{n}</span>
+              </button>
+            );
+          })}
+        </div>
+        {chips.length > 1 && (
+          <div style={{display:'flex',gap:6,overflowX:'auto',WebkitOverflowScrolling:'touch',scrollbarWidth:'none',margin:'0 -16px',padding:'0 16px 2px'}}>
+            {[{ key: null, label: 'すべて', n: base.length }, ...chips].map(c => {
+              const on = (shopEff || null) === c.key;
+              return (
+                <button key={c.key || '__all'} onClick={() => { setShopSel(c.key); setLimit(ARRIVAL_PAGE); }}
+                  style={{flexShrink:0,minHeight:32,maxWidth:200,padding:'0 12px',borderRadius:99,border:'1.5px solid ' + (on ? '#4338ca' : '#e5e7eb'),background: on ? '#4338ca' : '#fff',color: on ? '#fff' : '#374151',
+                    fontSize:13,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  {c.label} <span style={{opacity:0.7,fontWeight:600}}>{c.n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
-      <IosSearch value={search} onChange={v => { setSearch(v); setLimit(20); }} placeholder="箱のラベルの店名・商品名・オークションIDで検索" />
-      <IosSegmented value={seg} onChange={v => { setSeg(v); setLimit(20); }}
-        options={[{ value: 'pending', label: '未着', count: counts.p }, { value: 'done', label: '届いた', count: counts.d }, { value: 'all', label: 'すべて', count: counts.a }]} />
-      <div style={{padding:'12px 16px', paddingBottom: selMode ? 150 : 24}}>
+      <div style={{padding:'0 16px', paddingBottom: selMode ? 150 : 24}}>
         {selMode && (
-          <div className="card" style={{padding:10,marginBottom:12,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <div className="card" style={{padding:10,margin:'6px 0 8px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <span style={{fontSize:13,fontWeight:700,color:'#374151'}}>この日より前を全部選択</span>
             <input type="date" value={beforeDate} onChange={e => selectBefore(e.target.value)} className="input-field" style={{flex:1,minWidth:140,minHeight:40}}/>
           </div>
         )}
         {shown.length === 0 ? (
-          <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-            {searching ? '該当する箱がありません' : seg === 'pending' ? '✓ 未着の箱はありません' : '箱がありません'}
+          <div className="card" style={{padding:24,textAlign:'center',color:'#999',marginTop:8}}>
+            {searching || shopEff ? '該当する箱がありません' : seg === 'pending' ? '✓ 未着の箱はありません' : '箱がありません'}
           </div>
-        ) : shown.slice(0, limit).map(b => {
-          const pend = b.members.filter(i => !isItemArrived(i));
-          const ids = b.members.map(i => i.id);
-          return (
-            <div key={b.key} className="card" onClick={selMode ? () => toggleSel(b) : undefined} style={{padding:12,marginBottom:12,position:'relative',outline: selMode && sel.has(b.key) ? '3px solid #4338ca' : 'none',border: b.done ? '1.5px solid #bbf7d0' : '1.5px solid #c7d2fe',borderLeft: b.done ? '4px solid #16a34a' : '4px solid #4338ca'}}>
-              <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:2}}>
-                {selMode && (
-                  <span style={{width:36,height:36,borderRadius:10,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,fontWeight:800,color:'#fff',
-                    border: b.done ? '2px solid #d1d5db' : sel.has(b.key) ? 'none' : '2.5px solid #4338ca',background: b.done ? '#f3f4f6' : sel.has(b.key) ? '#4338ca' : '#fff'}}>{sel.has(b.key) ? '✓' : ''}</span>
-                )}
-                <div style={{flex:1,minWidth:0,fontWeight:800,fontSize:19,lineHeight:'24px',wordBreak:'break-all'}}>{b.store || '仕入れ先未設定'}</div>
-                <div style={{fontWeight:800,fontSize:13,color: b.done ? '#15803d' : '#4338ca',whiteSpace:'nowrap',paddingTop:3}}>
-                  {b.done ? '✓ 全部そろった' : `${b.arrived}/${b.members.length} 届いた`}
-                </div>
-              </div>
-              <div style={{fontSize:12,color:'#6b7280'}}>
-                {b.date ? b.date.replace(/-/g, '/') : '日付なし'}　{b.members.length}点　合計 ¥{b.total.toLocaleString()}
-              </div>
-              {(b.aids.length > 0 || b.oids.length > 0) && (
-                <div style={{fontSize:11,color:'#9ca3af',marginBottom:6,wordBreak:'break-all'}}>
-                  {b.aids.slice(0, 3).join('　')}{b.aids.length > 3 ? ` 他${b.aids.length - 3}` : ''}{b.oids.length > 0 ? `　注文${b.oids.slice(0, 2).join('・')}` : ''}
-                </div>
-              )}
-              <div style={{height:6,borderRadius:99,background:'#e5e7eb',overflow:'hidden',margin:'6px 0 8px'}}>
-                <div style={{height:'100%',width:(b.arrived / b.members.length * 100) + '%',background: b.done ? '#16a34a' : '#6366f1'}}/>
-              </div>
-              <div style={selMode ? {pointerEvents:'none',opacity:0.85} : undefined}>
-              {b.members.map(i => {
-                const auto = !i.arrivedAt && i.status && i.status !== 'unlisted';
-                const ok = isItemArrived(i);
-                return (
-                  <div key={i.id} style={{display:'flex',alignItems:'center',gap:10,padding:6,marginBottom:6,borderRadius:10,
-                    border: ok ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',background: ok ? '#f0fdf4' : '#fff'}}>
-                    <button onClick={() => setSheet({ ids, pos: ids.indexOf(i.id) })} aria-label="採寸する"
-                      style={{position:'relative',padding:0,border:'none',background:'none',cursor:'pointer',flexShrink:0,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                      <ItemThumbnail thumbId={i.photos?.[0]?.thumbId} thumbDataUrl={i.photos?.[0]?.thumbDataUrl} size={84} fallback="📦" />
-                      <span style={{position:'absolute',right:3,bottom:3,background:'rgba(0,0,0,0.62)',color:'#fff',fontSize:10,fontWeight:700,borderRadius:6,padding:'1px 5px'}}>📏採寸{measureLinesOf(i).length ? '✓' : ''}</span>
-                    </button>
-                    <button disabled={auto} onClick={() => setItemsArrived([i.id], !i.arrivedAt)}
-                      style={{flex:1,minWidth:0,minHeight:84,display:'flex',alignItems:'center',gap:8,padding:0,border:'none',background:'none',textAlign:'left',cursor: auto ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                      <span style={{flex:1,minWidth:0}}>
-                        <span style={{fontSize:14,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical'}}>
-                          {i.bundleLabel ? <span style={{color:'#4338ca'}}>{i.bundleLabel} </span> : null}{i.productName || '(名称なし)'}
-                        </span>
-                        <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:2}}>
-                          {i.mgmtNo ? i.mgmtNo + '　' : ''}¥{(Number(i.purchasePrice) || 0).toLocaleString()}{auto ? (i.status === 'sold' ? '　売却済' : '　出品中') : i.arrivedAt ? '　届いた' : ''}
-                        </span>
-                      </span>
-                      <span style={{width:32,height:32,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:800,
-                        border: ok ? 'none' : '2px solid #9ca3af',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
-                    </button>
-                  </div>
-                );
-              })}
-              </div>
-              {!selMode && !b.done && pend.length > 1 && (
-                <button onClick={() => setItemsArrived(pend.map(i => i.id), true)}
-                  style={{width:'100%',minHeight:44,marginTop:2,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
-                  残り{pend.length}点を全部「届いた」にする
-                </button>
-              )}
-            </div>
-          );
-        })}
+        ) : rows}
         {shown.length > limit && (
-          <button onClick={() => setLimit(l => l + 20)}
-            style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'white',color:'#374151',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:8}}>もっと見る（あと{shown.length - limit}箱）</button>
+          <button onClick={() => setLimit(l => l + ARRIVAL_PAGE)}
+            style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'white',color:'#374151',fontSize:13,fontWeight:700,cursor:'pointer',margin:'4px 0 8px'}}>もっと見る（あと{shown.length - limit}箱）</button>
         )}
         {hiddenOld > 0 && (
-          <button onClick={() => { setShowOld(true); setLimit(20); }}
+          <button onClick={() => { setShowOld(true); setLimit(ARRIVAL_PAGE); }}
             style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',fontSize:13,fontWeight:700,cursor:'pointer'}}>もっと前も表示（{ARRIVAL_RECENT_DAYS}日より前の未着 {hiddenOld}箱）</button>
         )}
         {showOld && seg !== 'done' && !searching && (
