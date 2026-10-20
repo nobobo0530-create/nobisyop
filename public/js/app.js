@@ -975,33 +975,50 @@ const syncToSupabase = async (oldData, newData, opts) => {
       return;
     }
 
+    // ★ 在庫の差分は約2MBごとに分けて送る（入荷の一括「届いた」などで数百点が
+    //   一度に変わると、写真入りで Vercel の上限 4.5MB を超えて 413 になるため）
+    const invChunks = [];
+    let cur = [], curSize = 0;
+    for (const row of invUpsert) {
+      const sz = JSON.stringify(row).length;
+      if (cur.length && curSize + sz > 2_000_000) { invChunks.push(cur); cur = []; curSize = 0; }
+      cur.push(row); curSize += sz;
+    }
+    if (cur.length || !invChunks.length) invChunks.push(cur);
+
     // ★ リトライ付きPOST（最大3回・指数バックオフ）
-    let lastError = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const resp = await fetch(`${_API_BASE}/api/data`, {
-          method: 'POST',
-          headers: authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            invUpsert, invDelete, salesUpsert, salesDelete,
-            settings: settingsChanged ? newData.settings : undefined,
-            receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
-            storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
-          }),
-          cache: 'no-store',
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        _onSyncStatus?.({ status: 'ok', time: Date.now() });
+    for (let ci = 0; ci < invChunks.length; ci++) {
+      const first = ci === 0;
+      let lastError = null, sent = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const resp = await fetch(`${_API_BASE}/api/data`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(first ? {
+              invUpsert: invChunks[0], invDelete, salesUpsert, salesDelete,
+              settings: settingsChanged ? newData.settings : undefined,
+              receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
+              storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
+            } : { invUpsert: invChunks[ci] }),
+            cache: 'no-store',
+          });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          sent = true;
+          break;
+        } catch(e) {
+          lastError = e;
+          console.warn(`[Cloud] sync attempt ${attempt + 1} failed:`, e.message);
+          if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+        }
+      }
+      if (!sent) {
+        console.error('[Cloud] sync failed after 3 attempts:', lastError?.message);
+        _onSyncStatus?.({ status: 'error', error: lastError?.message || '通信エラー' });
         return;
-      } catch(e) {
-        lastError = e;
-        console.warn(`[Cloud] sync attempt ${attempt + 1} failed:`, e.message);
-        if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
       }
     }
-
-    console.error('[Cloud] sync failed after 3 attempts:', lastError?.message);
-    _onSyncStatus?.({ status: 'error', error: lastError?.message || '通信エラー' });
+    _onSyncStatus?.({ status: 'ok', time: Date.now() });
   } catch(e) {
     console.error('[Cloud] sync error:', e.message);
     _onSyncStatus?.({ status: 'error', error: e.message });
