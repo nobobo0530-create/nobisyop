@@ -8219,7 +8219,12 @@ const InventoryTab = () => {
                                     {[...(x.category && !CATS.includes(x.category) ? [x.category] : []), ...(x.category ? [] : ['']), ...CATS].map(c => <option key={c} value={c}>{c || '（未選択）'}</option>)}
                                   </select>
                                 </label>
-                                <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6,flex:1}}>仕入れ値（円）<input style={fld} type="number" inputMode="numeric" value={x.price} onChange={e => setE(i, 'price', e.target.value)} /></label>
+                                <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6,flex:1}}>仕入れ値（円）<input style={fld} type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" value={x.price} onFocus={e => { try { e.target.select(); } catch (_e) {} }} onChange={e => setE(i, 'price', e.target.value.replace(/[^0-9]/g, '').replace(/^0+(?=\d)/, ''))} /></label>
+                              </div>
+                              <div style={{display:'flex',gap:6,marginTop:6,alignItems:'center',flexWrap:'wrap'}}>
+                                <button style={miniBtn('#e0e7ff','#3730a3')} disabled={!(Number(x.tagPrice) > 0)} onClick={() => setE(i, 'price', String(Math.round(Number(x.tagPrice)) || 0))}>値札どおり{Number(x.tagPrice) > 0 ? ' ' + yen(x.tagPrice) : ''}</button>
+                                <button style={miniBtn('#fef3c7','#92400e')} disabled={!(Number(x.tagPrice) > 0)} onClick={() => setE(i, 'price', String(Math.round(Number(x.tagPrice) / 2)))}>半額{Number(x.tagPrice) > 0 ? ' ' + yen(Math.round(Number(x.tagPrice) / 2)) : ''}</button>
+                                {diff !== 0 && eItems.length > 1 && <button style={miniBtn('#dcfce7','#166534')} disabled={(Math.round(Number(x.price)) || 0) + diff <= 0} onClick={() => setE(i, 'price', String((Math.round(Number(x.price)) || 0) + diff))}>差額をここに寄せる</button>}
                               </div>
                             </div>
                           ))}
@@ -8227,7 +8232,8 @@ const InventoryTab = () => {
                             <button style={miniBtn('#e0e7ff','#3730a3')} onClick={() => setPropEdit({ ...propEdit, pick: { kind: 'add' } })}>＋ 追加</button>
                             {propEdit.pick && propEdit.pick.kind === 'add' && picker((ai) => addItem(ai), '追加する写真を選んでください')}
                           </div>
-                          <div style={{fontSize:13,fontWeight:800,color: eSum === pay ? '#166534' : '#b45309'}}>合計 {yen(eSum)} ＝ 支払い {yen(pay)} {eSum === pay ? '✓' : `⚠️ ${diff > 0 ? `あと ${yen(diff)} 足りません` : `${yen(-diff)} 多すぎます`}`}</div>
+                          <div style={{fontSize:13,fontWeight:800,color: eSum === pay ? '#166534' : '#b45309'}}>合計 {yen(eSum)} ＝ 支払い {yen(pay)} {eSum === pay ? '✓' : `⚠️ ${diff > 0 ? `あと ${yen(diff)}` : `${yen(-diff)} 多い`}`}</div>
+                          {!eOk && <div style={{fontSize:12,color:'#b45309'}}>{eSum !== pay ? `合計が支払い（${yen(pay)}）と同じになると登録できます` : '商品名が空、または仕入れ値が0円の行があります'}</div>}
                           <div style={{display:'flex',gap:8}}>
                             <button style={btn('#16a34a','white',!eOk || proposalBusy)} disabled={!eOk || proposalBusy}
                               onClick={() => approveProposal(pr, eItems.map(x => ({ name: x.name.trim(), brand: x.brand.trim(), category: x.category, allocatedPrice: Math.round(Number(x.price)) || 0, tagPrice: x.tagPrice || 0, photo: x.photo || null, nameUncertain: false })), true)}>この内容で登録</button>
