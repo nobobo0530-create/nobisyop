@@ -6042,9 +6042,12 @@ const buildArrivalBoxes = (inventory) => {
     const oids = [...new Set(members.map(i => (String(i.notes || '').match(/注文\s*([0-9A-Za-z_-]{6,})/) || [])[1]).filter(Boolean))];
     const arrived = members.filter(isItemArrived).length;
     const hay = searchFold([store, normShop(store), aids.join(' '), oids.join(' '), ...members.map(i => [i.productName, i.brand, i.mgmtNo, i.bundleLabel].join(' '))].join(' ')).replace(/\s/g, '');
-    out.push({ key, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay });
+    const created = members.reduce((m, i) => { const c = String(i.createdAt || ''); return c > m ? c : m; }, '');
+    const idn = members.reduce((m, i) => { const n = Number(i.id); return n > m ? n : m; }, 0);
+    out.push({ key, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay, created, idn });
   });
-  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  // 新しい順：購入日の新しい順 → 同日は登録(createdAt)の新しい順 → id数値の大きい順
+  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) || (a.created < b.created ? 1 : a.created > b.created ? -1 : 0) || (b.idn - a.idn));
   return out;
 };
 // App と入荷タブで同じ結果を共有（在庫配列が変わったときだけ再計算。フック不要・保存なし）
@@ -6118,6 +6121,10 @@ const ArrivalTab = () => {
   const [showOld, setShowOld] = React.useState(false);
   const [limit, setLimit] = React.useState(20);
   const [sheet, setSheet] = React.useState(null); // { ids:[...], pos }
+  const toast = useToast();
+  const [selMode, setSelMode] = React.useState(false);
+  const [sel, setSel] = React.useState(() => new Set()); // 選んだ箱の key
+  const [beforeDate, setBeforeDate] = React.useState('');
   const boxes = getArrivalBoxes(data.inventory);
   const cutoff = React.useMemo(arrivalCutoff, []);
   const toks = React.useMemo(() => searchFold(search).split(' ').filter(Boolean).map(t => [t.replace(/\s/g, ''), normShop(t)]), [search]);
@@ -6147,6 +6154,39 @@ const ArrivalTab = () => {
       return i.arrivedAt ? { ...i, arrivedAt: null } : i;
     }) });
   };
+  // 選択モード
+  const selectable = shown.filter(b => !b.done);
+  const exitSel = () => { setSelMode(false); setSel(new Set()); setBeforeDate(''); };
+  const toggleSel = (b) => { if (b.done) return; setSel(prev => { const n = new Set(prev); if (n.has(b.key)) n.delete(b.key); else n.add(b.key); return n; }); };
+  const selBoxes = boxes.filter(b => sel.has(b.key) && !b.done);
+  const selItems = selBoxes.reduce((a, b) => a.concat(b.members.filter(i => !isItemArrived(i))), []);
+  const selectBefore = (d) => {
+    setBeforeDate(d);
+    if (!d) return;
+    setSel(new Set(selectable.filter(b => b.date && b.date < d).map(b => b.key)));
+  };
+  // 一括で届いた：1回の setData（編集した行すべてに updatedAt が刻まれ、同期も1回）
+  const bulkArrive = () => {
+    if (selItems.length === 0) return;
+    if (!window.confirm(`${selBoxes.length}箱（${selItems.length}点）を「届いた」にします。よろしいですか？`)) return;
+    const cur = dataRefArr.current;
+    const idSet = new Set(selItems.map(i => i.id));
+    const now = new Date().toISOString();
+    const changed = [];
+    const next = cur.inventory.map(i => {
+      if (!idSet.has(i.id) || isItemArrived(i)) return i;
+      changed.push(i.id);
+      return { ...i, arrivedAt: now };
+    });
+    setData({ ...cur, inventory: next });
+    exitSel();
+    const undoSet = new Set(changed);
+    toast(`✅ ${changed.length}点を届いたにしました`, { duration: 8000, action: { label: '元に戻す', onClick: () => {
+      const c2 = dataRefArr.current;
+      setData({ ...c2, inventory: c2.inventory.map(i => (undoSet.has(i.id) && i.arrivedAt === now) ? { ...i, arrivedAt: null } : i) });
+      toast(`↩️ ${undoSet.size}点を未着に戻しました`);
+    } } });
+  };
   const saveMeasure = (item, m, goNext) => {
     const cur = dataRefArr.current;
     const now = new Date().toISOString();
@@ -6162,11 +6202,21 @@ const ArrivalTab = () => {
 
   return (
     <div>
-      <div style={{padding:'12px 16px 0'}}><div style={{fontSize:28,fontWeight:800}}>入荷</div></div>
+      <div style={{padding:'12px 16px 0',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div style={{fontSize:28,fontWeight:800}}>入荷</div>
+        <button onClick={() => selMode ? exitSel() : setSelMode(true)}
+          style={{minHeight:40,padding:'0 16px',borderRadius:99,border:'1.5px solid #4338ca',background: selMode ? '#4338ca' : '#fff',color: selMode ? '#fff' : '#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>{selMode ? '終了' : '選択'}</button>
+      </div>
       <IosSearch value={search} onChange={v => { setSearch(v); setLimit(20); }} placeholder="箱のラベルの店名・商品名・オークションIDで検索" />
       <IosSegmented value={seg} onChange={v => { setSeg(v); setLimit(20); }}
         options={[{ value: 'pending', label: '未着', count: counts.p }, { value: 'done', label: '届いた', count: counts.d }, { value: 'all', label: 'すべて', count: counts.a }]} />
-      <div style={{padding:'12px 16px 24px'}}>
+      <div style={{padding:'12px 16px', paddingBottom: selMode ? 150 : 24}}>
+        {selMode && (
+          <div className="card" style={{padding:10,marginBottom:12,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <span style={{fontSize:13,fontWeight:700,color:'#374151'}}>この日より前を全部選択</span>
+            <input type="date" value={beforeDate} onChange={e => selectBefore(e.target.value)} className="input-field" style={{flex:1,minWidth:140,minHeight:40}}/>
+          </div>
+        )}
         {shown.length === 0 ? (
           <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
             {searching ? '該当する箱がありません' : seg === 'pending' ? '✓ 未着の箱はありません' : '箱がありません'}
@@ -6175,8 +6225,12 @@ const ArrivalTab = () => {
           const pend = b.members.filter(i => !isItemArrived(i));
           const ids = b.members.map(i => i.id);
           return (
-            <div key={b.key} className="card" style={{padding:12,marginBottom:12,border: b.done ? '1.5px solid #bbf7d0' : '1.5px solid #c7d2fe',borderLeft: b.done ? '4px solid #16a34a' : '4px solid #4338ca'}}>
+            <div key={b.key} className="card" onClick={selMode ? () => toggleSel(b) : undefined} style={{padding:12,marginBottom:12,position:'relative',outline: selMode && sel.has(b.key) ? '3px solid #4338ca' : 'none',border: b.done ? '1.5px solid #bbf7d0' : '1.5px solid #c7d2fe',borderLeft: b.done ? '4px solid #16a34a' : '4px solid #4338ca'}}>
               <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:2}}>
+                {selMode && (
+                  <span style={{width:36,height:36,borderRadius:10,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,fontWeight:800,color:'#fff',
+                    border: b.done ? '2px solid #d1d5db' : sel.has(b.key) ? 'none' : '2.5px solid #4338ca',background: b.done ? '#f3f4f6' : sel.has(b.key) ? '#4338ca' : '#fff'}}>{sel.has(b.key) ? '✓' : ''}</span>
+                )}
                 <div style={{flex:1,minWidth:0,fontWeight:800,fontSize:19,lineHeight:'24px',wordBreak:'break-all'}}>{b.store || '仕入れ先未設定'}</div>
                 <div style={{fontWeight:800,fontSize:13,color: b.done ? '#15803d' : '#4338ca',whiteSpace:'nowrap',paddingTop:3}}>
                   {b.done ? '✓ 全部そろった' : `${b.arrived}/${b.members.length} 届いた`}
@@ -6193,6 +6247,7 @@ const ArrivalTab = () => {
               <div style={{height:6,borderRadius:99,background:'#e5e7eb',overflow:'hidden',margin:'6px 0 8px'}}>
                 <div style={{height:'100%',width:(b.arrived / b.members.length * 100) + '%',background: b.done ? '#16a34a' : '#6366f1'}}/>
               </div>
+              <div style={selMode ? {pointerEvents:'none',opacity:0.85} : undefined}>
               {b.members.map(i => {
                 const auto = !i.arrivedAt && i.status && i.status !== 'unlisted';
                 const ok = isItemArrived(i);
@@ -6220,7 +6275,8 @@ const ArrivalTab = () => {
                   </div>
                 );
               })}
-              {!b.done && pend.length > 1 && (
+              </div>
+              {!selMode && !b.done && pend.length > 1 && (
                 <button onClick={() => setItemsArrived(pend.map(i => i.id), true)}
                   style={{width:'100%',minHeight:44,marginTop:2,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
                   残り{pend.length}点を全部「届いた」にする
@@ -6242,6 +6298,18 @@ const ArrivalTab = () => {
             style={{width:'100%',minHeight:40,border:'none',background:'none',color:'#6b7280',fontSize:13,cursor:'pointer'}}>直近{ARRIVAL_RECENT_DAYS}日だけに戻す</button>
         )}
       </div>
+      {selMode && (
+        <div style={{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:600,zIndex:150,background:'#fff',borderTop:'1px solid #e5e7eb',boxShadow:'0 -2px 12px rgba(0,0,0,0.12)',padding:'10px 12px calc(10px + env(safe-area-inset-bottom))',boxSizing:'border-box'}}>
+          <div style={{display:'flex',gap:8,marginBottom:8}}>
+            <button onClick={() => setSel(new Set(selectable.map(b => b.key)))}
+              style={{flex:1,minHeight:44,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:13,cursor:'pointer'}}>全選択（{selectable.length}箱）</button>
+            <button onClick={() => { setSel(new Set()); setBeforeDate(''); }}
+              style={{flex:1,minHeight:44,borderRadius:10,border:'1.5px solid #9ca3af',background:'#fff',color:'#6b7280',fontWeight:800,fontSize:13,cursor:'pointer'}}>選択解除</button>
+          </div>
+          <button disabled={selItems.length === 0} onClick={bulkArrive}
+            style={{width:'100%',minHeight:50,borderRadius:12,border:'none',background: selItems.length ? '#16a34a' : '#d1d5db',color:'#fff',fontWeight:800,fontSize:16,cursor: selItems.length ? 'pointer' : 'default'}}>{selBoxes.length}箱（{selItems.length}点）を届いたにする</button>
+        </div>
+      )}
       {sheetItem && <MeasureSheet key={sheetItem.id} item={sheetItem} boxItems={sheetBoxItems} position={sheet.pos} onClose={() => setSheet(null)} onSave={saveMeasure} />}
     </div>
   );
