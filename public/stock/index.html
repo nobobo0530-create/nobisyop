@@ -1,0 +1,1400 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="在庫マップ" />
+  <meta name="theme-color" content="#6d28d9" />
+  <title>📦 在庫マップ</title>
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="icon" href="/favicon.ico" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', sans-serif;
+      background: #f5f3ff;
+      min-height: 100vh;
+      -webkit-tap-highlight-color: transparent;
+      font-size: 16px;
+    }
+    #root { max-width: 480px; margin: 0 auto; }
+
+    /* ========== アニメーション ========== */
+    @keyframes fadeSlide {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(16px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+    @keyframes sheetIn {
+      from { transform: translateY(100%); }
+      to   { transform: translateY(0); }
+    }
+    @keyframes completePop {
+      0%   { transform: scale(0.85); opacity: 0; }
+      60%  { transform: scale(1.04); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* ========== ヘッダー ========== */
+    .header {
+      background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 100%);
+      color: #fff;
+      padding: 20px 20px 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(109,40,217,0.35);
+    }
+    .header-title {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .header-sub {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 2px;
+    }
+
+    /* ========== タブバー ========== */
+    .tab-bar {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 480px;
+      background: #fff;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      z-index: 200;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
+    }
+    .tab-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 0 8px;
+      cursor: pointer;
+      color: #94a3b8;
+      font-size: 11px;
+      font-weight: 600;
+      gap: 3px;
+      border: none;
+      background: none;
+      transition: color 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 56px;
+    }
+    .tab-item.active { color: #7c3aed; }
+    .tab-icon { font-size: 22px; line-height: 1; }
+
+    /* ========== コンテンツエリア ========== */
+    .content {
+      padding: 16px 16px calc(72px + env(safe-area-inset-bottom, 0px)) 16px;
+      animation: fadeSlide 0.2s ease;
+    }
+
+    /* ========== 検索ボックス ========== */
+    .search-wrap {
+      position: relative;
+      margin-bottom: 12px;
+    }
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 18px;
+      pointer-events: none;
+    }
+    .search-input {
+      width: 100%;
+      padding: 14px 14px 14px 44px;
+      border-radius: 14px;
+      border: 2px solid #e2e8f0;
+      background: #fff;
+      font-size: 17px;
+      color: #1e293b;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-input:focus { border-color: #7c3aed; }
+    .search-input::placeholder { color: #94a3b8; }
+
+    /* ========== フィルタチップ ========== */
+    .filter-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+    .filter-row::-webkit-scrollbar { display: none; }
+    .filter-chip {
+      flex-shrink: 0;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 2px solid #e2e8f0;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      color: #64748b;
+      cursor: pointer;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      white-space: nowrap;
+    }
+    .filter-chip.active {
+      background: #7c3aed;
+      border-color: #7c3aed;
+      color: #fff;
+    }
+
+    /* ========== 在庫リスト ========== */
+    .inv-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .inv-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #fff;
+      border-radius: 14px;
+      padding: 12px 14px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 64px;
+    }
+    .inv-item:active { border-color: #7c3aed; box-shadow: 0 2px 8px rgba(124,58,237,0.15); }
+    .inv-thumb {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      object-fit: cover;
+      flex-shrink: 0;
+      background: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      overflow: hidden;
+    }
+    .inv-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: 10px;
+    }
+    .inv-info { flex: 1; min-width: 0; }
+    .inv-name {
+      font-size: 15px;
+      font-weight: 600;
+      color: #1e293b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .inv-brand {
+      font-size: 13px;
+      color: #64748b;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .inv-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+    .status-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+    }
+    .status-unlisted { background: #f1f5f9; color: #64748b; }
+    .status-listed   { background: #dbeafe; color: #1d4ed8; }
+    .status-sold     { background: #dcfce7; color: #166534; }
+
+    /* 番地チップ */
+    .box-chip {
+      font-size: 14px;
+      font-weight: 800;
+      padding: 5px 12px;
+      border-radius: 999px;
+      letter-spacing: 0.04em;
+    }
+    .box-chip.assigned  { background: #7c3aed; color: #fff; }
+    .box-chip.unassigned{ background: #e2e8f0; color: #94a3b8; }
+
+    /* ========== 0件 ========== */
+    .empty-msg {
+      text-align: center;
+      color: #94a3b8;
+      font-size: 16px;
+      padding: 48px 0;
+    }
+
+    /* ========== 箱タブ ========== */
+    .add-box-form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .add-box-input {
+      flex: 1;
+      padding: 13px 14px;
+      border-radius: 12px;
+      border: 2px solid #e2e8f0;
+      font-size: 16px;
+      color: #1e293b;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .add-box-input:focus { border-color: #7c3aed; }
+    .add-box-input::placeholder { color: #94a3b8; }
+    .add-box-btn {
+      padding: 13px 18px;
+      border-radius: 12px;
+      border: none;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: opacity 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .add-box-btn:active { opacity: 0.85; }
+
+    .box-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .box-card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 18px 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 80px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .box-card:active { border-color: #7c3aed; }
+    .box-card-name {
+      font-size: 20px;
+      font-weight: 800;
+      color: #4f46e5;
+      letter-spacing: 0.03em;
+      word-break: break-all;
+    }
+    .box-card-count {
+      font-size: 13px;
+      color: #94a3b8;
+      font-weight: 600;
+      margin-top: 6px;
+    }
+    .box-empty-hint {
+      text-align: center;
+      color: #94a3b8;
+      font-size: 15px;
+      padding: 40px 0 20px;
+      line-height: 1.7;
+    }
+
+    /* ========== 箱詳細ビュー ========== */
+    .back-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #7c3aed;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 16px;
+      -webkit-tap-highlight-color: transparent;
+      background: none;
+      border: none;
+      padding: 0;
+    }
+    .box-detail-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .box-detail-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: #4f46e5;
+    }
+    .box-detail-count {
+      font-size: 14px;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+    .box-actions {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .box-rename-btn, .box-delete-btn {
+      flex: 1;
+      padding: 11px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 2px solid;
+      transition: all 0.15s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .box-rename-btn {
+      border-color: #7c3aed;
+      color: #7c3aed;
+      background: #fff;
+    }
+    .box-rename-btn:active { background: #f5f3ff; }
+    .box-delete-btn {
+      border-color: #ef4444;
+      color: #ef4444;
+      background: #fff;
+    }
+    .box-delete-btn:active { background: #fef2f2; }
+
+    /* ========== 振り分けタブ ========== */
+    .progress-card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 18px 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      margin-bottom: 16px;
+    }
+    .progress-label {
+      font-size: 14px;
+      color: #64748b;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .progress-nums {
+      font-size: 24px;
+      font-weight: 800;
+      color: #4f46e5;
+      margin-bottom: 10px;
+    }
+    .progress-nums span {
+      font-size: 15px;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+    .progress-bar-bg {
+      background: #e2e8f0;
+      border-radius: 999px;
+      height: 10px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #7c3aed, #4f46e5);
+      transition: width 0.4s ease;
+    }
+
+    .assign-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .no-boxes-hint {
+      text-align: center;
+      background: #fff;
+      border-radius: 14px;
+      padding: 28px 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      color: #64748b;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    .all-done-banner {
+      text-align: center;
+      background: linear-gradient(135deg, #7c3aed, #4f46e5);
+      color: #fff;
+      border-radius: 16px;
+      padding: 28px 20px;
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.6;
+      animation: completePop 0.35s ease;
+      box-shadow: 0 4px 16px rgba(124,58,237,0.35);
+      margin-bottom: 20px;
+    }
+
+    /* ========== オーバーレイ / ボトムシート ========== */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 300;
+    }
+    .sheet {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 480px;
+      background: #fff;
+      border-radius: 20px 20px 0 0;
+      padding: 0 0 calc(24px + env(safe-area-inset-bottom, 0px)) 0;
+      z-index: 301;
+      animation: sheetIn 0.25s ease;
+      max-height: 75vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .sheet-handle {
+      width: 40px;
+      height: 4px;
+      background: #e2e8f0;
+      border-radius: 2px;
+      margin: 12px auto 0;
+      flex-shrink: 0;
+    }
+    .sheet-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: #1e293b;
+      padding: 14px 20px 10px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .sheet-body {
+      overflow-y: auto;
+      flex: 1;
+      padding: 12px 16px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sheet-box-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      padding: 15px 16px;
+      border-radius: 12px;
+      border: 2px solid #e2e8f0;
+      background: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      color: #4f46e5;
+      cursor: pointer;
+      margin-bottom: 8px;
+      text-align: left;
+      transition: border-color 0.15s, background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 52px;
+    }
+    .sheet-box-btn:active { background: #f5f3ff; border-color: #7c3aed; }
+    .sheet-box-count {
+      font-size: 13px;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+    .sheet-unassign-btn {
+      display: block;
+      width: 100%;
+      padding: 15px 16px;
+      border-radius: 12px;
+      border: 2px solid #e2e8f0;
+      background: #f8fafc;
+      font-size: 15px;
+      font-weight: 600;
+      color: #64748b;
+      cursor: pointer;
+      text-align: center;
+      margin-top: 4px;
+      transition: background 0.15s;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 52px;
+    }
+    .sheet-unassign-btn:active { background: #f1f5f9; }
+
+    /* ========== 確認モーダル（window.confirm代替）========== */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 400;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-box {
+      background: #fff;
+      border-radius: 18px;
+      padding: 24px 20px;
+      width: 100%;
+      max-width: 360px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+      animation: completePop 0.2s ease;
+    }
+    .modal-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 10px;
+    }
+    .modal-body {
+      font-size: 15px;
+      color: #64748b;
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+    .modal-btns {
+      display: flex;
+      gap: 10px;
+    }
+    .modal-cancel {
+      flex: 1;
+      padding: 13px;
+      border-radius: 12px;
+      border: 2px solid #e2e8f0;
+      background: #fff;
+      color: #64748b;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .modal-cancel:active { background: #f1f5f9; }
+    .modal-confirm-del {
+      flex: 1;
+      padding: 13px;
+      border-radius: 12px;
+      border: none;
+      background: #ef4444;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .modal-confirm-del:active { opacity: 0.85; }
+
+    /* ========== 名前変更インライン ========== */
+    .rename-form {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .rename-input {
+      flex: 1;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 2px solid #7c3aed;
+      font-size: 16px;
+      color: #1e293b;
+      outline: none;
+    }
+    .rename-ok-btn {
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: none;
+      background: #7c3aed;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .rename-cancel-btn {
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: 2px solid #e2e8f0;
+      background: #fff;
+      color: #64748b;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* ========== エラー / ローディング ========== */
+    .status-screen {
+      padding: 60px 20px;
+      text-align: center;
+      color: #64748b;
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    .status-screen .status-icon {
+      font-size: 40px;
+      margin-bottom: 16px;
+    }
+
+    /* ========== 注意書き ========== */
+    .footer-note {
+      margin-top: 24px;
+      padding: 14px 16px;
+      background: #fff;
+      border-radius: 12px;
+      border: 1.5px solid #e2e8f0;
+      font-size: 12px;
+      color: #94a3b8;
+      line-height: 1.7;
+    }
+
+    /* ========== トースト ========== */
+    .toast {
+      position: fixed;
+      bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e293b;
+      color: #fff;
+      padding: 12px 22px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      z-index: 9999;
+      animation: toastIn 0.2s ease;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      pointer-events: none;
+    }
+    .toast.hiding { animation: toastOut 0.3s ease forwards; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
+  <script src="/vendor/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    /* ==================== 定数 ==================== */
+    const LS_BOXES    = 'nobushop_stock_boxes';
+    const LS_MAP      = 'nobushop_stock_map';
+    const LS_CACHE    = 'nobushop_stock_invcache';
+
+    const STATUS_LABEL = { unlisted: '未出品', listed: '出品中', sold: '売却済' };
+    const STATUS_CLASS = { unlisted: 'status-unlisted', listed: 'status-listed', sold: 'status-sold' };
+
+    /* ==================== ユーティリティ ==================== */
+
+    // 自然順ソート（A-2 < A-10）
+    function naturalSort(a, b) {
+      return a.name.localeCompare(b.name, 'ja', { numeric: true, sensitivity: 'base' });
+    }
+
+    function readLS(key, fallback) {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+      catch { return fallback; }
+    }
+    function writeLS(key, val) {
+      try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+    }
+
+    function genId() {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    }
+
+    /* ==================== データフック ==================== */
+
+    function useInventory() {
+      const [inventory, setInventory] = useState(null);   // null=loading
+      const [error, setError]         = useState(false);
+
+      useEffect(() => {
+        let cancelled = false;
+        fetch('/api/data')
+          .then(r => r.ok ? r.json() : Promise.reject(r.status))
+          .then(data => {
+            if (cancelled) return;
+            const inv = Array.isArray(data.inventory) ? data.inventory : [];
+            setInventory(inv);
+
+            // キャッシュ保存（thumbDataUrl のみ残す）
+            const slim = inv.map(item => ({
+              ...item,
+              photos: (item.photos || []).map(p => ({ thumbDataUrl: p.thumbDataUrl })),
+            }));
+            try {
+              writeLS(LS_CACHE, { fetchedAt: new Date().toISOString(), inventory: slim });
+            } catch {
+              // 容量超過時は photos を全部落として再試行
+              const noPhotos = inv.map(item => ({ ...item, photos: [] }));
+              try { writeLS(LS_CACHE, { fetchedAt: new Date().toISOString(), inventory: noPhotos }); } catch {}
+            }
+          })
+          .catch(() => {
+            if (cancelled) return;
+            // キャッシュから復元
+            const cached = readLS(LS_CACHE, null);
+            if (cached && Array.isArray(cached.inventory)) {
+              setInventory(cached.inventory);
+            } else {
+              setInventory(null);
+              setError(true);
+            }
+          });
+        return () => { cancelled = true; };
+      }, []);
+
+      return { inventory, error };
+    }
+
+    function useBoxes() {
+      const [boxes, setBoxes] = useState(() => readLS(LS_BOXES, []));
+      const [map, setMap]     = useState(() => readLS(LS_MAP, {}));
+
+      const saveBoxes = useCallback((next) => {
+        setBoxes(next);
+        writeLS(LS_BOXES, next);
+      }, []);
+
+      const saveMap = useCallback((next) => {
+        setMap(next);
+        writeLS(LS_MAP, next);
+      }, []);
+
+      const addBox = useCallback((name) => {
+        const id = genId();
+        const next = [...boxes, { id, name }].sort(naturalSort);
+        saveBoxes(next);
+        return id;
+      }, [boxes, saveBoxes]);
+
+      const renameBox = useCallback((id, newName) => {
+        const next = boxes.map(b => b.id === id ? { ...b, name: newName } : b).sort(naturalSort);
+        saveBoxes(next);
+      }, [boxes, saveBoxes]);
+
+      const deleteBox = useCallback((id) => {
+        saveBoxes(boxes.filter(b => b.id !== id));
+        // その箱に入っていた商品を未割当へ
+        const nextMap = { ...map };
+        Object.keys(nextMap).forEach(k => { if (nextMap[k] === id) delete nextMap[k]; });
+        saveMap(nextMap);
+      }, [boxes, map, saveBoxes, saveMap]);
+
+      const assign = useCallback((invId, boxId) => {
+        const next = { ...map };
+        if (boxId === null) { delete next[invId]; }
+        else                { next[invId] = boxId; }
+        saveMap(next);
+      }, [map, saveMap]);
+
+      return { boxes, map, addBox, renameBox, deleteBox, assign };
+    }
+
+    /* ==================== トースト ==================== */
+
+    function Toast({ msg, onDone }) {
+      const [hiding, setHiding] = useState(false);
+      useEffect(() => {
+        const t1 = setTimeout(() => setHiding(true), 1800);
+        const t2 = setTimeout(() => onDone(), 2100);
+        return () => { clearTimeout(t1); clearTimeout(t2); };
+      }, []);
+      return <div className={`toast${hiding ? ' hiding' : ''}`}>{msg}</div>;
+    }
+
+    /* ==================== 箱選択シート ==================== */
+
+    function BoxSelectSheet({ item, boxes, map, onAssign, onClose }) {
+      const currentBoxId = map[item.id];
+      return (
+        <>
+          <div className="overlay" onClick={onClose} />
+          <div className="sheet">
+            <div className="sheet-handle" />
+            <div className="sheet-title">
+              📦 箱を選択
+              <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 500, marginTop: 3 }}>
+                {item.productName || '（名称なし）'}
+              </div>
+            </div>
+            <div className="sheet-body">
+              {boxes.length === 0 && (
+                <div className="empty-msg" style={{ padding: '24px 0' }}>
+                  箱タブで箱を登録してください
+                </div>
+              )}
+              {boxes.map(box => {
+                const cnt = Object.values(map).filter(v => v === box.id).length;
+                const isCurrent = box.id === currentBoxId;
+                return (
+                  <button
+                    key={box.id}
+                    className="sheet-box-btn"
+                    style={isCurrent ? { borderColor: '#7c3aed', background: '#f5f3ff' } : {}}
+                    onClick={() => { onAssign(item.id, box.id); onClose(); }}
+                  >
+                    <span>{isCurrent ? '✓ ' : ''}{box.name}</span>
+                    <span className="sheet-box-count">{cnt}個</span>
+                  </button>
+                );
+              })}
+              {currentBoxId && (
+                <button
+                  className="sheet-unassign-btn"
+                  onClick={() => { onAssign(item.id, null); onClose(); }}
+                >
+                  未割当にする
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    /* ==================== 確認モーダル ==================== */
+
+    function ConfirmModal({ title, body, confirmLabel, onConfirm, onCancel }) {
+      return (
+        <div className="modal-overlay">
+          <div className="modal-box">
+            <div className="modal-title">{title}</div>
+            <div className="modal-body">{body}</div>
+            <div className="modal-btns">
+              <button className="modal-cancel" onClick={onCancel}>キャンセル</button>
+              <button className="modal-confirm-del" onClick={onConfirm}>{confirmLabel || '削除'}</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ==================== サムネコンポーネント ==================== */
+
+    function Thumb({ item }) {
+      const thumb = item.photos && item.photos[0] && item.photos[0].thumbDataUrl;
+      if (thumb) {
+        return (
+          <div className="inv-thumb">
+            <img src={thumb} alt="" />
+          </div>
+        );
+      }
+      return <div className="inv-thumb">📦</div>;
+    }
+
+    /* ==================== 在庫アイテム行 ==================== */
+
+    function InvRow({ item, boxes, map, onAssign, onTap }) {
+      const boxId   = map[item.id];
+      const validBoxIds = new Set(boxes.map(b => b.id));
+      const box     = boxId && validBoxIds.has(boxId) ? boxes.find(b => b.id === boxId) : null;
+
+      return (
+        <div className="inv-item" onClick={() => onTap(item)}>
+          <Thumb item={item} />
+          <div className="inv-info">
+            <div className="inv-name">{item.productName || '（名称なし）'}</div>
+            <div className="inv-brand">{item.brand || '—'}</div>
+          </div>
+          <div className="inv-right">
+            <span className={`status-badge ${STATUS_CLASS[item.status] || 'status-unlisted'}`}>
+              {STATUS_LABEL[item.status] || item.status}
+            </span>
+            <span className={`box-chip ${box ? 'assigned' : 'unassigned'}`}>
+              {box ? box.name : '未割当'}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    /* ==================== さがすタブ ==================== */
+
+    const FILTERS = [
+      { id: 'all',      label: 'すべて' },
+      { id: 'sold',     label: '売却済' },
+      { id: 'listed',   label: '出品中' },
+      { id: 'unlisted', label: '未出品' },
+    ];
+
+    function SearchTab({ inventory, boxes, map, onAssign, showToast }) {
+      const [query,  setQuery]  = useState('');
+      const [filter, setFilter] = useState('all');
+      const [sheet,  setSheet]  = useState(null);  // item or null
+
+      const results = useMemo(() => {
+        if (!inventory) return [];
+        const q = query.trim().toLowerCase();
+        return inventory.filter(item => {
+          if (filter !== 'all' && item.status !== filter) return false;
+          if (!q) return true;
+          return (
+            (item.productName || '').toLowerCase().includes(q) ||
+            (item.brand || '').toLowerCase().includes(q)
+          );
+        });
+      }, [inventory, query, filter]);
+
+      const handleAssign = (invId, boxId) => {
+        onAssign(invId, boxId);
+        const box = boxes.find(b => b.id === boxId);
+        showToast(box ? `📦 ${box.name} に割り当てました` : '未割当にしました');
+      };
+
+      return (
+        <div className="content">
+          <div className="search-wrap">
+            <span className="search-icon">🔍</span>
+            <input
+              className="search-input"
+              type="search"
+              placeholder="商品名・ブランドで検索"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+
+          <div className="filter-row">
+            {FILTERS.map(f => (
+              <button
+                key={f.id}
+                className={`filter-chip${filter === f.id ? ' active' : ''}`}
+                onClick={() => setFilter(f.id)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {results.length === 0 ? (
+            <div className="empty-msg">
+              {inventory === null ? '読み込み中…' : '見つかりませんでした'}
+            </div>
+          ) : (
+            <div className="inv-list">
+              {results.map(item => (
+                <InvRow
+                  key={item.id}
+                  item={item}
+                  boxes={boxes}
+                  map={map}
+                  onAssign={onAssign}
+                  onTap={setSheet}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="footer-note">
+            在庫データは売上管理アプリから読み込み（このアプリからは変更されません）。箱の割り当てはこの端末に保存されます。
+          </div>
+
+          {sheet && (
+            <BoxSelectSheet
+              item={sheet}
+              boxes={boxes}
+              map={map}
+              onAssign={handleAssign}
+              onClose={() => setSheet(null)}
+            />
+          )}
+        </div>
+      );
+    }
+
+    /* ==================== 箱タブ ==================== */
+
+    function BoxTab({ boxes, map, inventory, onAddBox, onRenameBox, onDeleteBox, onAssign, showToast }) {
+      const [inputName, setInputName] = useState('');
+      const [detailBox, setDetailBox] = useState(null);  // box object or null
+      const [renaming,  setRenaming]  = useState(false);
+      const [renameVal, setRenameVal] = useState('');
+      const [confirmDelete, setConfirmDelete] = useState(false);
+      const [sheet, setSheet] = useState(null);
+      const inputRef = useRef(null);
+
+      const handleAdd = () => {
+        const name = inputName.trim();
+        if (!name) return;
+        onAddBox(name);
+        setInputName('');
+        showToast(`📦 「${name}」を追加しました`);
+      };
+
+      const boxCount = (boxId) => Object.values(map).filter(v => v === boxId).length;
+      const validBoxIds = new Set(boxes.map(b => b.id));
+
+      const boxItems = (box) => {
+        if (!inventory) return [];
+        return inventory.filter(item => map[item.id] === box.id);
+      };
+
+      const handleRenameOk = () => {
+        const name = renameVal.trim();
+        if (!name) return;
+        onRenameBox(detailBox.id, name);
+        setDetailBox(prev => ({ ...prev, name }));
+        setRenaming(false);
+        showToast('名前を変更しました');
+      };
+
+      const handleDeleteConfirm = () => {
+        const name = detailBox.name;
+        onDeleteBox(detailBox.id);
+        setDetailBox(null);
+        setConfirmDelete(false);
+        showToast(`「${name}」を削除しました`);
+      };
+
+      // 詳細ビュー
+      if (detailBox) {
+        // 最新の箱データを参照
+        const currentBox = boxes.find(b => b.id === detailBox.id) || detailBox;
+        const items = boxItems(currentBox);
+
+        return (
+          <div className="content">
+            <button className="back-btn" onClick={() => { setDetailBox(null); setRenaming(false); }}>
+              ← 箱一覧に戻る
+            </button>
+
+            {renaming ? (
+              <div className="rename-form">
+                <input
+                  className="rename-input"
+                  value={renameVal}
+                  onChange={e => setRenameVal(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleRenameOk(); }}
+                  autoFocus
+                />
+                <button className="rename-ok-btn" onClick={handleRenameOk}>OK</button>
+                <button className="rename-cancel-btn" onClick={() => setRenaming(false)}>キャンセル</button>
+              </div>
+            ) : (
+              <div className="box-detail-header">
+                <div>
+                  <div className="box-detail-title">{currentBox.name}</div>
+                  <div className="box-detail-count">{items.length}個の商品</div>
+                </div>
+              </div>
+            )}
+
+            {!renaming && (
+              <div className="box-actions">
+                <button className="box-rename-btn" onClick={() => { setRenaming(true); setRenameVal(currentBox.name); }}>
+                  名前変更
+                </button>
+                <button className="box-delete-btn" onClick={() => setConfirmDelete(true)}>
+                  削除
+                </button>
+              </div>
+            )}
+
+            {items.length === 0 ? (
+              <div className="empty-msg">この箱に商品はありません</div>
+            ) : (
+              <div className="inv-list">
+                {items.map(item => (
+                  <InvRow
+                    key={item.id}
+                    item={item}
+                    boxes={boxes}
+                    map={map}
+                    onAssign={onAssign}
+                    onTap={setSheet}
+                  />
+                ))}
+              </div>
+            )}
+
+            {sheet && (
+              <BoxSelectSheet
+                item={sheet}
+                boxes={boxes}
+                map={map}
+                onAssign={(invId, boxId) => {
+                  onAssign(invId, boxId);
+                  const box = boxes.find(b => b.id === boxId);
+                  showToast(box ? `📦 ${box.name} に割り当てました` : '未割当にしました');
+                }}
+                onClose={() => setSheet(null)}
+              />
+            )}
+
+            {confirmDelete && (
+              <ConfirmModal
+                title={`「${currentBox.name}」を削除しますか？`}
+                body="この箱の中の商品は全て未割当に戻ります。"
+                confirmLabel="削除する"
+                onConfirm={handleDeleteConfirm}
+                onCancel={() => setConfirmDelete(false)}
+              />
+            )}
+          </div>
+        );
+      }
+
+      // グリッドビュー
+      return (
+        <div className="content">
+          <div className="add-box-form">
+            <input
+              ref={inputRef}
+              className="add-box-input"
+              placeholder="例: A-1"
+              value={inputName}
+              onChange={e => setInputName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            />
+            <button className="add-box-btn" onClick={handleAdd}>＋ 箱を追加</button>
+          </div>
+
+          {boxes.length === 0 ? (
+            <div className="box-empty-hint">
+              📦 箱がまだありません<br />
+              上の入力欄に名前（例: A-1）を入れて<br />追加してください
+            </div>
+          ) : (
+            <div className="box-grid">
+              {boxes.map(box => (
+                <div key={box.id} className="box-card" onClick={() => setDetailBox(box)}>
+                  <div className="box-card-name">{box.name}</div>
+                  <div className="box-card-count">{boxCount(box.id)}個</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="footer-note" style={{ marginTop: 20 }}>
+            在庫データは売上管理アプリから読み込み（このアプリからは変更されません）。箱の割り当てはこの端末に保存されます。
+          </div>
+        </div>
+      );
+    }
+
+    /* ==================== 振り分けタブ ==================== */
+
+    function AssignTab({ inventory, boxes, map, onAssign, showToast }) {
+      const [sheet, setSheet] = useState(null);
+
+      // 分母: 売却済を除く商品数
+      const activeItems = useMemo(() => {
+        if (!inventory) return [];
+        return inventory.filter(item => item.status !== 'sold');
+      }, [inventory]);
+
+      const validBoxIds = new Set(boxes.map(b => b.id));
+
+      // 割り当て済み（有効な箱ID）の数
+      const assignedCount = useMemo(() => {
+        return activeItems.filter(item => {
+          const boxId = map[item.id];
+          return boxId && validBoxIds.has(boxId);
+        }).length;
+      }, [activeItems, map, validBoxIds]);
+
+      const total = activeItems.length;
+      const pct   = total === 0 ? 100 : Math.round((assignedCount / total) * 100);
+
+      // 未割当リスト（売却済除外、入荷順/id順）
+      const unassigned = useMemo(() => {
+        return activeItems.filter(item => {
+          const boxId = map[item.id];
+          return !boxId || !validBoxIds.has(boxId);
+        });
+      }, [activeItems, map, validBoxIds]);
+
+      const handleAssign = (invId, boxId) => {
+        onAssign(invId, boxId);
+        const box = boxes.find(b => b.id === boxId);
+        showToast(box ? `📦 ${box.name} に割り当てました` : '未割当にしました');
+      };
+
+      return (
+        <div className="content">
+          <div className="progress-card">
+            <div className="progress-label">割り当て済み（売却済を除く）</div>
+            <div className="progress-nums">
+              {assignedCount} <span>/ {total}個　{pct}%</span>
+            </div>
+            <div className="progress-bar-bg">
+              <div className="progress-bar-fill" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+
+          {boxes.length === 0 ? (
+            <div className="no-boxes-hint">
+              まず📦<strong>箱タブ</strong>で箱を登録してください
+            </div>
+          ) : unassigned.length === 0 ? (
+            <div className="all-done-banner">
+              🎉 全部の商品に住所がつきました！
+            </div>
+          ) : (
+            <div className="assign-list">
+              {unassigned.map(item => (
+                <InvRow
+                  key={item.id}
+                  item={item}
+                  boxes={boxes}
+                  map={map}
+                  onAssign={onAssign}
+                  onTap={setSheet}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="footer-note">
+            在庫データは売上管理アプリから読み込み（このアプリからは変更されません）。箱の割り当てはこの端末に保存されます。
+          </div>
+
+          {sheet && (
+            <BoxSelectSheet
+              item={sheet}
+              boxes={boxes}
+              map={map}
+              onAssign={handleAssign}
+              onClose={() => setSheet(null)}
+            />
+          )}
+        </div>
+      );
+    }
+
+    /* ==================== アプリ本体 ==================== */
+
+    function App() {
+      const [tab, setTab]           = useState('search');
+      const [toastMsg, setToastMsg] = useState(null);
+      const [toastKey, setToastKey] = useState(0);
+
+      const { inventory, error } = useInventory();
+      const { boxes, map, addBox, renameBox, deleteBox, assign } = useBoxes();
+
+      const showToast = useCallback((msg) => {
+        setToastMsg(msg);
+        setToastKey(k => k + 1);
+      }, []);
+
+      const tabs = [
+        { id: 'search', icon: '🔍', label: 'さがす' },
+        { id: 'boxes',  icon: '📦', label: '箱' },
+        { id: 'assign', icon: '➕', label: '振り分け' },
+      ];
+
+      const headerSubs = {
+        search: '商品の保管場所を検索',
+        boxes:  '箱の登録・管理',
+        assign: '未割当商品に箱を付ける',
+      };
+
+      const renderContent = () => {
+        if (error) {
+          return (
+            <div className="status-screen">
+              <div className="status-icon">⚠️</div>
+              データを読み込めませんでした。<br />ネット接続を確認してください。
+            </div>
+          );
+        }
+        if (tab === 'search') {
+          return (
+            <SearchTab
+              inventory={inventory || []}
+              boxes={boxes}
+              map={map}
+              onAssign={assign}
+              showToast={showToast}
+            />
+          );
+        }
+        if (tab === 'boxes') {
+          return (
+            <BoxTab
+              boxes={boxes}
+              map={map}
+              inventory={inventory || []}
+              onAddBox={addBox}
+              onRenameBox={renameBox}
+              onDeleteBox={deleteBox}
+              onAssign={assign}
+              showToast={showToast}
+            />
+          );
+        }
+        if (tab === 'assign') {
+          return (
+            <AssignTab
+              inventory={inventory || []}
+              boxes={boxes}
+              map={map}
+              onAssign={assign}
+              showToast={showToast}
+            />
+          );
+        }
+      };
+
+      return (
+        <>
+          <div className="header">
+            <div className="header-title">📦 在庫マップ</div>
+            <div className="header-sub">{headerSubs[tab]}</div>
+          </div>
+
+          {renderContent()}
+
+          <nav className="tab-bar">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                className={`tab-item${tab === t.id ? ' active' : ''}`}
+                onClick={() => setTab(t.id)}
+              >
+                <span className="tab-icon">{t.icon}</span>
+                {t.label}
+              </button>
+            ))}
+          </nav>
+
+          {toastMsg && (
+            <Toast key={toastKey} msg={toastMsg} onDone={() => setToastMsg(null)} />
+          )}
+        </>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>

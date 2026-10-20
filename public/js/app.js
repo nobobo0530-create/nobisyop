@@ -2414,7 +2414,7 @@ const IosSegmented = ({ options, value, onChange }) => (
               boxShadow: on ? '0 3px 8px rgba(0,0,0,0.12), 0 3px 1px rgba(0,0,0,0.04)' : 'none',
               display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1,
               color:'#000',transition:'background 0.15s',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-            <span style={{fontSize:13,fontWeight: on ? 600 : 500,lineHeight:'16px',whiteSpace:'nowrap'}}>{o.label}</span>
+            <span style={{fontSize: options.length > 4 ? 12 : 13,fontWeight: on ? 600 : 500,lineHeight:'16px',whiteSpace:'nowrap'}}>{o.label}</span>
             {o.count != null && <span style={{fontSize:11,lineHeight:'13px',color:IOS_LABEL2,fontWeight:500}}>{o.count}</span>}
           </button>
         );
@@ -6011,6 +6011,108 @@ const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) 
 };
 
 // ============================================================
+// 在庫「まとめ購入」タブ：1つの箱で届いたまとめ買いが全部そろったかを確認する
+// グループ = bundleGroup が同じで2点以上。確認は商品ごとの arrivedAt（ISO文字列／未確認は null）
+// 売却済(sold)は届いている前提で「確認済み」に数える（分母にも含める＝箱の総点数と一致させる）
+// ============================================================
+const isItemArrived = (i) => i.status === 'sold' || !!i.arrivedAt;
+const buildBundleArrivalGroups = (inventory) => {
+  const map = new Map();
+  (inventory || []).forEach(i => { if (i.bundleGroup) { const a = map.get(i.bundleGroup); if (a) a.push(i); else map.set(i.bundleGroup, [i]); } });
+  const out = [];
+  map.forEach((members, bg) => {
+    if (members.length < 2) return;
+    const sortedM = [...members].sort((a, b) => String(a.bundleLabel || '').localeCompare(String(b.bundleLabel || ''), 'ja') || String(a.mgmtNo || '').localeCompare(String(b.mgmtNo || '')));
+    const date = members.reduce((m, i) => (i.purchaseDate || '') > m ? i.purchaseDate : m, '');
+    const store = (members.find(i => i.purchaseStore) || {}).purchaseStore || '';
+    const total = members.reduce((s, i) => s + (Number(i.purchasePrice) || 0), 0);
+    const arrived = members.filter(isItemArrived).length;
+    out.push({ bg, members: sortedM, date, store, total, arrived, done: arrived === members.length });
+  });
+  // 未確認が上、その中で仕入日が新しい順。全部そろったものは下
+  out.sort((a, b) => (a.done - b.done) || (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return out;
+};
+
+const BundleArrivalView = ({ groups, search, onToggle }) => {
+  const [onlyPending, setOnlyPending] = React.useState(true);
+  const [limit, setLimit] = React.useState(20);
+  const q = (search || '').trim().toLowerCase();
+  const shown = React.useMemo(() => groups.filter(g => {
+    if (onlyPending && g.done) return false;
+    if (!q) return true;
+    return (g.store || '').toLowerCase().includes(q) || g.members.some(i => (i.productName || '').toLowerCase().includes(q) || (i.brand || '').toLowerCase().includes(q) || (i.mgmtNo || '').toLowerCase().includes(q));
+  }), [groups, onlyPending, q]);
+  const pendingGroups = groups.filter(g => !g.done).length;
+  return (
+    <div style={{padding:'4px 16px 24px'}}>
+      <button onClick={() => { setOnlyPending(v => !v); setLimit(20); }}
+        style={{width:'100%',minHeight:44,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'0 14px',borderRadius:10,border:'1.5px solid #e5e7eb',
+          background: onlyPending ? '#eef2ff' : '#f3f4f6',color: onlyPending ? '#4338ca' : '#6b7280',fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,touchAction:'manipulation'}}>
+        <span>未確認だけ（あと{pendingGroups}箱）</span>
+        <span style={{width:40,height:22,borderRadius:99,display:'inline-flex',alignItems:'center',background: onlyPending ? '#4338ca' : '#d1d5db',position:'relative',flexShrink:0}}>
+          <span style={{width:18,height:18,borderRadius:'50%',background:'white',position:'absolute',left: onlyPending ? 20 : 2,transition:'left 0.15s'}}/>
+        </span>
+      </button>
+      {shown.length === 0 ? (
+        <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
+          {groups.length === 0 ? '2点以上のまとめ買いがありません' : onlyPending && !q ? '✓ 未確認のまとめ買いはありません' : '該当するまとめ買いがありません'}
+        </div>
+      ) : shown.slice(0, limit).map(g => {
+        const pend = g.members.filter(i => !isItemArrived(i));
+        return (
+          <div key={g.bg} className="card" style={{padding:12,marginBottom:12,border: g.done ? '1.5px solid #bbf7d0' : '1.5px solid #c7d2fe',borderLeft: g.done ? '4px solid #16a34a' : '4px solid #4338ca'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+              <div style={{flex:1,minWidth:0,fontWeight:800,fontSize:15,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.store || '仕入れ先未設定'}</div>
+              <div style={{fontWeight:800,fontSize:14,color: g.done ? '#15803d' : '#4338ca',whiteSpace:'nowrap'}}>
+                {g.done ? '✓ 全部そろった' : `${g.arrived}/${g.members.length} 確認`}
+              </div>
+            </div>
+            <div style={{fontSize:12,color:'#6b7280',marginBottom: 8}}>
+              {g.date ? g.date.replace(/-/g, '/') : '日付なし'}　{g.members.length}点　合計 ¥{g.total.toLocaleString()}
+            </div>
+            <div style={{height:6,borderRadius:99,background:'#e5e7eb',overflow:'hidden',marginBottom:8}}>
+              <div style={{height:'100%',width:(g.arrived / g.members.length * 100) + '%',background: g.done ? '#16a34a' : '#6366f1'}}/>
+            </div>
+            {g.members.map(i => {
+              const sold = i.status === 'sold';
+              const ok = isItemArrived(i);
+              return (
+                <button key={i.id} disabled={sold} onClick={() => onToggle([i.id], !i.arrivedAt)}
+                  style={{width:'100%',display:'flex',alignItems:'center',gap:10,minHeight:60,padding:'6px 8px',marginBottom:4,borderRadius:10,textAlign:'left',cursor: sold ? 'default' : 'pointer',
+                    border: ok ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',background: ok ? '#f0fdf4' : '#fff',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  <span style={{width:28,height:28,borderRadius:8,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:800,
+                    border: ok ? 'none' : '2px solid #9ca3af',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
+                  <ItemThumbnail thumbId={i.photos?.[0]?.thumbId} thumbDataUrl={i.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
+                  <span style={{flex:1,minWidth:0}}>
+                    <span style={{fontSize:13,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>
+                      {i.bundleLabel ? <span style={{color:'#4338ca'}}>{i.bundleLabel} </span> : null}{i.productName || '(名称なし)'}
+                    </span>
+                    <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:1}}>
+                      {i.mgmtNo ? i.mgmtNo + '　' : ''}¥{(Number(i.purchasePrice) || 0).toLocaleString()}{sold ? '　売却済' : i.arrivedAt ? '　届いた' : ''}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+            {!g.done && pend.length > 1 && (
+              <button onClick={() => onToggle(pend.map(i => i.id), true)}
+                style={{width:'100%',minHeight:44,marginTop:4,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
+                残り{pend.length}点を全部「届いた」にする
+              </button>
+            )}
+          </div>
+        );
+      })}
+      {shown.length > limit && (
+        <button onClick={() => setLimit(l => l + 20)}
+          style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'white',color:'#374151',fontSize:13,fontWeight:700,cursor:'pointer'}}>もっと見る（あと{shown.length - limit}箱）</button>
+      )}
+    </div>
+  );
+};
+
+// ============================================================
 // まとめ買いの表紙（bundleCover）
 // 表紙は「まとめ買い自体」が持つ。子の写真を差し替え・追加・削除しても変わらない。
 // 置き場所: settings.bundleCovers[bundleGroup]（クラウドの設定に入る。メンバーが消えても残る）
@@ -6671,6 +6773,21 @@ const InventoryTab = () => {
     return m;
   }, [data.inventory]);
 
+  // 「まとめ購入」タブ（届いた確認）：グループ化は在庫が変わったときだけ
+  const bundleArrivalGroups = React.useMemo(() => buildBundleArrivalGroups(data.inventory), [data.inventory]);
+  const bundleArrivalPending = React.useMemo(() => bundleArrivalGroups.filter(g => !g.done).length, [bundleArrivalGroups]);
+  // 届いた確認の保存：通常の setData 経由（編集した行に updatedAt が刻まれ、クラウド同期される）
+  const setItemsArrived = (ids, on) => {
+    const cur = dataRefInv.current;
+    const idSet = new Set(ids);
+    const now = new Date().toISOString();
+    setData({ ...cur, inventory: cur.inventory.map(i => {
+      if (!idSet.has(i.id)) return i;
+      if (on) return i.arrivedAt ? i : { ...i, arrivedAt: now };
+      return i.arrivedAt ? { ...i, arrivedAt: null } : i;
+    }) });
+  };
+
   // まとめ買いの種別フィルター：同梱(individual)／セット購入(set)／未分類(bundleType なし)
   const BUNDLE_FILTERS = { bundleAll: null, bundleIndividual: 'individual', bundleSet: 'set', bundleNone: '' };
   const isBundleFilter = (f) => Object.prototype.hasOwnProperty.call(BUNDLE_FILTERS, f);
@@ -6678,6 +6795,7 @@ const InventoryTab = () => {
   const isInBundle = (item) => !!item.bundleGroup && bundleCounts[item.bundleGroup] > 1;
 
   const filtered = React.useMemo(() => data.inventory.filter(item => {
+    if (filter === 'bundleCheck') return false;
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
     if (isBundleFilter(filter)) { if (!isInBundle(item) || (filter !== 'bundleAll' && bundleTypeKey(item) !== BUNDLE_FILTERS[filter])) return false; if (focusBundle && item.bundleGroup !== focusBundle) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
@@ -7531,7 +7649,8 @@ const InventoryTab = () => {
       <IosSearch value={search} onChange={setSearch} placeholder="商品名・ブランド名で検索" />
 
       <IosSegmented value={filter} onChange={(v) => { setFilter(v); setCheckedIds(new Set()); }}
-        options={[['unlisted','未出品'],['listed','出品中'],['sold','売却済'],['all','すべて']].map(([v,l]) => {
+        options={[['unlisted','未出品'],['listed','出品中'],['sold','売却済'],['all','すべて'],['bundleCheck','まとめ購入']].map(([v,l]) => {
+          if (v === 'bundleCheck') return { value: v, label: l, count: bundleArrivalPending };
           const base = v === 'all' ? data.inventory : data.inventory.filter(i => i.status === v);
           const q = search.trim().toLowerCase();
           const cnt = q ? base.filter(i => (i.productName||'').toLowerCase().includes(q) || (i.brand||'').toLowerCase().includes(q) || (i.memo||'').toLowerCase().includes(q)).length : base.length;
@@ -7607,7 +7726,9 @@ const InventoryTab = () => {
         </div>
       )}
 
-      <div style={{padding:'12px 16px', paddingBottom: bulkMode && bulkKind === 'list' ? 120 : bulkMode && checkedIds.size > 0 ? 100 : 12}}>
+      {filter === 'bundleCheck' && <BundleArrivalView groups={bundleArrivalGroups} search={search} onToggle={setItemsArrived} />}
+
+      <div style={{display: filter === 'bundleCheck' ? 'none' : undefined, padding:'12px 16px', paddingBottom: bulkMode && bulkKind === 'list' ? 120 : bulkMode && checkedIds.size > 0 ? 100 : 12}}>
         {/* 仕入れ先の入力候補（一覧の直接入力とまとめ確定の両方で使う）*/}
         <datalist id="bulkStoreOptions">
           {storeOptions.map(s => <option key={s} value={s}/>)}
