@@ -3100,6 +3100,7 @@ const PurchaseTab = () => {
       sizeM2:             editingItem.sizeM2             || '',
       sizeM3:             editingItem.sizeM3             || '',
       sizeM4:             editingItem.sizeM4             || '',
+      measure:            editingItem.measure            || undefined,
       sizeConfidence:     editingItem.sizeConfidence     || 'medium',
       material:           editingItem.material           || '',
       purchaseDate:       editingItem.purchaseDate       || today(),
@@ -3397,7 +3398,7 @@ const PurchaseTab = () => {
         conditionDetail: result.condition_detail || '',
         sizeTag: result.size_tag || result.size || '',
         // 実寸（着丈・身幅・肩幅・袖丈）はAI自動入力しない（手動入力で正確性を担保）
-        sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '',
+        sizeM1: '', sizeM2: '', sizeM3: '', sizeM4: '', measure: undefined,
         sizeConfidence: result.size_confidence || 'medium',
         material: result.material || '',
         estimatedPriceRange: result.estimated_price_range || '',
@@ -3464,15 +3465,8 @@ const PurchaseTab = () => {
   };
 
   // サイズ合成（表記サイズ＋実寸）
-  const sizeMeasureLabels = {
-    '衣類':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
-    '毛皮':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
-    'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
-    '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
-    'シューズ': [],
-  };
-  const measureFields = sizeMeasureLabels[form.category] || [];
-  const measureParts = measureFields.map(([key, label]) => form[key] ? `${label}${form[key]}cm` : '').filter(Boolean);
+  const measureNow = getMeasure(form);
+  const measureParts = measureEntries(measureNow).map(([l, v]) => `${l}${v}cm`);
   const computedSize = [form.sizeTag, ...measureParts].filter(Boolean).join(' / ');
 
   // 税抜計算ヘルパー（Math.roundで 3190÷1.1=2900 を正確に出す）
@@ -3614,17 +3608,7 @@ const PurchaseTab = () => {
     const colorText = form.colorDisplay || form.color || '（カラー未入力）';
 
     // サイズブロック
-    const sizeLabels = {
-      '衣類':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
-      '毛皮':   [['sizeM1','着丈'],['sizeM2','身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
-      'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
-      '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
-      'シューズ': [],
-    };
-    const mLabels = sizeLabels[form.category] || [];
-    const measureLines = mLabels
-      .filter(([key]) => form[key] && form[key] !== '')
-      .map(([key, label]) => `${label}：${form[key]}cm`);
+    const measureLines = measureLinesOf(form);
     const sizeTagLine = form.sizeTag ? `表記サイズ：${form.sizeTag}` : '表記サイズ：（未入力）';
     const sizeBlock = [sizeTagLine, '', ...measureLines].join('\n').trimEnd();
 
@@ -3649,9 +3633,7 @@ const PurchaseTab = () => {
       const nobiDamageNote = form.damageNote || '特になし';
 
       // 実寸ブロック
-      const nobiMeasureLines = mLabels
-        .filter(([key]) => form[key] && form[key] !== '')
-        .map(([key, label]) => `${label}：${form[key]}cm`);
+      const nobiMeasureLines = measureLines;
       let nobiSizeBlock;
       if (form.sizeTag && nobiMeasureLines.length === 0) {
         nobiSizeBlock = `表記サイズ：${form.sizeTag}\nあとで実寸記載`;
@@ -3728,18 +3710,8 @@ const PurchaseTab = () => {
         ? form.seoCategories
         : (form.categoryKeywords || form.category || '（カテゴリー未入力）').split(/[\s　]+/).filter(Boolean);
 
-      // サイズブロック（りこぴ用：sizeM2 = 脇下身幅）
-      const rikoSizeLabels = {
-        '衣類':   [['sizeM1','着丈'],['sizeM2','脇下身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
-        '毛皮':   [['sizeM1','着丈'],['sizeM2','脇下身幅'],['sizeM3','肩幅'],['sizeM4','袖丈']],
-        'バッグ': [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ'],['sizeM4','ショルダー']],
-        '小物':   [['sizeM1','高さ'],['sizeM2','横幅'],['sizeM3','マチ']],
-        'シューズ': [],
-      };
-      const rikoMLabels = rikoSizeLabels[form.category] || [];
-      const rikoMeasureLines = rikoMLabels
-        .filter(([key]) => form[key] && form[key] !== '')
-        .map(([key, label]) => `${label}${form[key]}cm`);
+      // サイズブロック（りこぴ用）
+      const rikoMeasureLines = measureLines;
       const rikoSizeTag = form.sizeTag ? `表記サイズ：${form.sizeTag}` : '表記サイズ：（未入力）';
 
       const rikoLines = [
@@ -4846,22 +4818,11 @@ const PurchaseTab = () => {
                   placeholder={form.category === 'シューズ' ? '例: 27.0cm / US9 / EU42' : '例: S / M / L / XL / 38'}/>
               </div>
 
-              {/* 実寸入力欄（カテゴリー別） */}
-              {measureFields.length > 0 && (
+              {/* 実寸入力欄（種別チップ＋数字のみ・空欄は出力されない） */}
+              {form.category !== 'シューズ' && (
                 <div>
-                  <div style={{fontSize:11,color:'#999',marginBottom:4}}>実寸 (cm)　※空欄でも登録可</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
-                    {measureFields.map(([key, label]) => (
-                      <div key={key} style={{position:'relative'}}>
-                        <input type="number" className="input-field"
-                          style={{paddingRight: label.length > 3 ? 72 : 40}}
-                          value={form[key]}
-                          onChange={e => setF(key, e.target.value)}
-                          placeholder="—"/>
-                        <span style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',fontSize:11,color:'#aaa',pointerEvents:'none'}}>{label}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <div style={{fontSize:11,color:'#999',marginBottom:4}}>採寸　※数字だけ・空欄は出力されません</div>
+                  <MeasureForm value={measureNow} onChange={m => setForm(prev => ({ ...prev, ...applyMeasure(m) }))}/>
                 </div>
               )}
 
@@ -6028,10 +5989,90 @@ const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) 
 };
 
 // ============================================================
+// 採寸モデル（登録/編集画面と入荷タブの採寸シートで共通）
+// item.measure = { type:'洋服'|'毛皮類'|'バッグ'|'小物類', totalLength,length,chest,shoulder,sleeve, h,w,d,strapMin,strapMax,handle }（数字文字列。空は未入力）
+// 旧項目 sizeM1〜4 も書き続ける：洋服/毛皮=着丈/脇下身幅/肩幅/袖丈、バッグ/小物=タテ/ヨコ/マチ/ショルダー(最長優先)
+// ============================================================
+const MEASURE_TYPES = ['バッグ', '小物類', '洋服', '毛皮類'];
+const MEASURE_CLOTH_FIELDS = [['totalLength', '総丈'], ['length', '着丈'], ['chest', '脇下身幅'], ['shoulder', '肩幅'], ['sleeve', '袖丈']];
+const MEASURE_BAG_FIELDS = [['h', 'タテ'], ['w', 'ヨコ'], ['d', 'マチ']];
+const measureIsCloth = (t) => t === '洋服' || t === '毛皮類';
+const measureTypeFromCategory = (c) => c === '毛皮' ? '毛皮類' : c === 'バッグ' ? 'バッグ' : c === '小物' ? '小物類' : '洋服';
+const measureCategoryFromType = (t) => t === '毛皮類' ? '毛皮' : t === 'バッグ' ? 'バッグ' : t === '小物類' ? '小物' : '衣類';
+const cleanMeasureNum = (v) => String(v == null ? '' : v).replace(/[^0-9.]/g, '');
+const getMeasure = (it) => {
+  const m = it && it.measure && typeof it.measure === 'object' ? it.measure : null;
+  if (m) return { ...m, type: m.type || measureTypeFromCategory(it.category) };
+  const type = measureTypeFromCategory(it && it.category);
+  const g = (k) => cleanMeasureNum(it && it[k]);
+  return measureIsCloth(type)
+    ? { type, length: g('sizeM1'), chest: g('sizeM2'), shoulder: g('sizeM3'), sleeve: g('sizeM4') }
+    : { type, h: g('sizeM1'), w: g('sizeM2'), d: g('sizeM3'), strapMax: g('sizeM4') };
+};
+const measureStrapText = (m) => m.strapMin && m.strapMax ? m.strapMin + '〜' + m.strapMax : (m.strapMin || m.strapMax || '');
+// 入力済みの項目だけ [ラベル, 値] で返す（ユーザー指定の順）
+const measureEntries = (m) => {
+  const e = [];
+  if (measureIsCloth(m.type)) MEASURE_CLOTH_FIELDS.forEach(([k, l]) => { if (m[k]) e.push([l, m[k]]); });
+  else {
+    MEASURE_BAG_FIELDS.forEach(([k, l]) => { if (m[k]) e.push([l, m[k]]); });
+    const st = measureStrapText(m); if (st) e.push(['ショルダーの長さ', st]);
+    if (m.handle) e.push(['持ち手の長さ', m.handle]);
+  }
+  return e;
+};
+const measureLinesOf = (it) => measureEntries(getMeasure(it)).map(([l, v]) => `${l} ${v}cm`);
+const applyMeasure = (m) => {
+  const cloth = measureIsCloth(m.type);
+  const v = cloth ? [m.length, m.chest, m.shoulder, m.sleeve] : [m.h, m.w, m.d, m.strapMax || m.strapMin];
+  return { measure: m, sizeM1: v[0] || '', sizeM2: v[1] || '', sizeM3: v[2] || '', sizeM4: v[3] || '' };
+};
+const MeasureForm = ({ value, onChange, big }) => {
+  const m = value;
+  const set = (k, raw) => onChange({ ...m, [k]: cleanMeasureNum(raw) });
+  const fs = big ? 22 : 18;
+  const box = (k, ph) => (
+    <div style={{position:'relative',flex:1,minWidth:0}}>
+      <input type="text" inputMode="decimal" value={m[k] || ''} placeholder={ph || '—'} onChange={e => set(k, e.target.value)}
+        style={{width:'100%',boxSizing:'border-box',minHeight:big ? 52 : 46,padding:'0 34px 0 10px',borderRadius:12,border:'1.5px solid #e5e7eb',background:'#f9fafb',fontSize:fs,fontWeight:700,textAlign:'right',color:'#111827',outline:'none'}}/>
+      <span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',fontSize:12,color:'#9ca3af',pointerEvents:'none'}}>cm</span>
+    </div>
+  );
+  const lab = (t) => <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:3}}>{t}</div>;
+  const cloth = measureIsCloth(m.type);
+  const lines = measureEntries(m).map(([l, v]) => `${l} ${v}cm`);
+  return (
+    <div>
+      <div style={{display:'flex',gap:6,marginBottom:10}}>
+        {MEASURE_TYPES.map(t => (
+          <button key={t} type="button" onClick={() => onChange({ ...m, type: t })}
+            style={{flex:1,minHeight:44,borderRadius:10,border:'1.5px solid ' + (m.type === t ? '#4338ca' : '#e5e7eb'),background: m.type === t ? '#eef2ff' : '#fff',color: m.type === t ? '#4338ca' : '#6b7280',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>{t}</button>
+        ))}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+        {(cloth ? MEASURE_CLOTH_FIELDS : MEASURE_BAG_FIELDS).map(([k, l]) => <div key={k}>{lab(l)}{box(k)}</div>)}
+        {!cloth && <div>{lab('持ち手の長さ')}{box('handle')}</div>}
+      </div>
+      {!cloth && (
+        <div style={{marginBottom:8}}>
+          {lab('ショルダーの長さ')}
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            {box('strapMin', '最短')}<span style={{color:'#6b7280',fontWeight:700}}>〜</span>{box('strapMax', '最長')}
+          </div>
+        </div>
+      )}
+      <div style={{padding:'8px 12px',background:'#f3f4f6',borderRadius:10,fontSize:13,color:'#374151',lineHeight:1.6,whiteSpace:'pre-line',minHeight:20}}>
+        {lines.length ? lines.join('\n') : <span style={{color:'#9ca3af'}}>数字を入れた項目だけ出力されます</span>}
+      </div>
+    </div>
+  );
+};
+
+// ============================================================
 // 「入荷」タブ：届いた確認＋その場で採寸
 // 箱 = bundleGroup が同じ商品の集まり（1点でも可）。bundleGroup なしのオンライン仕入れは1点1箱。
 // 対象はオンライン仕入れのみ（店舗仕入れは除外）。未着 = arrivedAt が空 かつ 未出品。出品中・売却済は届いた扱い。
-// 保存は商品ごとの arrivedAt（ISO／未確認は null）と、既存の実寸フィールド sizeM1〜4・sizeTag（登録/編集画面と同じ）
+// 保存は商品ごとの arrivedAt（ISO／未確認は null）と、実寸 measure（＋互換の sizeM1〜4）・sizeTag（登録/編集画面と共通）
 // ============================================================
 const isItemArrived = (i) => !!i.arrivedAt || (i.status && i.status !== 'unlisted');
 const isOnlinePurchase = (i) => i.purchaseType !== 'store' && (i.purchaseType === 'online' || i.purchaseStoreType === 'yahoo' || !!i.yahooAuctionId);
@@ -6075,21 +6116,12 @@ const getArrivalBoxes = (inventory) => {
 };
 const countPendingArrivalBoxes = (inventory) => { const c = arrivalCutoff(); return getArrivalBoxes(inventory).filter(b => !b.done && b.date >= c).length; };
 
-const ARRIVAL_MEASURE_LABELS = {
-  '衣類':   ['着丈', '身幅', '肩幅', '袖丈'],
-  '毛皮':   ['着丈', '身幅', '肩幅', '袖丈'],
-  'バッグ': ['高さ', '横幅', 'マチ', 'ショルダー'],
-  '小物':   ['高さ', '横幅', 'マチ'],
-};
-// 採寸シート：商品写真をタップして開く。項目は登録/編集画面と同じ sizeM1〜4（カテゴリ別ラベル）
+// 採寸シート：商品写真をタップして開く。項目は登録/編集画面と共通の MeasureForm（item.measure＋sizeM1〜4）
 const MeasureSheet = ({ item, boxItems, position, onClose, onSave }) => {
-  const initCat = ARRIVAL_MEASURE_LABELS[item.category] ? item.category : '衣類';
-  const [cat, setCat] = React.useState(initCat);
-  const [vals, setVals] = React.useState([item.sizeM1 || '', item.sizeM2 || '', item.sizeM3 || '', item.sizeM4 || '']);
+  const [meas, setMeas] = React.useState(() => getMeasure(item));
   const [tag, setTag] = React.useState(item.sizeTag || '');
-  const labels = ARRIVAL_MEASURE_LABELS[cat];
   const hasNext = position < boxItems.length - 1;
-  const save = (next) => onSave(item, { sizeTag: tag.trim(), sizeM: vals.map(v => String(v).trim()), cat, setCat: !ARRIVAL_MEASURE_LABELS[item.category] && item.category !== 'シューズ' && !item.category }, next);
+  const save = (next) => onSave(item, { sizeTag: tag.trim(), measure: meas, cat: measureCategoryFromType(meas.type), setCat: !item.category }, next);
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:420,maxHeight:'92vh',overflowY:'auto',WebkitOverflowScrolling:'touch'}}>
@@ -6100,25 +6132,9 @@ const MeasureSheet = ({ item, boxItems, position, onClose, onSave }) => {
         <div style={{fontSize:12,fontWeight:800,color:'#4338ca',textAlign:'center'}}>{item.purchaseStore || '仕入れ先未設定'}</div>
         <div style={{fontSize:15,fontWeight:800,textAlign:'center',margin:'2px 0 2px'}}>{item.bundleLabel ? item.bundleLabel + ' ' : ''}{item.productName || '(名称なし)'}</div>
         <div style={{fontSize:11,color:'#6b7280',textAlign:'center',marginBottom:12}}>{item.mgmtNo || ''}{boxItems.length > 1 ? `　この箱 ${position + 1}/${boxItems.length}` : ''}</div>
-        <div style={{display:'flex',gap:6,marginBottom:10}}>
-          {Object.keys(ARRIVAL_MEASURE_LABELS).map(c => (
-            <button key={c} onClick={() => setCat(c)}
-              style={{flex:1,minHeight:36,borderRadius:8,border:'1.5px solid ' + (cat === c ? '#4338ca' : '#e5e7eb'),background: cat === c ? '#eef2ff' : '#fff',color: cat === c ? '#4338ca' : '#6b7280',fontWeight:700,fontSize:13,cursor:'pointer'}}>{c}</button>
-          ))}
-        </div>
         <div style={{fontSize:11,color:'#999',marginBottom:4}}>表記サイズ（タグ）</div>
         <input className="input-field" value={tag} onChange={e => setTag(e.target.value)} placeholder="例: M / L / 38" style={{marginBottom:10,minHeight:48,fontSize:18}}/>
-        <div style={{fontSize:11,color:'#999',marginBottom:4}}>実寸 (cm)　※空欄でもOK</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:14}}>
-          {labels.map((label, idx) => (
-            <label key={label} style={{display:'block'}}>
-              <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:2}}>{label}</div>
-              <input type="text" inputMode="decimal" className="input-field" value={vals[idx]} placeholder="—"
-                onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, ''); setVals(a => a.map((x, k) => k === idx ? v : x)); }}
-                style={{minHeight:56,fontSize:24,fontWeight:700,textAlign:'center'}}/>
-            </label>
-          ))}
-        </div>
+        <div style={{marginBottom:14}}><MeasureForm value={meas} onChange={setMeas} big/></div>
         <div style={{display:'flex',gap:8}}>
           <button onClick={() => save(false)} style={{flex:1,minHeight:52,borderRadius:12,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:16,cursor:'pointer'}}>保存</button>
           {hasNext && <button onClick={() => save(true)} style={{flex:1.3,minHeight:52,borderRadius:12,border:'none',background:'#4338ca',color:'#fff',fontWeight:800,fontSize:16,cursor:'pointer'}}>保存して次へ</button>}
@@ -6209,7 +6225,7 @@ const ArrivalTab = () => {
     const now = new Date().toISOString();
     setData({ ...cur, inventory: cur.inventory.map(i => {
       if (i.id !== item.id) return i;
-      return { ...i, sizeTag: m.sizeTag, sizeM1: m.sizeM[0] || '', sizeM2: m.sizeM[1] || '', sizeM3: m.sizeM[2] || '', sizeM4: m.sizeM[3] || '',
+      return { ...i, sizeTag: m.sizeTag, ...applyMeasure(m.measure),
         ...(m.setCat ? { category: m.cat } : {}), ...(i.arrivedAt ? {} : { arrivedAt: now }) };
     }) });
     setSheet(s => (goNext && s && s.pos < s.ids.length - 1) ? { ...s, pos: s.pos + 1 } : null);
@@ -6274,7 +6290,7 @@ const ArrivalTab = () => {
                     <button onClick={() => setSheet({ ids, pos: ids.indexOf(i.id) })} aria-label="採寸する"
                       style={{position:'relative',padding:0,border:'none',background:'none',cursor:'pointer',flexShrink:0,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
                       <ItemThumbnail thumbId={i.photos?.[0]?.thumbId} thumbDataUrl={i.photos?.[0]?.thumbDataUrl} size={84} fallback="📦" />
-                      <span style={{position:'absolute',right:3,bottom:3,background:'rgba(0,0,0,0.62)',color:'#fff',fontSize:10,fontWeight:700,borderRadius:6,padding:'1px 5px'}}>📏採寸{i.sizeM1 || i.sizeM2 ? '✓' : ''}</span>
+                      <span style={{position:'absolute',right:3,bottom:3,background:'rgba(0,0,0,0.62)',color:'#fff',fontSize:10,fontWeight:700,borderRadius:6,padding:'1px 5px'}}>📏採寸{measureLinesOf(i).length ? '✓' : ''}</span>
                     </button>
                     <button disabled={auto} onClick={() => setItemsArrived([i.id], !i.arrivedAt)}
                       style={{flex:1,minWidth:0,minHeight:84,display:'flex',alignItems:'center',gap:8,padding:0,border:'none',background:'none',textAlign:'left',cursor: auto ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
