@@ -2414,7 +2414,7 @@ const IosSegmented = ({ options, value, onChange }) => (
               boxShadow: on ? '0 3px 8px rgba(0,0,0,0.12), 0 3px 1px rgba(0,0,0,0.04)' : 'none',
               display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1,
               color:'#000',transition:'background 0.15s',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-            <span style={{fontSize: options.length > 4 ? 12 : 13,fontWeight: on ? 600 : 500,lineHeight:'16px',whiteSpace:'nowrap'}}>{o.label}</span>
+            <span style={{fontSize:13,fontWeight: on ? 600 : 500,lineHeight:'16px',whiteSpace:'nowrap'}}>{o.label}</span>
             {o.count != null && <span style={{fontSize:11,lineHeight:'13px',color:IOS_LABEL2,fontWeight:500}}>{o.count}</span>}
           </button>
         );
@@ -6011,103 +6011,238 @@ const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) 
 };
 
 // ============================================================
-// 在庫「まとめ購入」タブ：1つの箱で届いたまとめ買いが全部そろったかを確認する
-// グループ = bundleGroup が同じで2点以上。確認は商品ごとの arrivedAt（ISO文字列／未確認は null）
-// 売却済(sold)は届いている前提で「確認済み」に数える（分母にも含める＝箱の総点数と一致させる）
+// 「入荷」タブ：届いた確認＋その場で採寸
+// 箱 = bundleGroup が同じ商品の集まり（1点でも可）。bundleGroup なしのオンライン仕入れは1点1箱。
+// 対象はオンライン仕入れのみ（店舗仕入れは除外）。未着 = arrivedAt が空 かつ 未出品。出品中・売却済は届いた扱い。
+// 保存は商品ごとの arrivedAt（ISO／未確認は null）と、既存の実寸フィールド sizeM1〜4・sizeTag（登録/編集画面と同じ）
 // ============================================================
-const isItemArrived = (i) => i.status === 'sold' || !!i.arrivedAt;
-const buildBundleArrivalGroups = (inventory) => {
+const isItemArrived = (i) => !!i.arrivedAt || (i.status && i.status !== 'unlisted');
+const isOnlinePurchase = (i) => i.purchaseType !== 'store' && (i.purchaseType === 'online' || i.purchaseStoreType === 'yahoo' || !!i.yahooAuctionId);
+// 店名の照合用：全角半角・かな・空白・「ヤフオク！ショップ」「ヤフーショップ」などの揺れを無視
+const normShop = (s) => searchFold(s)
+  .replace(/(やふおく|やふー|yahoo)!?(しょっぷ|shop)?/g, '')
+  .replace(/[\s!！・･\-_]/g, '');
+const ARRIVAL_RECENT_DAYS = 60;
+const arrivalCutoff = () => { const d = new Date(); d.setDate(d.getDate() - ARRIVAL_RECENT_DAYS); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+const buildArrivalBoxes = (inventory) => {
   const map = new Map();
-  (inventory || []).forEach(i => { if (i.bundleGroup) { const a = map.get(i.bundleGroup); if (a) a.push(i); else map.set(i.bundleGroup, [i]); } });
+  (inventory || []).forEach(i => {
+    if (!isOnlinePurchase(i)) return;
+    const k = i.bundleGroup || ('i:' + i.id);
+    const a = map.get(k);
+    if (a) a.push(i); else map.set(k, [i]);
+  });
   const out = [];
-  map.forEach((members, bg) => {
-    if (members.length < 2) return;
-    const sortedM = [...members].sort((a, b) => String(a.bundleLabel || '').localeCompare(String(b.bundleLabel || ''), 'ja') || String(a.mgmtNo || '').localeCompare(String(b.mgmtNo || '')));
-    const date = members.reduce((m, i) => (i.purchaseDate || '') > m ? i.purchaseDate : m, '');
+  map.forEach((members, key) => {
+    const sortedM = members.length > 1 ? [...members].sort((a, b) => String(a.bundleLabel || '').localeCompare(String(b.bundleLabel || ''), 'ja') || String(a.mgmtNo || '').localeCompare(String(b.mgmtNo || ''))) : members;
+    const date = members.reduce((m, i) => { const d = String(i.purchaseDate || '').replace(/\//g, '-'); return d > m ? d : m; }, '');
     const store = (members.find(i => i.purchaseStore) || {}).purchaseStore || '';
     const total = members.reduce((s, i) => s + (Number(i.purchasePrice) || 0), 0);
+    const aids = [...new Set(members.map(i => (i.yahooAuctionId || '').trim()).filter(Boolean))];
+    const oids = [...new Set(members.map(i => (String(i.notes || '').match(/注文\s*([0-9A-Za-z_-]{6,})/) || [])[1]).filter(Boolean))];
     const arrived = members.filter(isItemArrived).length;
-    out.push({ bg, members: sortedM, date, store, total, arrived, done: arrived === members.length });
+    const hay = searchFold([store, normShop(store), aids.join(' '), oids.join(' '), ...members.map(i => [i.productName, i.brand, i.mgmtNo, i.bundleLabel].join(' '))].join(' ')).replace(/\s/g, '');
+    out.push({ key, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay });
   });
-  // 未確認が上、その中で仕入日が新しい順。全部そろったものは下
-  out.sort((a, b) => (a.done - b.done) || (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   return out;
 };
+// App と入荷タブで同じ結果を共有（在庫配列が変わったときだけ再計算。フック不要・保存なし）
+let _arrivalCache = { inv: null, boxes: [] };
+const getArrivalBoxes = (inventory) => {
+  if (_arrivalCache.inv !== inventory) _arrivalCache = { inv: inventory, boxes: buildArrivalBoxes(inventory) };
+  return _arrivalCache.boxes;
+};
+const countPendingArrivalBoxes = (inventory) => { const c = arrivalCutoff(); return getArrivalBoxes(inventory).filter(b => !b.done && b.date >= c).length; };
 
-const BundleArrivalView = ({ groups, search, onToggle }) => {
-  const [onlyPending, setOnlyPending] = React.useState(true);
-  const [limit, setLimit] = React.useState(20);
-  const q = (search || '').trim().toLowerCase();
-  const shown = React.useMemo(() => groups.filter(g => {
-    if (onlyPending && g.done) return false;
-    if (!q) return true;
-    return (g.store || '').toLowerCase().includes(q) || g.members.some(i => (i.productName || '').toLowerCase().includes(q) || (i.brand || '').toLowerCase().includes(q) || (i.mgmtNo || '').toLowerCase().includes(q));
-  }), [groups, onlyPending, q]);
-  const pendingGroups = groups.filter(g => !g.done).length;
+const ARRIVAL_MEASURE_LABELS = {
+  '衣類':   ['着丈', '身幅', '肩幅', '袖丈'],
+  '毛皮':   ['着丈', '身幅', '肩幅', '袖丈'],
+  'バッグ': ['高さ', '横幅', 'マチ', 'ショルダー'],
+  '小物':   ['高さ', '横幅', 'マチ'],
+};
+// 採寸シート：商品写真をタップして開く。項目は登録/編集画面と同じ sizeM1〜4（カテゴリ別ラベル）
+const MeasureSheet = ({ item, boxItems, position, onClose, onSave }) => {
+  const initCat = ARRIVAL_MEASURE_LABELS[item.category] ? item.category : '衣類';
+  const [cat, setCat] = React.useState(initCat);
+  const [vals, setVals] = React.useState([item.sizeM1 || '', item.sizeM2 || '', item.sizeM3 || '', item.sizeM4 || '']);
+  const [tag, setTag] = React.useState(item.sizeTag || '');
+  const labels = ARRIVAL_MEASURE_LABELS[cat];
+  const hasNext = position < boxItems.length - 1;
+  const save = (next) => onSave(item, { sizeTag: tag.trim(), sizeM: vals.map(v => String(v).trim()), cat, setCat: !ARRIVAL_MEASURE_LABELS[item.category] && item.category !== 'シューズ' && !item.category }, next);
   return (
-    <div style={{padding:'4px 16px 24px'}}>
-      <button onClick={() => { setOnlyPending(v => !v); setLimit(20); }}
-        style={{width:'100%',minHeight:44,display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'0 14px',borderRadius:10,border:'1.5px solid #e5e7eb',
-          background: onlyPending ? '#eef2ff' : '#f3f4f6',color: onlyPending ? '#4338ca' : '#6b7280',fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,touchAction:'manipulation'}}>
-        <span>未確認だけ（あと{pendingGroups}箱）</span>
-        <span style={{width:40,height:22,borderRadius:99,display:'inline-flex',alignItems:'center',background: onlyPending ? '#4338ca' : '#d1d5db',position:'relative',flexShrink:0}}>
-          <span style={{width:18,height:18,borderRadius:'50%',background:'white',position:'absolute',left: onlyPending ? 20 : 2,transition:'left 0.15s'}}/>
-        </span>
-      </button>
-      {shown.length === 0 ? (
-        <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
-          {groups.length === 0 ? '2点以上のまとめ買いがありません' : onlyPending && !q ? '✓ 未確認のまとめ買いはありません' : '該当するまとめ買いがありません'}
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:420,maxHeight:'92vh',overflowY:'auto',WebkitOverflowScrolling:'touch'}}>
+        <div className="modal-handle"/>
+        <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
+          <ItemThumbnail thumbId={item.photos?.[0]?.thumbId} thumbDataUrl={item.photos?.[0]?.thumbDataUrl} size={200} fallback="📦" />
         </div>
-      ) : shown.slice(0, limit).map(g => {
-        const pend = g.members.filter(i => !isItemArrived(i));
-        return (
-          <div key={g.bg} className="card" style={{padding:12,marginBottom:12,border: g.done ? '1.5px solid #bbf7d0' : '1.5px solid #c7d2fe',borderLeft: g.done ? '4px solid #16a34a' : '4px solid #4338ca'}}>
-            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
-              <div style={{flex:1,minWidth:0,fontWeight:800,fontSize:15,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.store || '仕入れ先未設定'}</div>
-              <div style={{fontWeight:800,fontSize:14,color: g.done ? '#15803d' : '#4338ca',whiteSpace:'nowrap'}}>
-                {g.done ? '✓ 全部そろった' : `${g.arrived}/${g.members.length} 確認`}
-              </div>
-            </div>
-            <div style={{fontSize:12,color:'#6b7280',marginBottom: 8}}>
-              {g.date ? g.date.replace(/-/g, '/') : '日付なし'}　{g.members.length}点　合計 ¥{g.total.toLocaleString()}
-            </div>
-            <div style={{height:6,borderRadius:99,background:'#e5e7eb',overflow:'hidden',marginBottom:8}}>
-              <div style={{height:'100%',width:(g.arrived / g.members.length * 100) + '%',background: g.done ? '#16a34a' : '#6366f1'}}/>
-            </div>
-            {g.members.map(i => {
-              const sold = i.status === 'sold';
-              const ok = isItemArrived(i);
-              return (
-                <button key={i.id} disabled={sold} onClick={() => onToggle([i.id], !i.arrivedAt)}
-                  style={{width:'100%',display:'flex',alignItems:'center',gap:10,minHeight:60,padding:'6px 8px',marginBottom:4,borderRadius:10,textAlign:'left',cursor: sold ? 'default' : 'pointer',
-                    border: ok ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',background: ok ? '#f0fdf4' : '#fff',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
-                  <span style={{width:28,height:28,borderRadius:8,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:800,
-                    border: ok ? 'none' : '2px solid #9ca3af',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
-                  <ItemThumbnail thumbId={i.photos?.[0]?.thumbId} thumbDataUrl={i.photos?.[0]?.thumbDataUrl} size={44} fallback="📦" />
-                  <span style={{flex:1,minWidth:0}}>
-                    <span style={{fontSize:13,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>
-                      {i.bundleLabel ? <span style={{color:'#4338ca'}}>{i.bundleLabel} </span> : null}{i.productName || '(名称なし)'}
-                    </span>
-                    <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:1}}>
-                      {i.mgmtNo ? i.mgmtNo + '　' : ''}¥{(Number(i.purchasePrice) || 0).toLocaleString()}{sold ? '　売却済' : i.arrivedAt ? '　届いた' : ''}
-                    </span>
-                  </span>
-                </button>
-              );
-            })}
-            {!g.done && pend.length > 1 && (
-              <button onClick={() => onToggle(pend.map(i => i.id), true)}
-                style={{width:'100%',minHeight:44,marginTop:4,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
-                残り{pend.length}点を全部「届いた」にする
-              </button>
-            )}
+        <div style={{fontSize:12,fontWeight:800,color:'#4338ca',textAlign:'center'}}>{item.purchaseStore || '仕入れ先未設定'}</div>
+        <div style={{fontSize:15,fontWeight:800,textAlign:'center',margin:'2px 0 2px'}}>{item.bundleLabel ? item.bundleLabel + ' ' : ''}{item.productName || '(名称なし)'}</div>
+        <div style={{fontSize:11,color:'#6b7280',textAlign:'center',marginBottom:12}}>{item.mgmtNo || ''}{boxItems.length > 1 ? `　この箱 ${position + 1}/${boxItems.length}` : ''}</div>
+        <div style={{display:'flex',gap:6,marginBottom:10}}>
+          {Object.keys(ARRIVAL_MEASURE_LABELS).map(c => (
+            <button key={c} onClick={() => setCat(c)}
+              style={{flex:1,minHeight:36,borderRadius:8,border:'1.5px solid ' + (cat === c ? '#4338ca' : '#e5e7eb'),background: cat === c ? '#eef2ff' : '#fff',color: cat === c ? '#4338ca' : '#6b7280',fontWeight:700,fontSize:13,cursor:'pointer'}}>{c}</button>
+          ))}
+        </div>
+        <div style={{fontSize:11,color:'#999',marginBottom:4}}>表記サイズ（タグ）</div>
+        <input className="input-field" value={tag} onChange={e => setTag(e.target.value)} placeholder="例: M / L / 38" style={{marginBottom:10,minHeight:48,fontSize:18}}/>
+        <div style={{fontSize:11,color:'#999',marginBottom:4}}>実寸 (cm)　※空欄でもOK</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:14}}>
+          {labels.map((label, idx) => (
+            <label key={label} style={{display:'block'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#374151',marginBottom:2}}>{label}</div>
+              <input type="text" inputMode="decimal" className="input-field" value={vals[idx]} placeholder="—"
+                onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, ''); setVals(a => a.map((x, k) => k === idx ? v : x)); }}
+                style={{minHeight:56,fontSize:24,fontWeight:700,textAlign:'center'}}/>
+            </label>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <button onClick={() => save(false)} style={{flex:1,minHeight:52,borderRadius:12,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:16,cursor:'pointer'}}>保存</button>
+          {hasNext && <button onClick={() => save(true)} style={{flex:1.3,minHeight:52,borderRadius:12,border:'none',background:'#4338ca',color:'#fff',fontWeight:800,fontSize:16,cursor:'pointer'}}>保存して次へ</button>}
+        </div>
+        <button onClick={onClose} style={{width:'100%',minHeight:44,marginTop:6,border:'none',background:'none',color:'#6b7280',fontSize:14,cursor:'pointer'}}>閉じる</button>
+      </div>
+    </div>
+  );
+};
+
+const ArrivalTab = () => {
+  const { data, setData } = React.useContext(AppContext);
+  const dataRefArr = React.useRef(data);
+  dataRefArr.current = data;
+  const [seg, setSeg] = React.useState('pending'); // pending | done | all
+  const [search, setSearch] = React.useState('');
+  const [showOld, setShowOld] = React.useState(false);
+  const [limit, setLimit] = React.useState(20);
+  const [sheet, setSheet] = React.useState(null); // { ids:[...], pos }
+  const boxes = getArrivalBoxes(data.inventory);
+  const cutoff = React.useMemo(arrivalCutoff, []);
+  const toks = React.useMemo(() => searchFold(search).split(' ').filter(Boolean).map(t => [t.replace(/\s/g, ''), normShop(t)]), [search]);
+  const searching = toks.length > 0;
+  const counts = React.useMemo(() => {
+    let p = 0, d = 0;
+    boxes.forEach(b => { if (b.done) d++; else if (searching || showOld || b.date >= cutoff) p++; });
+    return { p, d, a: p + d };
+  }, [boxes, showOld, cutoff, searching]);
+  const shown = React.useMemo(() => boxes.filter(b => {
+    if (seg === 'pending' && b.done) return false;
+    if (seg === 'done' && !b.done) return false;
+    if (searching) return toks.every(([t, n]) => b.hay.includes(t) || (n && b.hay.includes(n)));
+    if (seg !== 'done' && !showOld && !b.done && b.date < cutoff) return false;
+    return true;
+  }), [boxes, seg, toks, searching, showOld, cutoff]);
+  const hiddenOld = React.useMemo(() => (seg === 'done' || searching || showOld) ? 0 : boxes.filter(b => !b.done && b.date < cutoff).length, [boxes, seg, searching, showOld, cutoff]);
+
+  // 届いた確認の保存：通常の setData 経由（編集した行に updatedAt が刻まれ、クラウド同期される）
+  const setItemsArrived = (ids, on) => {
+    const cur = dataRefArr.current;
+    const idSet = new Set(ids);
+    const now = new Date().toISOString();
+    setData({ ...cur, inventory: cur.inventory.map(i => {
+      if (!idSet.has(i.id)) return i;
+      if (on) return i.arrivedAt ? i : { ...i, arrivedAt: now };
+      return i.arrivedAt ? { ...i, arrivedAt: null } : i;
+    }) });
+  };
+  const saveMeasure = (item, m, goNext) => {
+    const cur = dataRefArr.current;
+    const now = new Date().toISOString();
+    setData({ ...cur, inventory: cur.inventory.map(i => {
+      if (i.id !== item.id) return i;
+      return { ...i, sizeTag: m.sizeTag, sizeM1: m.sizeM[0] || '', sizeM2: m.sizeM[1] || '', sizeM3: m.sizeM[2] || '', sizeM4: m.sizeM[3] || '',
+        ...(m.setCat ? { category: m.cat } : {}), ...(i.arrivedAt ? {} : { arrivedAt: now }) };
+    }) });
+    setSheet(s => (goNext && s && s.pos < s.ids.length - 1) ? { ...s, pos: s.pos + 1 } : null);
+  };
+  const sheetItem = sheet ? (data.inventory || []).find(i => i.id === sheet.ids[sheet.pos]) : null;
+  const sheetBoxItems = sheet ? sheet.ids.map(id => ({ id })) : [];
+
+  return (
+    <div>
+      <div style={{padding:'12px 16px 0'}}><div style={{fontSize:28,fontWeight:800}}>入荷</div></div>
+      <IosSearch value={search} onChange={v => { setSearch(v); setLimit(20); }} placeholder="箱のラベルの店名・商品名・オークションIDで検索" />
+      <IosSegmented value={seg} onChange={v => { setSeg(v); setLimit(20); }}
+        options={[{ value: 'pending', label: '未着', count: counts.p }, { value: 'done', label: '届いた', count: counts.d }, { value: 'all', label: 'すべて', count: counts.a }]} />
+      <div style={{padding:'12px 16px 24px'}}>
+        {shown.length === 0 ? (
+          <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
+            {searching ? '該当する箱がありません' : seg === 'pending' ? '✓ 未着の箱はありません' : '箱がありません'}
           </div>
-        );
-      })}
-      {shown.length > limit && (
-        <button onClick={() => setLimit(l => l + 20)}
-          style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'white',color:'#374151',fontSize:13,fontWeight:700,cursor:'pointer'}}>もっと見る（あと{shown.length - limit}箱）</button>
-      )}
+        ) : shown.slice(0, limit).map(b => {
+          const pend = b.members.filter(i => !isItemArrived(i));
+          const ids = b.members.map(i => i.id);
+          return (
+            <div key={b.key} className="card" style={{padding:12,marginBottom:12,border: b.done ? '1.5px solid #bbf7d0' : '1.5px solid #c7d2fe',borderLeft: b.done ? '4px solid #16a34a' : '4px solid #4338ca'}}>
+              <div style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:2}}>
+                <div style={{flex:1,minWidth:0,fontWeight:800,fontSize:19,lineHeight:'24px',wordBreak:'break-all'}}>{b.store || '仕入れ先未設定'}</div>
+                <div style={{fontWeight:800,fontSize:13,color: b.done ? '#15803d' : '#4338ca',whiteSpace:'nowrap',paddingTop:3}}>
+                  {b.done ? '✓ 全部そろった' : `${b.arrived}/${b.members.length} 届いた`}
+                </div>
+              </div>
+              <div style={{fontSize:12,color:'#6b7280'}}>
+                {b.date ? b.date.replace(/-/g, '/') : '日付なし'}　{b.members.length}点　合計 ¥{b.total.toLocaleString()}
+              </div>
+              {(b.aids.length > 0 || b.oids.length > 0) && (
+                <div style={{fontSize:11,color:'#9ca3af',marginBottom:6,wordBreak:'break-all'}}>
+                  {b.aids.slice(0, 3).join('　')}{b.aids.length > 3 ? ` 他${b.aids.length - 3}` : ''}{b.oids.length > 0 ? `　注文${b.oids.slice(0, 2).join('・')}` : ''}
+                </div>
+              )}
+              <div style={{height:6,borderRadius:99,background:'#e5e7eb',overflow:'hidden',margin:'6px 0 8px'}}>
+                <div style={{height:'100%',width:(b.arrived / b.members.length * 100) + '%',background: b.done ? '#16a34a' : '#6366f1'}}/>
+              </div>
+              {b.members.map(i => {
+                const auto = !i.arrivedAt && i.status && i.status !== 'unlisted';
+                const ok = isItemArrived(i);
+                return (
+                  <div key={i.id} style={{display:'flex',alignItems:'center',gap:10,padding:6,marginBottom:6,borderRadius:10,
+                    border: ok ? '1.5px solid #bbf7d0' : '1.5px solid #e5e7eb',background: ok ? '#f0fdf4' : '#fff'}}>
+                    <button onClick={() => setSheet({ ids, pos: ids.indexOf(i.id) })} aria-label="採寸する"
+                      style={{position:'relative',padding:0,border:'none',background:'none',cursor:'pointer',flexShrink:0,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      <ItemThumbnail thumbId={i.photos?.[0]?.thumbId} thumbDataUrl={i.photos?.[0]?.thumbDataUrl} size={84} fallback="📦" />
+                      <span style={{position:'absolute',right:3,bottom:3,background:'rgba(0,0,0,0.62)',color:'#fff',fontSize:10,fontWeight:700,borderRadius:6,padding:'1px 5px'}}>📏採寸{i.sizeM1 || i.sizeM2 ? '✓' : ''}</span>
+                    </button>
+                    <button disabled={auto} onClick={() => setItemsArrived([i.id], !i.arrivedAt)}
+                      style={{flex:1,minWidth:0,minHeight:84,display:'flex',alignItems:'center',gap:8,padding:0,border:'none',background:'none',textAlign:'left',cursor: auto ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                      <span style={{flex:1,minWidth:0}}>
+                        <span style={{fontSize:14,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical'}}>
+                          {i.bundleLabel ? <span style={{color:'#4338ca'}}>{i.bundleLabel} </span> : null}{i.productName || '(名称なし)'}
+                        </span>
+                        <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:2}}>
+                          {i.mgmtNo ? i.mgmtNo + '　' : ''}¥{(Number(i.purchasePrice) || 0).toLocaleString()}{auto ? (i.status === 'sold' ? '　売却済' : '　出品中') : i.arrivedAt ? '　届いた' : ''}
+                        </span>
+                      </span>
+                      <span style={{width:32,height:32,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:800,
+                        border: ok ? 'none' : '2px solid #9ca3af',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
+                    </button>
+                  </div>
+                );
+              })}
+              {!b.done && pend.length > 1 && (
+                <button onClick={() => setItemsArrived(pend.map(i => i.id), true)}
+                  style={{width:'100%',minHeight:44,marginTop:2,borderRadius:10,border:'1.5px solid #4338ca',background:'#fff',color:'#4338ca',fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation'}}>
+                  残り{pend.length}点を全部「届いた」にする
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {shown.length > limit && (
+          <button onClick={() => setLimit(l => l + 20)}
+            style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'white',color:'#374151',fontSize:13,fontWeight:700,cursor:'pointer',marginBottom:8}}>もっと見る（あと{shown.length - limit}箱）</button>
+        )}
+        {hiddenOld > 0 && (
+          <button onClick={() => { setShowOld(true); setLimit(20); }}
+            style={{width:'100%',minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'#f9fafb',color:'#6b7280',fontSize:13,fontWeight:700,cursor:'pointer'}}>もっと前も表示（{ARRIVAL_RECENT_DAYS}日より前の未着 {hiddenOld}箱）</button>
+        )}
+        {showOld && seg !== 'done' && !searching && (
+          <button onClick={() => setShowOld(false)}
+            style={{width:'100%',minHeight:40,border:'none',background:'none',color:'#6b7280',fontSize:13,cursor:'pointer'}}>直近{ARRIVAL_RECENT_DAYS}日だけに戻す</button>
+        )}
+      </div>
+      {sheetItem && <MeasureSheet key={sheetItem.id} item={sheetItem} boxItems={sheetBoxItems} position={sheet.pos} onClose={() => setSheet(null)} onSave={saveMeasure} />}
     </div>
   );
 };
@@ -6773,21 +6908,6 @@ const InventoryTab = () => {
     return m;
   }, [data.inventory]);
 
-  // 「まとめ購入」タブ（届いた確認）：グループ化は在庫が変わったときだけ
-  const bundleArrivalGroups = React.useMemo(() => buildBundleArrivalGroups(data.inventory), [data.inventory]);
-  const bundleArrivalPending = React.useMemo(() => bundleArrivalGroups.filter(g => !g.done).length, [bundleArrivalGroups]);
-  // 届いた確認の保存：通常の setData 経由（編集した行に updatedAt が刻まれ、クラウド同期される）
-  const setItemsArrived = (ids, on) => {
-    const cur = dataRefInv.current;
-    const idSet = new Set(ids);
-    const now = new Date().toISOString();
-    setData({ ...cur, inventory: cur.inventory.map(i => {
-      if (!idSet.has(i.id)) return i;
-      if (on) return i.arrivedAt ? i : { ...i, arrivedAt: now };
-      return i.arrivedAt ? { ...i, arrivedAt: null } : i;
-    }) });
-  };
-
   // まとめ買いの種別フィルター：同梱(individual)／セット購入(set)／未分類(bundleType なし)
   const BUNDLE_FILTERS = { bundleAll: null, bundleIndividual: 'individual', bundleSet: 'set', bundleNone: '' };
   const isBundleFilter = (f) => Object.prototype.hasOwnProperty.call(BUNDLE_FILTERS, f);
@@ -6795,7 +6915,6 @@ const InventoryTab = () => {
   const isInBundle = (item) => !!item.bundleGroup && bundleCounts[item.bundleGroup] > 1;
 
   const filtered = React.useMemo(() => data.inventory.filter(item => {
-    if (filter === 'bundleCheck') return false;
     if (filter === 'priceUnconfirmed') { if (!item.priceUnconfirmed) return false; }
     if (isBundleFilter(filter)) { if (!isInBundle(item) || (filter !== 'bundleAll' && bundleTypeKey(item) !== BUNDLE_FILTERS[filter])) return false; if (focusBundle && item.bundleGroup !== focusBundle) return false; }
     if (filter === 'dupCheck') { if (!isDupOpen(item)) return false; }
@@ -7649,8 +7768,7 @@ const InventoryTab = () => {
       <IosSearch value={search} onChange={setSearch} placeholder="商品名・ブランド名で検索" />
 
       <IosSegmented value={filter} onChange={(v) => { setFilter(v); setCheckedIds(new Set()); }}
-        options={[['unlisted','未出品'],['listed','出品中'],['sold','売却済'],['all','すべて'],['bundleCheck','まとめ購入']].map(([v,l]) => {
-          if (v === 'bundleCheck') return { value: v, label: l, count: bundleArrivalPending };
+        options={[['unlisted','未出品'],['listed','出品中'],['sold','売却済'],['all','すべて']].map(([v,l]) => {
           const base = v === 'all' ? data.inventory : data.inventory.filter(i => i.status === v);
           const q = search.trim().toLowerCase();
           const cnt = q ? base.filter(i => (i.productName||'').toLowerCase().includes(q) || (i.brand||'').toLowerCase().includes(q) || (i.memo||'').toLowerCase().includes(q)).length : base.length;
@@ -7726,9 +7844,7 @@ const InventoryTab = () => {
         </div>
       )}
 
-      {filter === 'bundleCheck' && <BundleArrivalView groups={bundleArrivalGroups} search={search} onToggle={setItemsArrived} />}
-
-      <div style={{display: filter === 'bundleCheck' ? 'none' : undefined, padding:'12px 16px', paddingBottom: bulkMode && bulkKind === 'list' ? 120 : bulkMode && checkedIds.size > 0 ? 100 : 12}}>
+      <div style={{padding:'12px 16px', paddingBottom: bulkMode && bulkKind === 'list' ? 120 : bulkMode && checkedIds.size > 0 ? 100 : 12}}>
         {/* 仕入れ先の入力候補（一覧の直接入力とまとめ確定の両方で使う）*/}
         <datalist id="bulkStoreOptions">
           {storeOptions.map(s => <option key={s} value={s}/>)}
@@ -19910,6 +20026,14 @@ const App = () => {
         <line x1="12" y1="22.08" x2="12" y2="12"/>
       </svg>
     ),
+    arrival: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 8l-9-5-9 5v8l9 5 9-5z"/>
+        <polyline points="3.3 7.5 12 12.5 20.7 7.5"/>
+        <line x1="12" y1="22" x2="12" y2="12.5"/>
+        <polyline points="7.5 5.2 16.5 10"/>
+      </svg>
+    ),
     inventory: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="3" width="20" height="14" rx="2"/>
@@ -19939,9 +20063,10 @@ const App = () => {
   };
   const tabs = [
     { id: 'home',      label: 'ホーム' },
+    { id: 'arrival',   label: '入荷'   },
     { id: 'inventory', label: '在庫'   },
     { id: 'sales',     label: '売上'   },
-    { id: 'data',      label: 'エクスポート' },
+    { id: 'data',      label: 'データ' },
     { id: 'other',     label: 'その他' },
   ];
 
@@ -19949,6 +20074,7 @@ const App = () => {
   const showApiWarning = !data.settings?.apiKey && tab !== 'other';
 
   // ── ナビバッジ用集計 ──
+  const navBadgeArrival = countPendingArrivalBoxes(data.inventory);
   const navBadgeInventory = (data.inventory||[]).filter(i => i.status === 'unlisted').length;
   const _soldNavIds = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const _recordedNavIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
@@ -20054,6 +20180,7 @@ const App = () => {
 
             {tab === 'home' && <HomeTab />}
             {tab === 'purchase' && <PurchaseTab />}
+            {tab === 'arrival' && <ArrivalTab />}
             {tab === 'inventory' && <InventoryTab />}
             {tab === 'sales' && <SalesTab />}
             {tab === 'other' && <OtherTab />}
@@ -20063,7 +20190,8 @@ const App = () => {
           {/* ボトムナビ */}
           <nav className="bottom-nav">
             {tabs.map(t => {
-              const badge = t.id === 'inventory' ? navBadgeInventory
+              const badge = t.id === 'arrival' ? navBadgeArrival
+                          : t.id === 'inventory' ? navBadgeInventory
                           : t.id === 'sales'     ? navBadgeSales
                           : t.id === 'other'     ? navBadgeOther
                           : 0;
