@@ -33,6 +33,33 @@ async function sbFetchInner(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+
+// ★ Anthropic APIキーはサーバー側(app_settings id='secrets')にだけ置く。GETでは絶対に返さない
+// - default 設定行にはキーを書かない（POSTで必ず除去）
+// - 旧データ(default にキーが残っている)は、secrets へ書き写して検証してから default から消す（移行）
+const SECRETS_ID = 'secrets';
+const sbUpsertSetting = (id, data) => sbFetch('app_settings', {
+  method: 'POST',
+  headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+  body: JSON.stringify([{ id, data }]),
+});
+async function readSecretKey() {
+  const r = await sbFetch(`app_settings?select=k:data->>anthropicApiKey&id=eq.${SECRETS_ID}`);
+  return (Array.isArray(r) && r[0] && typeof r[0].k === 'string') ? r[0].k : '';
+}
+// secrets にキーを保存し、読み戻して一致を確認する（一致しなければ例外）
+async function saveSecretKey(key) {
+  await sbUpsertSetting(SECRETS_ID, { anthropicApiKey: key });
+  const back = await readSecretKey();
+  if (back !== key) throw new Error('secrets の保存確認に失敗しました');
+}
+// 設定からキー関連(apiKey / hasApiKey)を除いたコピー
+function stripKeyFields(s) {
+  if (!s || typeof s !== 'object') return s;
+  const { apiKey, hasApiKey, ...rest } = s;
+  return rest;
+}
+
 // ★ 分割取得
 // 在庫869点を一度にSELECTすると写真base64で30MBになり、Supabase側が
 // statement timeout (57014) で落ちて「同期失敗」になる。
@@ -269,10 +296,26 @@ export default async function handler(req, res) {
       const [inv, sales, cfgRows] = await Promise.all([
         loadInventory(),
         sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc,id.asc', 500),
-        sbFetch('app_settings?select=id,data&id=in.(default,receipts,storePending)').catch(() => null),
+        sbFetch('app_settings?select=id,data&id=in.(default,receipts,storePending,secrets)').catch(() => null),
       ]);
       const _cfg = new Map((Array.isArray(cfgRows) ? cfgRows : []).map(r => [r.id, r.data]));
       const cfg = { data: _cfg.get('default') };
+      // ★ APIキー: secrets を優先。default に旧キーが残っていれば移行（書き写し→検証→default から除去）
+      const legacyKey = (typeof cfg.data?.apiKey === 'string') ? cfg.data.apiKey.trim() : '';
+      let secretKey = (typeof _cfg.get('secrets')?.anthropicApiKey === 'string') ? _cfg.get('secrets').anthropicApiKey : '';
+      if (cfg.data && Object.prototype.hasOwnProperty.call(cfg.data, 'apiKey')) {
+        try {
+          if (!secretKey && legacyKey) { await saveSecretKey(legacyKey); secretKey = legacyKey; }
+          if (secretKey || !legacyKey) {
+            // 直前に最新のdefault行を読み直して、キーだけ除いて書き戻す（他の変更を巻き込まない）
+            const fresh = await sbFetch('app_settings?select=data&id=eq.default', { headers: { 'Accept': 'application/vnd.pgrst.object+json' } });
+            if (fresh?.data && Object.prototype.hasOwnProperty.call(fresh.data, 'apiKey')) {
+              await sbUpsertSetting('default', stripKeyFields(fresh.data));
+            }
+          }
+        } catch(e) { console.warn('[api/data] APIキー移行に失敗（次回再試行）:', e.message); }
+      }
+      const hasApiKey = !!(secretKey || legacyKey);
       const rcp = { data: _cfg.get('receipts') };
       const sp = { data: _cfg.get('storePending') };
       res.setHeader('Server-Timing', `total;dur=${Date.now() - _tAll}, ` + _timings.join(', '));
@@ -288,7 +331,7 @@ export default async function handler(req, res) {
         light: !full,
         inventory: inv,
         sales:     (Array.isArray(sales) ? sales : []).map(r => ({ ...r.data, id: r.id })),
-        settings:  cfg?.data || null,
+        settings:  cfg?.data ? { ...stripKeyFields(cfg.data), hasApiKey } : null,
         receipts:  (rcp?.data && Array.isArray(rcp.data.list)) ? rcp.data.list : [],
         storePending: (sp?.data && Array.isArray(sp.data.list)) ? sp.data.list : [],
         claudeProposals: (cp?.data && Array.isArray(cp.data.list)) ? cp.data.list : [],
@@ -357,6 +400,21 @@ export default async function handler(req, res) {
             if (Object.keys(mc).length) settingsData = { ...settingsData, bundleCovers: mc };
           } catch(e) { console.warn('[api/data] bundleCovers の取得に失敗（マージなしで続行）:', e.message); }
         }
+        // ★ APIキー: 空/未指定では何も消さない。新しい値だけ secrets へ。default には絶対に書かない
+        const incomingKey = (settings && typeof settings === 'object' && typeof settings.apiKey === 'string') ? settings.apiKey.trim() : '';
+        if (incomingKey) {
+          const cur = await readSecretKey().catch(() => null);
+          if (cur !== incomingKey) await saveSecretKey(incomingKey);
+        } else {
+          // 旧データに備える: secrets が空で default にキーが残っていれば、default を上書きする前に secrets へ退避
+          const cur = await readSecretKey().catch(() => null);
+          if (cur === '') {
+            const lg = await sbFetch('app_settings?select=k:data->>apiKey&id=eq.default').catch(() => null);
+            const lk = (Array.isArray(lg) && lg[0] && typeof lg[0].k === 'string') ? lg[0].k.trim() : '';
+            if (lk) await saveSecretKey(lk);
+          }
+        }
+        settingsData = stripKeyFields(settingsData);
         ops.push(sbFetch('app_settings', {
           method: 'POST',
           headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },

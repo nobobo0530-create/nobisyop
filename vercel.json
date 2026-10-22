@@ -2,6 +2,9 @@
   "outputDirectory": "public",
   "buildCommand": "",
   "regions": ["hnd1"],
+  "functions": {
+    "api/claude.js": { "maxDuration": 60 }
+  },
   "crons": [
     { "path": "/api/ping", "schedule": "0 0 * * *" }
   ],

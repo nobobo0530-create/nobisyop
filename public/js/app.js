@@ -2,7 +2,7 @@
 // CONFIG - 変更しやすい設定値を集約
 // ============================================================
 const CONFIG = {
-  ANTHROPIC_API_URL: 'https://api.anthropic.com/v1/messages',
+  ANTHROPIC_API_URL: '/api/claude',   // サーバー経由(キーはサーバー保管)。実際のURLは claudeUrl() で組み立てる
   MODEL: 'claude-sonnet-4-6',           // 精度優先（Claude Sonnet 4.6・写真のタグ読み取り精度向上のため）
   MODEL_HEAVY: 'claude-opus-4-6',       // 高精度が必要な場合用（現在未使用）
   PRICE_SPLIT_DIVISOR: 100,
@@ -1569,7 +1569,35 @@ const conditionTag = (c) => {
 // ============================================================
 // Claude API
 // ============================================================
+const claudeUrl = () => `${_API_BASE}${CONFIG.ANTHROPIC_API_URL}`;
+
+// 設定から「APIキーあり」を判定（キーはサーバー保管。端末には hasApiKey だけ来る）
+const apiKeyFlag = (settings) => (settings?.apiKey || '').trim() || (settings?.hasApiKey ? 'server' : '');
+
+// Vercelの上限(約4.5MB)対策: 画像の合計が大きすぎるときは縮小して再エンコード
+const CLAUDE_IMG_BUDGET = 3_000_000; // base64文字数の合計
+const shrinkImagesForClaude = async (list) => {
+  let total = list.reduce((a, i) => a + (i.data?.length || 0), 0);
+  let scale = 0;
+  while (total > CLAUDE_IMG_BUDGET && scale < 3) {
+    const dims = [1000, 800, 600][scale];
+    const out = [];
+    for (const img of list) {
+      const bin = atob(img.data);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const small = await compressImage(new Blob([u8], { type: img.mimeType }), dims, 0.7);
+      out.push({ mimeType: 'image/jpeg', data: await blobToBase64(small) });
+    }
+    list = out;
+    total = list.reduce((a, i) => a + i.data.length, 0);
+    scale++;
+  }
+  return list;
+};
+
 const analyzeImagesWithClaude = async (imageDataList, apiKey, prompt, maxTokens = 512) => {
+  imageDataList = await shrinkImagesForClaude(imageDataList);
   // タイムアウト30秒（無限ループ防止）
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
@@ -1583,14 +1611,11 @@ const analyzeImagesWithClaude = async (imageDataList, apiKey, prompt, maxTokens 
   ];
 
   try {
-    const res = await fetch(CONFIG.ANTHROPIC_API_URL, {
+    const res = await fetch(claudeUrl(), {
       method: 'POST',
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
         model: getAiModel(),
@@ -3245,7 +3270,7 @@ const PurchaseTab = () => {
     } catch(_) {}
   }, [editingItem]);
 
-  const apiKey = data.settings?.apiKey || '';
+  const apiKey = apiKeyFlag(data.settings);
 
   const handlePhotoFiles = async (files) => {
     const remaining = 5 - photos.length;
@@ -10995,7 +11020,7 @@ const SalesTab = () => {
       window.removeEventListener('pagehide', forceSave);
     };
   }, [form, bundleSale, bundleSaleItems, bundleSaleSplitMethod, showForm, editingSale, saveSaleDraft]);
-  const apiKey = data.settings?.apiKey || '';
+  const apiKey = apiKeyFlag(data.settings);
 
   // 上位N件マッチング（ブランド・商品名・型番・価格を総合評価）
   const findTopMatches = (extracted, items, topN = 3) => {
@@ -13882,6 +13907,8 @@ function mergeCloudIntoLocal(localFull, cloudFull) {
       if (base[k] === undefined || base[k] === null || base[k] === '') base[k] = v;
     }
     base._deletedIds = mergedDeletedIds;
+    // APIキーはサーバー保管。サーバーが持っていれば端末側のコピーは消す（空/未送信ではサーバーのキーは消えない）
+    if (cloud?.hasApiKey) { base.apiKey = ''; base.hasApiKey = true; }
     // まとめ買いの表紙は端末とクラウドでキーごとにマージ（片方で上書きして失わない）
     base.bundleCovers = mergeBundleCovers(cloud?.bundleCovers, local?.bundleCovers);
     if (!base.storeLicenses) base.storeLicenses = {};
@@ -15914,7 +15941,7 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
   // ── キャリブレーションモーダル用state ──
   const [showCropModal, setShowCropModal] = React.useState(false);
 
-  const apiKey = (data?.settings?.apiKey || '').trim();
+  const apiKey = apiKeyFlag(data?.settings);
   const [keyStatus, setKeyStatus] = React.useState(null); // null | 'ok' | 'error'
   const [keyTesting, setKeyTesting] = React.useState(false);
 
@@ -15923,13 +15950,10 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     setKeyTesting(true);
     setKeyStatus(null);
     try {
-      const res = await fetch(CONFIG.ANTHROPIC_API_URL, {
+      const res = await fetch(claudeUrl(), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
           model: getAiModel(),
@@ -16318,13 +16342,10 @@ const BatchPurchasePanel = ({ data, setData, toast }) => {
     // ── APIキー事前確認 ──
     setAnalyzing(true);
     try {
-      const testRes = await fetch(CONFIG.ANTHROPIC_API_URL, {
+      const testRes = await fetch(claudeUrl(), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({ model: getAiModel(), max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] }),
       });
@@ -17524,7 +17545,7 @@ const OtherTab = ({ mode }) => {
   const handleReceiptPhoto = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const apiKey = data.settings?.apiKey || '';
+    const apiKey = apiKeyFlag(data.settings);
     if (!apiKey) { toast('⚠️ APIキーを設定してください'); return; }
     setReceiptAnalyzing(true);
     try {
@@ -19025,10 +19046,12 @@ const OtherTab = ({ mode }) => {
 
             <div className="card" style={{padding:16,marginBottom:12}}>
               <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>🔑 Anthropic APIキー</div>
-              <input className="input-field" type="password" value={settings.apiKey}
+              <input className="input-field" type="password" value={settings.apiKey || ''}
                 onChange={e => setSetting('apiKey', e.target.value)}
-                placeholder="sk-ant-api..."/>
-              <div style={{fontSize:11,color:'#999',marginTop:6}}>キーはlocalStorageに保存されます</div>
+                placeholder={settings.hasApiKey ? '新しいキーに変えるときだけ入力' : 'sk-ant-api...'}/>
+              <div style={{fontSize:11,color: settings.hasApiKey && !settings.apiKey ? '#16a34a' : '#999',marginTop:6}}>
+                {settings.hasApiKey && !settings.apiKey ? '✅ サーバーに保存済み（この端末には残りません）' : 'キーは保存するとサーバーに送られ、端末には残りません'}
+              </div>
             </div>
 
             <div className="card" style={{padding:16,marginBottom:12}}>
@@ -20286,7 +20309,7 @@ const App = () => {
   ];
 
   // APIキー未設定時のバナー
-  const showApiWarning = !data.settings?.apiKey && tab !== 'other';
+  const showApiWarning = !apiKeyFlag(data.settings) && tab !== 'other';
 
   // ── ナビバッジ用集計 ──
   const navBadgeArrival = countPendingArrivalBoxes(data.inventory);
