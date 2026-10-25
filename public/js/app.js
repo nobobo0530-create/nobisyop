@@ -8392,7 +8392,8 @@ const InventoryTab = () => {
                                 <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
                                 {(it.listPrice || 0) > 0 && <span style={{color: it.listPrice === Number(sl.price) ? '#b45309' : '#6b7280', fontWeight: it.listPrice === Number(sl.price) ? 800 : 400}}>出品 {yen(it.listPrice)}{it.listPrice === Number(sl.price) ? '（価格一致）' : ''}</span>}
                               </div>
-                              <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yen(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}{f ? `　→ 利益 ${yen(f.profit)}` : ''}</div>
+                              <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yen(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}{f ? `　→ 利益 ${yen(f.profit)}${f.preShip ? '（送料前）' : ''}` : ''}</div>
+                              {f && f.shipUnknown && <div style={{fontSize:11,color:'#c2410c',fontWeight:700,marginTop:2}}>📦 送料未定（あとで「送料未入力」で入力）</div>}
                               {c.reason && <div style={{fontSize:11,color:'#2563eb',marginTop:2,wordBreak:'break-all'}}>{c.reason}</div>}
                             </div>
                           </div>
@@ -10716,15 +10717,18 @@ const MAIL_LINK_PAGE = 12;
 const calcLinkedSaleFields = (sale, item) => {
   const price = Number(sale.salePrice) || 0;
   const feeRate = Number(sale.feeRate) || 0;
-  // 送料未確定のときは仮の送料(ESTIMATED_SHIPPING)で利益を出し、「送料未入力」の印は残す
-  const ship = (sale.shippingUnknown && !(Number(sale.shipping) > 0)) ? CONFIG.ESTIMATED_SHIPPING : (Number(sale.shipping) || 0);
+  // 送料未確定のときは送料を仮定しない（ship=null）。利益は「送料前」(売価−手数料−仕入れ)で出し、「送料未入力」の印を残す
+  //  → 送料が入ったら ShippingEditModal / 完了メールで shippingUnknown が外れ、利益が再計算される
   const pp = Number(item.purchasePrice) || 0;
   const np = netProfitOf(sale, pp);
-  const profit = np != null ? np : Math.round(price * (1 - feeRate) - ship - pp);
+  const shipUnknown = !!sale.shippingUnknown && !(Number(sale.shipping) > 0);
+  const ship = shipUnknown ? null : (sale.shipping == null && np == null ? null : (Number(sale.shipping) || 0));
+  const preShip = np == null && ship == null;   // 送料前の利益（受取額も送料もない）
+  const profit = np != null ? np : Math.round(price * (1 - feeRate) - (ship || 0) - pp);
   const listDate = item.listDate || '';
   let turnoverDays = null;
   if (listDate && sale.saleDate) turnoverDays = Math.max(0, Math.floor((new Date(sale.saleDate).getTime() - new Date(listDate).getTime()) / 86400000));
-  return { ship, pp, profit, listDate, turnoverDays };
+  return { ship, pp, profit, preShip, shipUnknown, listDate, turnoverDays };
 };
 
 // 未紐付け売上⇔在庫の紐付け本体（売上タブの未紐付け画面と「Claudeの確認待ち」で共通）。成功したら紐付け後の売上を返す
@@ -10735,7 +10739,7 @@ const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, ex
   if (!curItem || curItem.status === 'sold' || (data.sales || []).some(s => s.inventoryId === curItem.id)) { toast('この商品はすでに売却済み／紐付け済みです'); return null; }
   const f = calcLinkedSaleFields(curSale, curItem);
   const nm = `${curItem.brand ? curItem.brand + ' ' : ''}${curItem.productName || ''}`.trim();
-  const msg = `この売上に紐付けます\n\n売上：${curSale.platform} ¥${formatMoney(curSale.salePrice)}\n${(curSale.mailTitle || '').slice(0, 40)}\n\n在庫：${nm}\n${curItem.mgmtNo || ''}\n\n仕入れ ¥${formatMoney(f.pp)} → 利益 ¥${formatMoney(f.profit)}${curSale.shippingUnknown ? '（送料は仮' + CONFIG.ESTIMATED_SHIPPING + '円）' : ''}\n在庫は「売却済み」になります。`;
+  const msg = `この売上に紐付けます\n\n売上：${curSale.platform} ¥${formatMoney(curSale.salePrice)}\n${(curSale.mailTitle || '').slice(0, 40)}\n\n在庫：${nm}\n${curItem.mgmtNo || ''}\n\n仕入れ ¥${formatMoney(f.pp)} → 利益 ¥${formatMoney(f.profit)}${f.preShip ? '（送料前・送料は未定）' : ''}\n在庫は「売却済み」になります。`;
   if (!window.confirm(msg)) return null;
   const nowIso = new Date().toISOString();
   const linked = {
@@ -10744,6 +10748,7 @@ const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, ex
     purchasePrice: f.pp, purchaseDate: curItem.purchaseDate || '', purchaseStore: curItem.purchaseStore || '',
     listDate: f.listDate, turnoverDays: f.turnoverDays,
     shipping: f.ship, profit: f.profit,
+    ...(f.shipUnknown ? { shippingUnknown: true } : {}),   // 送料未定のまま紐付け→「送料未入力」に残す（送料は仮定しない）
     productName: curItem.productName || '', brand: curItem.brand || '',
     updatedAt: nowIso,
   };
@@ -10754,7 +10759,7 @@ const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, ex
     inventory: data.inventory.map(i => i.id === curItem.id ? { ...i, status: 'sold', soldAt: nowIso, soldDate: curSale.saleDate || '' } : i),
     sales: data.sales.map(s => s.id === curSale.id ? linked : s),
   });
-  toast('✅ 紐付けました（利益 ¥' + formatMoney(f.profit) + '）');
+  toast('✅ 紐付けました（利益 ¥' + formatMoney(f.profit) + (f.preShip ? '・送料前。送料未入力に入れました' : '') + '）');
   if (curSale.shippingUnknown && onEditShipping) onEditShipping(linked); // 送料未定ならその場で入力
   return linked;
 };
