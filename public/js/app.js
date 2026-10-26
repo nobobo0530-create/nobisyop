@@ -6105,9 +6105,21 @@ const isOnlinePurchase = (i) => i.purchaseType !== 'store' && (i.purchaseType ==
 const normShop = (s) => searchFold(s)
   .replace(/(やふおく|やふー|yahoo)!?(しょっぷ|shop)?/g, '')
   .replace(/[\s!！・･\-_]/g, '');
+// 社名・別名の照合用：アポストロフィ(' ’ ＇)・株式会社/（株）/有限会社などを無視
+const normCorp = (s) => searchFold(s).replace(/[\s'’`´]/g, '').replace(/株式会社|\(株\)|有限会社|\(有\)|合同会社/g, '').replace(/[!！・･\-_]/g, '');
+// 仕入れ先名 → { company, extra }（yahooStores の companyName／suppliers の companyName・aliases）
+const getStoreCompanyInfo = (settings, store) => {
+  const key = normShop(store) || normCorp(store);
+  if (!key) return { company: '', extra: [] };
+  const same = (n) => { const a = normShop(n); return !!a && a === key; };
+  let company = ''; const extra = [];
+  ((settings && settings.yahooStores) || []).forEach(s => { if (same(s.storeName)) { if (s.companyName) { company = company || s.companyName; extra.push(s.companyName); } } });
+  ((settings && settings.suppliers) || []).forEach(s => { if (same(s.name)) { if (s.companyName) { company = company || s.companyName; extra.push(s.companyName); } (s.aliases || []).forEach(a => a && extra.push(a)); } });
+  return { company, extra };
+};
 const ARRIVAL_RECENT_DAYS = 60;
 const arrivalCutoff = () => { const d = new Date(); d.setDate(d.getDate() - ARRIVAL_RECENT_DAYS); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-const buildArrivalBoxes = (inventory) => {
+const buildArrivalBoxes = (inventory, settings) => {
   const map = new Map();
   (inventory || []).forEach(i => {
     if (!isOnlinePurchase(i)) return;
@@ -6124,23 +6136,26 @@ const buildArrivalBoxes = (inventory) => {
     const aids = [...new Set(members.map(i => (i.yahooAuctionId || '').trim()).filter(Boolean))];
     const oids = [...new Set(members.map(i => (String(i.notes || '').match(/注文\s*([0-9A-Za-z_-]{6,})/) || [])[1]).filter(Boolean))];
     const arrived = members.filter(isItemArrived).length;
-    const hay = searchFold([store, normShop(store), aids.join(' '), oids.join(' '), ...members.map(i => [i.productName, i.brand, i.mgmtNo, i.bundleLabel].join(' '))].join(' ')).replace(/\s/g, '');
+    const ci = getStoreCompanyInfo(settings, store);
+    const corpHay = ci.extra.map(normCorp).filter(Boolean).map(c => c + ' ' + c.replace(/ys/g, 'わいず')).join(' ');
+    const hay = searchFold([store, normShop(store), corpHay, aids.join(' '), oids.join(' '), ...members.map(i => [i.productName, i.brand, i.mgmtNo, i.bundleLabel].join(' '))].join(' ')).replace(/\s/g, '');
     const created = members.reduce((m, i) => { const c = String(i.createdAt || ''); return c > m ? c : m; }, '');
     const idn = members.reduce((m, i) => { const n = Number(i.id); return n > m ? n : m; }, 0);
     const shopKey = normShop(store) || searchFold(store).replace(/\s/g, '') || '-';
-    out.push({ key, shopKey, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay, created, idn });
+    out.push({ key, shopKey, members: sortedM, date, store, total, aids, oids, arrived, done: arrived === members.length, hay, company: ci.company, created, idn });
   });
   // 新しい順：購入日の新しい順 → 同日は登録(createdAt)の新しい順 → id数値の大きい順
   out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) || (a.created < b.created ? 1 : a.created > b.created ? -1 : 0) || (b.idn - a.idn));
   return out;
 };
 // App と入荷タブで同じ結果を共有（在庫配列が変わったときだけ再計算。フック不要・保存なし）
-let _arrivalCache = { inv: null, boxes: [] };
-const getArrivalBoxes = (inventory) => {
-  if (_arrivalCache.inv !== inventory) _arrivalCache = { inv: inventory, boxes: buildArrivalBoxes(inventory) };
+let _arrivalCache = { inv: null, st: null, boxes: [] };
+const getArrivalBoxes = (inventory, settings) => {
+  const st = settings ? [settings.yahooStores, settings.suppliers] : [null, null];
+  if (_arrivalCache.inv !== inventory || !_arrivalCache.st || _arrivalCache.st[0] !== st[0] || _arrivalCache.st[1] !== st[1]) _arrivalCache = { inv: inventory, st, boxes: buildArrivalBoxes(inventory, settings) };
   return _arrivalCache.boxes;
 };
-const countPendingArrivalBoxes = (inventory) => { const c = arrivalCutoff(); return getArrivalBoxes(inventory).filter(b => !b.done && b.date >= c).length; };
+const countPendingArrivalBoxes = (inventory, settings) => { const c = arrivalCutoff(); return getArrivalBoxes(inventory, settings).filter(b => !b.done && b.date >= c).length; };
 
 // 採寸シート：商品写真をタップして開く。項目は登録/編集画面と共通の MeasureForm（item.measure＋sizeM1〜4）
 const MeasureSheet = ({ item, boxItems, position, onClose, onSave }) => {
@@ -6211,6 +6226,7 @@ const ArrivalBoxRow = React.memo(({ b, open, selMode, selected, onToggle, onSele
         </div>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontWeight:800,fontSize:16,lineHeight:'21px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.store || '仕入れ先未設定'}</div>
+          {b.company && <div style={{fontSize:11,color:'#6b7280',lineHeight:'15px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{b.company}</div>}
           <div style={{fontSize:12,color:'#6b7280',lineHeight:'17px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{b.members.length}点 · {mdDate} · ¥{b.total.toLocaleString()}</div>
         </div>
         <span style={{flexShrink:0,minWidth:36,textAlign:'center',padding:'3px 8px',borderRadius:99,fontSize:12,fontWeight:800,
@@ -6288,9 +6304,9 @@ const ArrivalTab = () => {
     const h = barRef.current ? barRef.current.offsetHeight : 0;
     if (h && Math.abs(h - barH) > 1) setBarH(h);
   });
-  const boxes = getArrivalBoxes(data.inventory);
+  const boxes = getArrivalBoxes(data.inventory, data.settings);
   const cutoff = React.useMemo(arrivalCutoff, []);
-  const toks = React.useMemo(() => searchFold(search).split(' ').filter(Boolean).map(t => [t.replace(/\s/g, ''), normShop(t)]), [search]);
+  const toks = React.useMemo(() => searchFold(search).split(' ').filter(Boolean).map(t => [t.replace(/\s/g, ''), normShop(t), normCorp(t)]), [search]);
   const searching = toks.length > 0;
   const counts = React.useMemo(() => {
     let p = 0, d = 0;
@@ -6301,7 +6317,7 @@ const ArrivalTab = () => {
   const base = React.useMemo(() => boxes.filter(b => {
     if (seg === 'pending' && b.done) return false;
     if (seg === 'done' && !b.done) return false;
-    if (searching) return toks.every(([t, n]) => b.hay.includes(t) || (n && b.hay.includes(n)));
+    if (searching) return toks.every(([t, n, c]) => b.hay.includes(t) || (n && b.hay.includes(n)) || (c && b.hay.includes(c)));
     if (seg !== 'done' && !showOld && !b.done && b.date < cutoff) return false;
     return true;
   }), [boxes, seg, toks, searching, showOld, cutoff]);
@@ -20317,7 +20333,7 @@ const App = () => {
   const showApiWarning = !apiKeyFlag(data.settings) && tab !== 'other';
 
   // ── ナビバッジ用集計 ──
-  const navBadgeArrival = countPendingArrivalBoxes(data.inventory);
+  const navBadgeArrival = countPendingArrivalBoxes(data.inventory, data.settings);
   const navBadgeInventory = (data.inventory||[]).filter(i => i.status === 'unlisted').length;
   const _soldNavIds = new Set((data.inventory||[]).filter(i => i.status === 'sold').map(i => i.id));
   const _recordedNavIds = new Set((data.sales||[]).map(s => s.inventoryId).filter(Boolean));
