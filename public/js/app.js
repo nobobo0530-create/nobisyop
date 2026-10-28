@@ -6617,8 +6617,17 @@ const PhotoSlide = ({ photoRef }) => {
     };
   }, [photoRef?.id]);
 
+  const [zoom, setZoom] = React.useState(false);
   if (!url) return null;
-  return <img src={url} alt="" style={{height:150,borderRadius:10,objectFit:'cover',flexShrink:0}}/>;
+  return (<>
+    <img src={url} alt="" onClick={() => setZoom(true)} style={{height:150,borderRadius:10,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}}/>
+    {zoom && (
+      <div onClick={(e) => { e.stopPropagation(); setZoom(false); }} style={{position:'fixed',inset:0,zIndex:100000,background:'rgba(0,0,0,0.92)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <img src={url} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>
+        <div style={{position:'absolute',top:'calc(env(safe-area-inset-top, 0px) + 12px)',right:14,color:'white',fontSize:28,fontWeight:700}}>×</div>
+      </div>
+    )}
+  </>);
 };
 
 // ============================================================
@@ -8383,6 +8392,18 @@ const InventoryTab = () => {
                           <span style={{padding:'2px 8px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:11,fontWeight:800}}>確度 {pr.confidence}</span>
                         </div>
                         <div style={{fontSize:13,fontWeight:700,color:'#111',lineHeight:1.4,wordBreak:'break-all'}}>{sl.mailTitle || pr.title}</div>
+                        {(() => {
+                          const pill = {display:'inline-flex',alignItems:'center',minHeight:28,padding:'2px 10px',borderRadius:99,border:'1px solid #cbd5e1',background:'white',color:'#334155',fontSize:11,fontWeight:700,textDecoration:'none',cursor:'pointer',WebkitTapHighlightColor:'transparent'};
+                          const sid = String((curSale && curSale.platformId) || sl.platformId || '').trim();
+                          const plat = String(sl.platform || (curSale && curSale.platform) || '');
+                          const surl = !sid ? '' : /メルカリ/.test(plat) ? `https://jp.mercari.com/item/${sid}` : /ヤフオク|Yahoo/i.test(plat) ? `https://page.auctions.yahoo.co.jp/jp/auction/${sid}` : /ラクマ/.test(plat) ? `https://item.fril.jp/${sid}` : '';
+                          return (
+                            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+                              <button style={pill} onClick={async () => { const ok = await copyToClipboard(String(sl.mailTitle || pr.title || '')); toast(ok ? 'コピーしました' : 'コピーできませんでした'); }}>📋 タイトル</button>
+                              {surl && <a style={pill} href={surl} target="_blank" rel="noopener noreferrer">売れた出品を見る</a>}
+                            </div>
+                          );
+                        })()}
                       </div>
                       <div style={{fontWeight:800,fontSize:16,color:'#111',flexShrink:0}}>{yen(sl.price)}</div>
                     </div>
@@ -8398,9 +8419,11 @@ const InventoryTab = () => {
                       return (
                         <div key={it.id} style={{marginTop:8,padding:8,borderRadius:10,background:'#f8fafc',border:'1px solid #e2e8f0'}}>
                           <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
-                            <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={64} fallback="📦" />
+                            <div style={{cursor:'pointer',flexShrink:0}} onClick={() => setSelected(it)}>
+                              <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={64} fallback="📦" />
+                            </div>
                             <div style={{flex:1,minWidth:0}}>
-                              <div style={{fontSize:13,fontWeight:700,color:'#111',wordBreak:'break-all'}}>
+                              <div style={{fontSize:13,fontWeight:700,color:'#111',wordBreak:'break-all',cursor:'pointer'}} onClick={() => setSelected(it)}>
                                 {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
                               </div>
                               <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
@@ -8413,6 +8436,19 @@ const InventoryTab = () => {
                               {c.reason && <div style={{fontSize:11,color:'#2563eb',marginTop:2,wordBreak:'break-all'}}>{c.reason}</div>}
                             </div>
                           </div>
+                          {(() => {
+                            const pill = {display:'inline-flex',alignItems:'center',minHeight:28,padding:'2px 10px',borderRadius:99,border:'1px solid #cbd5e1',background:'white',color:'#334155',fontSize:11,fontWeight:700,textDecoration:'none',cursor:'pointer',WebkitTapHighlightColor:'transparent'};
+                            const aid = String(it.yahooAuctionId || '').trim() || ((String(it.productName || '') + ' ' + String(it.notes || '')).match(/\b[a-z]\d{9,10}\b/i) || [''])[0];
+                            return (
+                              <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginTop:6}}>
+                                {it.purchaseStore && <span style={{fontSize:11,color:'#475569'}}>🛒 {it.purchaseStore}</span>}
+                                {aid && <span style={{fontSize:11,color:'#475569',wordBreak:'break-all'}}>ID {aid}</span>}
+                                <button style={pill} onClick={async () => { const ok = await copyToClipboard(String(it.productName || '')); toast(ok ? 'コピーしました' : 'コピーできませんでした'); }}>📋 タイトル</button>
+                                {aid && <a style={pill} href={`https://page.auctions.yahoo.co.jp/jp/auction/${aid}`} target="_blank" rel="noopener noreferrer">ヤフオクで見る</a>}
+                                <button style={pill} onClick={() => setSelected(it)}>詳細</button>
+                              </div>
+                            );
+                          })()}
                           {prob && !saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ {prob}</div>}
                           <button style={{...btn('#16a34a','white',!!prob || proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={!!prob || proposalBusy} onClick={() => approveSaleLink(pr, it.id)}>✅ これで紐付け</button>
                         </div>
