@@ -78,8 +78,12 @@ def check(d):
             if '_split_' in old['id'] or old.get('splitOrigin'):
                 continue  # 分割登録された商品は内訳を按分済み（メール全額とは一致しないのが正しい）
             oc = old.get('purchaseCost') or {}
-            if (old.get('purchasePrice'), old.get('shippingTaxIn'), oc.get('couponTaxIn')) != \
-               (rec['purchasePrice'], rec['shippingTaxIn'], rec['purchaseCost'].get('couponTaxIn')):
+            # アプリの編集画面は数値を文字列（"900"）で保存することがあるので数値にそろえて比べる
+            def n(v):
+                try: return int(float(v)) if v not in (None, '') else v
+                except (TypeError, ValueError): return v
+            if tuple(map(n, (old.get('purchasePrice'), old.get('shippingTaxIn'), oc.get('couponTaxIn')))) != \
+               tuple(map(n, (rec['purchasePrice'], rec['shippingTaxIn'], rec['purchaseCost'].get('couponTaxIn')))):
                 problems.append(
                     f'メールと金額が違う: {it["auctionId"]} 仕入値 {old.get("purchasePrice")}→{rec["purchasePrice"]} '
                     f'送料 {old.get("shippingTaxIn")}→{rec["shippingTaxIn"]}')
