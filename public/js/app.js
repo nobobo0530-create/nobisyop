@@ -1257,7 +1257,9 @@ const allocLargestRemainder = (total, weights) => {
 };
 
 // 店舗仕入れの「中身未入力」仮在庫か（分割・中身入力の初期値を店舗仕入れ＋決済方法にするため）
-const PAYMENT_OPTIONS = ['現金','クレカ','PayPay','メルペイ','その他'];
+const PAYMENT_OPTIONS = ['現金','クレカ','PayPay','PayPay銀行','メルペイ','その他'];
+// 決済方法の選択肢（PayPay（彼女）など一覧に無い値も、そのまま表示・保持する）
+const paymentOptionsFor = (v) => (v && !PAYMENT_OPTIONS.includes(v)) ? [...PAYMENT_OPTIONS, v] : PAYMENT_OPTIONS;
 const isStorePlaceholder = (it) => !!(it && it.needsDetail && it.purchaseType === 'store'
   && String(it.productName || '').startsWith('店舗仕入れ（中身未入力）'));
 // 仮在庫の決済方法 → フォームの選択肢（PayPay銀行/PayPay（彼女）等はPayPay、空・不明はメルペイ）
@@ -3132,7 +3134,7 @@ const PurchaseTab = () => {
       purchaseStore:      editingItem.purchaseStore      || '',
       sellerLicense:      editingItem.sellerLicense      || '',
       sellerCompanyName:  editingItem.sellerCompanyName  || '',
-      paymentMethod:      isStorePlaceholder(editingItem) ? placeholderPayment(editingItem.paymentMethod) : (editingItem.paymentMethod || '現金'),
+      paymentMethod:      isStorePlaceholder(editingItem) ? placeholderPayment(editingItem.paymentMethod) : (editingItem.paymentMethod || (editingItem.yahooAuctionId ? 'PayPay' : '現金')),
       listDate:           editingItem.listDate           || today(),
       listPrice:          editingItem.listPrice != null  ? String(editingItem.listPrice) : '',
       estimatedPriceRange: editingItem.estimatedPriceRange || '',
@@ -5495,7 +5497,7 @@ const PurchaseTab = () => {
             <div style={{marginBottom:12}}>
               <label className="field-label">決済方法</label>
               <select className="input-field" value={form.paymentMethod} onChange={e => setF('paymentMethod', e.target.value)}>
-                {['現金','クレカ','PayPay','メルペイ','その他'].map(m => <option key={m} value={m}>{m}</option>)}
+                {paymentOptionsFor(form.paymentMethod).map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
 
@@ -13226,7 +13228,7 @@ const SalesTab = () => {
                         <label className="field-label">支払方法</label>
                         <select className="input-field" value={inf.paymentMethod}
                           onChange={e => setInf('paymentMethod', e.target.value)}>
-                          {['現金','クレカ','PayPay','メルペイ','その他'].map(m => <option key={m} value={m}>{m}</option>)}
+                          {paymentOptionsFor(inf.paymentMethod).map(m => <option key={m} value={m}>{m}</option>)}
                         </select>
                       </div>
                     </div>
