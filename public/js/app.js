@@ -7054,7 +7054,36 @@ const InventoryTab = () => {
   const [splitCount, setSplitCount] = React.useState(2);     // 分割数
   const [splitItems, setSplitItems] = React.useState([]);    // [{productName, purchasePrice}]
   const [splitProposalId, setSplitProposalId] = React.useState(null); // 「Claudeの確認待ち」から直して登録中の提案ID
-  React.useEffect(() => { if (!splitMode) setSplitProposalId(null); }, [splitMode]);
+  React.useEffect(() => { if (!splitMode) { setSplitProposalId(null); setSplitPhotoPick(null); } }, [splitMode]);
+  const [splitPhotoPick, setSplitPhotoPick] = React.useState(null); // 写真選択パネルを開いている子のindex
+  // 分割登録: 子ごとの写真を更新（userPhotos=ユーザーが明示的に割り当てた印。1つでもあれば全員が自分のphotosだけを使う）
+  const setSplitChildPhotos = (idx, fn) => setSplitItems(prev => prev.map((x,i) => i===idx ? { ...x, photos: fn(Array.isArray(x.photos) ? x.photos : []), userPhotos: true } : x));
+  // 通常の商品登録(handlePhotoFiles)と同じ形式: IndexedDBに photo_/thumb_ を保存し、thumbDataUrl(300px q60)・medDataUrl(700px q78)をbase64で保持（クラウドバックアップ対象）
+  const addSplitPhotoFiles = async (idx, files) => {
+    for (const file of files) {
+      const cur = (splitItems[idx] && splitItems[idx].photos) || [];
+      if (cur.length >= 5) { toast('写真は1商品につき最大5枚までです'); break; }
+      const ts = Date.now();
+      const n = Math.floor(Math.random() * 100000);
+      const photoId = `photo_${ts}_${n}`;
+      const thumbId = `thumb_${ts}_${n}`;
+      try {
+        const fullBlob  = await compressImage(file, 1200, 0.75);
+        const medBlob   = await compressImage(file, 700, 0.78);
+        const thumbBlob = await compressImage(file, 300, 0.6);
+        await savePhoto(photoId, fullBlob);
+        await savePhoto(thumbId, thumbBlob);
+        const previewUrl = blobToURL(fullBlob);
+        const thumbUrl   = blobToURL(thumbBlob);
+        const thumbDataUrl = `data:image/jpeg;base64,${await blobToBase64(thumbBlob)}`;
+        const medDataUrl = `data:image/jpeg;base64,${await blobToBase64(medBlob)}`;
+        setSplitChildPhotos(idx, ph => ph.length < 5 ? [...ph, { id: photoId, thumbId, previewUrl, thumbUrl, thumbDataUrl, medDataUrl }] : ph);
+      } catch (e) {
+        console.error('分割登録の写真保存エラー:', e);
+        toast(`❌ 写真の保存に失敗しました。もう一度お試しください\n(${e.message})`);
+      }
+    }
+  };
   const [splitCommon, setSplitCommon] = React.useState(null); // 店舗仕入れ仮在庫の分割時のみ: {purchaseType,paymentMethod,purchaseStore,purchaseDate}
   const [bulkMode, setBulkMode] = React.useState(false);
   const [bulkKind, setBulkKind] = React.useState('delete'); // 'delete'=まとめて削除 / 'list'=まとめて出品中に
@@ -9929,9 +9958,59 @@ const InventoryTab = () => {
                   {splitItems.map((si, idx) => (
                     <div key={idx} style={{background:'white',borderRadius:10,padding:'10px',marginBottom:8,border:'1px solid #e2e8f0'}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
-                        {si.photos && si.photos[0] && si.photos[0].thumbDataUrl && <img src={si.photos[0].thumbDataUrl} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6}}/>}
                         <span>商品{String.fromCharCode(65+idx)}{si.extra && si.extra.brand ? `（${si.extra.brand}）` : ''}</span>
                       </div>
+                      {/* 写真ストリップ：この商品に割り当てる写真（元の写真から選ぶ／カメラ・ライブラリから追加） */}
+                      {(() => {
+                        const myPhotos = Array.isArray(si.photos) ? si.photos : (si.userPhotos ? [] : (idx === 0 && !splitItems.some(x => x.userPhotos) ? (selected.photos || []) : []));
+                        const origPhotos = selected.photos || [];
+                        const isOpen = splitPhotoPick === idx;
+                        const has = (ph) => myPhotos.some(m => m.id === ph.id);
+                        return (
+                          <div style={{marginBottom:8}}>
+                            <div style={{display:'flex',gap:6,overflowX:'auto',alignItems:'center',paddingBottom:2}}>
+                              {myPhotos.map((ph, pi) => (
+                                <div key={ph.id || pi} style={{position:'relative',flex:'0 0 auto',width:56,height:56}}>
+                                  <ItemThumbnail thumbId={ph.thumbId} thumbDataUrl={ph.thumbDataUrl} size={56} fallback="📦" />
+                                  <button type="button" onClick={() => setSplitItems(prev => prev.map((x,i) => i===idx ? { ...x, photos: myPhotos.filter((_,k) => k!==pi), userPhotos: true } : x))}
+                                    style={{position:'absolute',top:-6,right:-6,width:22,height:22,borderRadius:99,border:'none',background:'#475569',color:'white',fontSize:13,lineHeight:'22px',padding:0,cursor:'pointer',touchAction:'manipulation'}}>×</button>
+                                </div>
+                              ))}
+                              <button type="button" onClick={() => setSplitPhotoPick(isOpen ? null : idx)}
+                                style={{flex:'0 0 auto',minWidth:56,height:56,borderRadius:8,border:'1.5px dashed #94a3b8',background:isOpen?'#e2e8f0':'#f8fafc',color:'#475569',fontSize:12,fontWeight:700,cursor:'pointer',touchAction:'manipulation',padding:'0 6px'}}>
+                                ＋写真
+                              </button>
+                            </div>
+                            {isOpen && (
+                              <div style={{marginTop:8,padding:8,background:'#f1f5f9',borderRadius:8}}>
+                                {origPhotos.length > 0 && <>
+                                  <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>元の写真から選ぶ（タップで追加／解除）</div>
+                                  <div style={{display:'flex',gap:6,overflowX:'auto',marginBottom:8}}>
+                                    {origPhotos.map((ph, oi) => {
+                                      const on = has(ph);
+                                      return (
+                                        <div key={ph.id || oi} onClick={() => setSplitChildPhotos(idx, cur => {
+                                            if (cur.some(m => m.id === ph.id)) return cur.filter(m => m.id !== ph.id);
+                                            return cur.length >= 5 ? cur : [...cur, ph];
+                                          })}
+                                          style={{position:'relative',flex:'0 0 auto',width:64,height:64,borderRadius:8,cursor:'pointer',outline:on?'3px solid #2563eb':'none',outlineOffset:-1,opacity:on?1:0.85,touchAction:'manipulation'}}>
+                                          <ItemThumbnail thumbId={ph.thumbId} thumbDataUrl={ph.thumbDataUrl} size={64} fallback="📦" />
+                                          {on && <div style={{position:'absolute',right:2,bottom:2,background:'#2563eb',color:'white',borderRadius:99,width:18,height:18,fontSize:12,lineHeight:'18px',textAlign:'center'}}>✓</div>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </>}
+                                <label style={{display:'inline-block',padding:'8px 12px',borderRadius:8,background:'#1e293b',color:'white',fontSize:12,fontWeight:700,cursor:'pointer',touchAction:'manipulation'}}>
+                                  📷 カメラ・ライブラリから追加
+                                  <input type="file" accept="image/*" multiple style={{display:'none'}}
+                                    onChange={async e => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) await addSplitPhotoFiles(idx, fs); }}/>
+                                </label>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <input value={si.productName}
                         onChange={e => setSplitItems(prev => prev.map((x,i) => i===idx ? {...x,productName:e.target.value} : x))}
                         placeholder="商品名"
@@ -9992,7 +10071,9 @@ const InventoryTab = () => {
                       if (splitItems.some(si => !si.productName.trim())) { alert('商品名を入力してください'); return; }
                       if (splitItems.some(si => Number(si.purchasePrice) <= 0)) { alert('仕入れ値を入力してください'); return; }
                       const ts = Date.now();
-                      const res = applySplitRegistration(data, selected, splitItems, splitCommon, ts);
+                      // 写真を1枚でも割り当てた場合は、全員が自分のphotosだけを使う（未指定の子は写真なし）
+                      const splitForSave = splitItems.some(si => si.userPhotos) ? splitItems.map(si => ({ ...si, photos: Array.isArray(si.photos) ? si.photos : [] })) : splitItems;
+                      const res = applySplitRegistration(data, selected, splitForSave, splitCommon, ts);
                       if (res.error) { alert('❌ ' + res.error); return; }
                       // 「Claudeの確認待ち」から「直してから登録」した場合は、その提案も同時に承認済みにする
                       setData({ ...data, inventory: res.inventory, settings: res.settings,
