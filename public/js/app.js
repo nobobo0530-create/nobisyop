@@ -8428,12 +8428,25 @@ const InventoryTab = () => {
                           const sid = String((curSale && curSale.platformId) || sl.platformId || '').trim();
                           const plat = String(sl.platform || (curSale && curSale.platform) || '');
                           const surl = !sid ? '' : /メルカリ/.test(plat) ? `https://jp.mercari.com/item/${sid}` : /ヤフオク|Yahoo/i.test(plat) ? `https://page.auctions.yahoo.co.jp/jp/auction/${sid}` : /ラクマ/.test(plat) ? `https://item.fril.jp/${sid}` : '';
-                          return (
+                          return (<>
                             <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
                               <button style={pill} onClick={async () => { const ok = await copyToClipboard(String(sl.mailTitle || pr.title || '')); toast(ok ? 'コピーしました' : 'コピーできませんでした'); }}>📋 タイトル</button>
                               {surl && <a style={pill} href={surl} target="_blank" rel="noopener noreferrer">売れた出品を見る</a>}
                             </div>
-                          );
+                            {/* 売れた出品の写真（メルカリは公開画像URL、ヤフオクは提案に保存した画像URL。ラクマは公開画像なし） */}
+                            {(() => {
+                              const purl = sl.photoUrl || (sid && /メルカリ/.test(plat) && /^m\d+$/.test(sid) ? `https://static.mercdn.net/item/detail/orig/photos/${sid}_1.jpg` : '');
+                              if (!purl) return null;
+                              return (
+                                <a href={surl || purl} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',marginTop:8}}>
+                                  <img src={purl} alt="売れた商品" loading="lazy"
+                                    onError={e => { e.currentTarget.parentNode.style.display = 'none'; }}
+                                    style={{width:140,height:140,objectFit:'cover',borderRadius:10,border:'2px solid #2563eb',background:'#f1f5f9'}}/>
+                                  <div style={{fontSize:10,color:'#2563eb',fontWeight:700,marginTop:2}}>売れた商品の写真</div>
+                                </a>
+                              );
+                            })()}
+                          </>);
                         })()}
                       </div>
                       <div style={{fontWeight:800,fontSize:16,color:'#111',flexShrink:0}}>{yen(sl.price)}</div>
