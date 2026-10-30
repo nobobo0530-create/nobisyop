@@ -6933,6 +6933,96 @@ const InventoryTab = () => {
       void linked;
     } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
+  // ★ 売上の紐付け：在庫に無い（店舗仕入れの仕入れ未入力）売上を、その場で店舗仕入れ登録して紐付ける
+  const [storeReg, setStoreReg] = React.useState(null);   // {prId, name, brand, date, store, price, method, phId, photos:[]}
+  const openStoreReg = (pr) => {
+    const sl = pr.sale || {};
+    const cs = (data.sales || []).find(x => x.id === pr.saleId) || {};
+    setStoreReg({ prId: pr.id, name: String(sl.mailTitle || pr.title || cs.productName || '').trim(), brand: String(sl.brand || cs.brand || ''),
+      date: '', store: '', price: '', method: 'メルペイ', phId: null, photos: [] });
+  };
+  const storeNameSuggestions = React.useMemo(() => {
+    const cnt = {};
+    (data.inventory || []).forEach(i => { if (i.purchaseType === 'store' && i.purchaseStore && !isStorePlaceholder(i)) cnt[i.purchaseStore] = (cnt[i.purchaseStore] || 0) + 1; });
+    return Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]).slice(0, 30);
+  }, [data.inventory]);
+  const storePlaceholdersFor = (saleDate) => (data.inventory || [])
+    .filter(i => isStorePlaceholder(i) && i.status !== 'sold' && (Number(i.purchasePrice) || 0) > 0 && (!i.purchaseDate || !saleDate || i.purchaseDate <= saleDate))
+    .sort((a, b) => String(b.purchaseDate || '').localeCompare(String(a.purchaseDate || '')));
+  const pickStorePlaceholder = (ph) => setStoreReg(s => s ? (s.phId === ph.id
+    ? { ...s, phId: null }
+    : { ...s, phId: ph.id, date: ph.purchaseDate || s.date, store: ph.purchaseStore || s.store, method: placeholderPayment(ph.paymentMethod) }) : s);
+  const addStoreRegPhotos = async (files) => {
+    for (const file of files) {
+      if (((storeReg && storeReg.photos) || []).length >= 5) { toast('写真は最大5枚までです'); break; }
+      const ts = Date.now(), n = Math.floor(Math.random() * 100000);
+      const photoId = `photo_${ts}_${n}`, thumbId = `thumb_${ts}_${n}`;
+      try {
+        const fullBlob = await compressImage(file, 1200, 0.75);
+        const medBlob = await compressImage(file, 700, 0.78);
+        const thumbBlob = await compressImage(file, 300, 0.6);
+        await savePhoto(photoId, fullBlob);
+        await savePhoto(thumbId, thumbBlob);
+        const photo = { id: photoId, thumbId, previewUrl: blobToURL(fullBlob), thumbUrl: blobToURL(thumbBlob),
+          thumbDataUrl: `data:image/jpeg;base64,${await blobToBase64(thumbBlob)}`, medDataUrl: `data:image/jpeg;base64,${await blobToBase64(medBlob)}` };
+        setStoreReg(s => s && s.photos.length < 5 ? { ...s, photos: [...s.photos, photo] } : s);
+      } catch (e) { toast(`❌ 写真の保存に失敗しました (${e.message})`); }
+    }
+  };
+  const saveStoreReg = (pr) => {
+    if (proposalBusy || !storeReg || storeReg.prId !== pr.id) return;
+    const f = storeReg;
+    const sale = (data.sales || []).find(x => x.id === pr.saleId);
+    if (!sale || sale.inventoryId || !sale.needsLink) { alert('❌ この売上はすでに紐付け済み（または削除済み）です'); return; }
+    const name = String(f.name || '').trim();
+    const price = Math.round(Number(String(f.price).replace(/[,，]/g, '')));
+    if (!name) { alert('商品名を入力してください'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) { alert('仕入れ日を入力してください'); return; }
+    if (!(price > 0)) { alert('仕入れ値を1円以上で入力してください'); return; }
+    const ph = f.phId ? (data.inventory || []).find(i => i.id === f.phId) : null;
+    if (f.phId && (!ph || !isStorePlaceholder(ph) || ph.status === 'sold')) { alert('❌ 選んだ「中身未入力」の仕入れが見つかりません'); return; }
+    const phLeft = ph ? Math.round(Number(ph.purchasePrice) || 0) : 0;
+    if (ph && price > phLeft) { alert(`❌ 仕入れ値 ¥${price.toLocaleString()} が、中身未入力の残り ¥${phLeft.toLocaleString()} を超えています`); return; }
+    const nowIso = new Date().toISOString();
+    const ts = Date.now();
+    const item = {
+      id: `${ts}_store_${Math.floor(Math.random() * 1000)}`,
+      userId: currentUser,
+      productName: name, brand: String(f.brand || '').trim(), category: '', color: '', gender: 'メンズ', condition: 'A', notes: '',
+      purchaseDate: f.date, purchaseStore: String(f.store || '').trim(), paymentMethod: f.method || 'メルペイ',
+      purchaseType: 'store', purchaseTypeSource: 'manual', purchaseStoreType: 'normal',
+      purchasePrice: price, itemPriceTaxIn: price, shippingTaxIn: 0,
+      purchaseCost: { totalTaxIn: price, totalTaxEx: Math.round(price / 1.1), itemPriceTaxIn: price, itemTaxRate: 10,
+        itemPriceTaxEx: Math.round(price / 1.1), shippingTaxIn: 0, shippingTaxEx: 0, shippingTaxRate: 10 },
+      priceUnconfirmed: false, listDate: '', listPrice: 0, photos: f.photos || [],
+      mgmtNo: generateMgmtNo(f.date, '', price, data.settings?.priceSplitDivisor || 100),
+      status: 'unlisted', needsDetail: false,
+      ...(ph && ph.storePendingId ? { storePendingId: ph.storePendingId } : {}),
+      createdAt: nowIso, updatedAt: nowIso,
+    };
+    let inventory = [...(data.inventory || []), item];
+    let settings = data.settings;
+    if (ph) {
+      // 中身未入力の仮在庫から今回の分を切り出す：仮在庫の金額を同額だけ減らす（合計は1円もずれない）。0円になったら削除（墓石つき）
+      const left = phLeft - price;
+      if (left <= 0) {
+        inventory = inventory.filter(i => i.id !== ph.id);
+        settings = { ...data.settings, _deletedIds: { ...(data.settings?._deletedIds || {}), [ph.id]: nowIso } };
+      } else {
+        const ex = Math.round(left / 1.1);
+        inventory = inventory.map(i => i.id !== ph.id ? i : { ...i, purchasePrice: left, itemPriceTaxIn: left,
+          purchaseCost: { ...(i.purchaseCost || {}), totalTaxIn: left, totalTaxEx: ex, itemPriceTaxIn: left, itemPriceTaxEx: ex },
+          mgmtNo: i.purchaseDate ? generateMgmtNo(i.purchaseDate, '', left, data.settings?.priceSplitDivisor || 100) : i.mgmtNo, updatedAt: nowIso });
+      }
+    }
+    setProposalBusy(true);
+    try {
+      const data2 = { ...data, inventory, settings };
+      const linked = linkSaleToItem({ data: data2, setData, toast, onEditShipping: setLinkShipEdit }, sale, item,
+        { settings, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [item.id], linkedItemId: item.id, storeRegistered: true })) });
+      if (linked) setStoreReg(null);
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
   const rejectSaleLink = (pr) => {
     setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: 'どれでもない' })) });
     toast('❌ 「どれでもない」にしました');
@@ -8498,6 +8588,63 @@ const InventoryTab = () => {
                         </div>
                       );
                     })}
+                    {!saleGone && storeReg?.prId !== pr.id && (
+                      <button style={{...btn('#ffedd5','#9a3412',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>🏪 店舗仕入れとして登録して紐付け</button>
+                    )}
+                    {!saleGone && storeReg?.prId === pr.id && (() => {
+                      const f = storeReg;
+                      const saleDate = (curSale && curSale.saleDate) || sl.date || '';
+                      const phs = storePlaceholdersFor(saleDate);
+                      const inp = {width:'100%',boxSizing:'border-box',minHeight:40,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,background:'white'};
+                      const lab = {fontSize:11,fontWeight:700,color:'#475569',margin:'8px 0 2px'};
+                      const set = (k, v) => setStoreReg(s => s ? { ...s, [k]: v } : s);
+                      const sel = f.phId ? phs.find(p => p.id === f.phId) : null;
+                      const over = sel && Math.round(Number(f.price) || 0) > (Number(sel.purchasePrice) || 0);
+                      return (
+                        <div style={{marginTop:8,padding:10,borderRadius:10,background:'#fff7ed',border:'1px solid #fdba74'}}>
+                          <div style={{fontSize:13,fontWeight:800,color:'#9a3412'}}>🏪 店舗仕入れとして登録</div>
+                          <div style={lab}>商品名</div>
+                          <input style={inp} value={f.name} onChange={e => set('name', e.target.value)} />
+                          <div style={lab}>ブランド</div>
+                          <input style={inp} value={f.brand} onChange={e => set('brand', e.target.value)} />
+                          <div style={{display:'flex',gap:8}}>
+                            <div style={{flex:1,minWidth:0}}><div style={lab}>仕入れ日（必須）</div><input type="date" style={inp} value={f.date} onChange={e => set('date', e.target.value)} /></div>
+                            <div style={{flex:1,minWidth:0}}><div style={lab}>仕入れ値（必須）</div><input type="text" inputMode="numeric" style={{...inp,borderColor: over ? '#dc2626' : '#cbd5e1'}} placeholder="円" value={f.price} onChange={e => set('price', e.target.value.replace(/[^\d]/g, ''))} /></div>
+                          </div>
+                          {over && <div style={{fontSize:12,color:'#dc2626',fontWeight:700,marginTop:4}}>⚠️ 中身未入力の残り {yen(sel.purchasePrice)} を超えています</div>}
+                          <div style={{display:'flex',gap:8}}>
+                            <div style={{flex:1,minWidth:0}}><div style={lab}>店舗名</div>
+                              <input style={inp} list="storeRegStores" value={f.store} onChange={e => set('store', e.target.value)} />
+                              <datalist id="storeRegStores">{storeNameSuggestions.map(s => <option key={s} value={s} />)}</datalist></div>
+                            <div style={{flex:1,minWidth:0}}><div style={lab}>決済方法</div>
+                              <select style={inp} value={f.method} onChange={e => set('method', e.target.value)}>{PAYMENT_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}</select></div>
+                          </div>
+                          {phs.length > 0 && (
+                            <div>
+                              <div style={lab}>中身未入力の店舗仕入れから選ぶ（選ぶとその残りから差し引きます）</div>
+                              <div style={{maxHeight:180,overflowY:'auto',display:'flex',flexDirection:'column',gap:4}}>
+                                {phs.map(p => (
+                                  <button key={p.id} onClick={() => pickStorePlaceholder(p)} style={{textAlign:'left',minHeight:40,padding:'6px 10px',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,
+                                    border: f.phId === p.id ? '2px solid #ea580c' : '1px solid #cbd5e1', background: f.phId === p.id ? '#ffedd5' : 'white', color:'#334155'}}>
+                                    {p.purchaseDate || '日付なし'}　{p.purchaseStore || '店名不明'}　残り {yen(p.purchasePrice)}{f.phId === p.id ? '　✔' : ''}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginTop:8}}>
+                            {(f.photos || []).map(p => <img key={p.id} src={p.thumbDataUrl} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6}} />)}
+                            <label style={{display:'inline-flex',alignItems:'center',minHeight:36,padding:'4px 12px',borderRadius:99,border:'1px solid #cbd5e1',background:'white',fontSize:12,fontWeight:700,cursor:'pointer'}}>
+                              ＋写真<input type="file" accept="image/*" multiple style={{display:'none'}} onChange={e => { const fl = Array.from(e.target.files || []); e.target.value = ''; addStoreRegPhotos(fl); }} />
+                            </label>
+                          </div>
+                          <div style={{display:'flex',gap:8,marginTop:10}}>
+                            <button style={btn('#ea580c','white',proposalBusy || over)} disabled={proposalBusy || over} onClick={() => saveStoreReg(pr)}>登録して紐付け</button>
+                            <button style={btn('#f1f5f9','#475569',false)} onClick={() => setStoreReg(null)}>閉じる</button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <div style={{display:'flex',gap:8,marginTop:8}}>
                       <button style={btn('#fee2e2','#991b1b',false)} onClick={() => rejectSaleLink(pr)}>❌ どれでもない</button>
                     </div>
