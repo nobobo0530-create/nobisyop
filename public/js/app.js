@@ -742,6 +742,13 @@ const fetchItemsWithPhotos = async (itemIds) => {
   return out;
 };
 
+// ★ 通信が途中で止まったときに「同期中」のまま固まらないよう、一定時間で打ち切ってリトライに回す（2026-10-30）
+const fetchWithTimeout = (url, opts = {}, ms = 45000) => {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctl.signal }).finally(() => clearTimeout(t));
+};
+
 const fetchSupabaseData = async ({ light = true } = {}) => {
   const url = `${_API_BASE}/api/data` + (light ? '?light=1' : '?full=1');
   // ★ リトライ付き（最大3回）: Supabaseのstatement timeoutなど一時的な500で
@@ -749,7 +756,7 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
   let msg = '通信エラー';
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const resp = await fetch(url, { cache: 'no-store', headers: authHeaders() });
+      const resp = await fetchWithTimeout(url, { cache: 'no-store', headers: authHeaders() }, 45000);
       const json = await resp.json();
       if (resp.ok && json.ok) {
         // ★ 写真ごとの「クラウドにbase64があるか」をメモリに控え、データ本体からは外す
@@ -797,7 +804,7 @@ const SIG_FORCE_FULL_MS = 24 * 3600 * 1000; // 署名が同じでも24時間に1
 const FULL_FETCH_MIN_MS = 10 * 60 * 1000;   // 全件取得の最小間隔（復帰時）
 const fetchCloudSig = async () => {
   try {
-    const resp = await fetch(`${_API_BASE}/api/data?sig=1`, { cache: 'no-store', headers: authHeaders() });
+    const resp = await fetchWithTimeout(`${_API_BASE}/api/data?sig=1`, { cache: 'no-store', headers: authHeaders() }, 20000);
     const json = await resp.json();
     return (resp.ok && json && json.ok && typeof json.sig === 'string' && json.sig) ? json.sig : null;
   } catch(_) { return null; }
@@ -837,12 +844,12 @@ const flushPendingProposals = async () => {
       const sent = [..._pendingProposals.values()];
       if (!sent.length) return true;
       try {
-        const resp = await fetch(`${_API_BASE}/api/data`, {
+        const resp = await fetchWithTimeout(`${_API_BASE}/api/data`, {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ proposalsUpsert: sent }),
           cache: 'no-store',
-        });
+        }, 45000);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         // 送っている間に更新された提案は残す
         sent.forEach(x => { if (_pendingProposals.get(x.id) === x) _pendingProposals.delete(x.id); });
@@ -992,7 +999,7 @@ const syncToSupabase = async (oldData, newData, opts) => {
       let lastError = null, sent = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const resp = await fetch(`${_API_BASE}/api/data`, {
+          const resp = await fetchWithTimeout(`${_API_BASE}/api/data`, {
             method: 'POST',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(first ? {
@@ -1002,7 +1009,7 @@ const syncToSupabase = async (oldData, newData, opts) => {
               storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
             } : { invUpsert: invChunks[ci] }),
             cache: 'no-store',
-          });
+          }, 60000);
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           sent = true;
           break;
