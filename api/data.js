@@ -195,6 +195,37 @@ function mergeBundleCovers(a, b) {
   return out;
 }
 
+// ★ 表紙サムネイル(base64)は settings 行に入れず、専用行 app_settings id='coverThumbs' に置く（2026-10-30）
+//   data = { "<bundleGroupId>": "data:image/jpeg;base64,...", ... }（約1.3MB）
+//   settings の保存のたびにこの重い行を書き直さないため。変わったキーだけ更新する。
+//   署名(sig)は小さい別行 id='coverThumbsMeta' に置き、GETで安く返す（重い行を毎回読まない）
+const COVER_THUMBS_ID = 'coverThumbs';
+const COVER_META_ID = 'coverThumbsMeta';
+const isThumb = (v) => typeof v === 'string' && v.startsWith('data:image');
+const thumbsSig = (t) => 'c1:' + createHash('md5').update(JSON.stringify(Object.keys(t).sort().map(k => [k, t[k]]))).digest('hex');
+async function readCoverThumbsRow() {
+  // 行が無いときは空。通信エラーは例外のまま（呼び出し側で「消さない」判断をする）
+  const rows = await sbFetch(`app_settings?select=data&id=eq.${COVER_THUMBS_ID}`);
+  const d = Array.isArray(rows) && rows[0] ? rows[0].data : null;
+  return (d && typeof d === 'object' && !Array.isArray(d)) ? d : {};
+}
+// upserts: {group: thumb} / removals: [group]。変わるものがあるときだけ書く。書いたら true
+async function writeCoverThumbs(upserts, removals) {
+  const cur = await readCoverThumbsRow();
+  const next = { ...cur };
+  let changed = false;
+  for (const [k, v] of Object.entries(upserts || {})) {
+    if (isThumb(v) && next[k] !== v) { next[k] = v; changed = true; }
+  }
+  for (const k of (removals || [])) {
+    if (Object.prototype.hasOwnProperty.call(next, k)) { delete next[k]; changed = true; }
+  }
+  if (!changed) return false;
+  await sbUpsertSetting(COVER_THUMBS_ID, next);
+  await sbUpsertSetting(COVER_META_ID, { sig: thumbsSig(next), n: Object.keys(next).length });
+  return true;
+}
+
 // ★ 古い端末の状態でクラウドの新しいデータを上書きしないためのガード
 // - 保存済みより古い（updatedAt/createdAt が小さい）行は書かない
 // - 墓標（削除済み）にあるIDは書かない
@@ -258,6 +289,13 @@ export default async function handler(req, res) {
         return;
       }
 
+      // ★ 表紙サムネイル専用の取得（?coverThumbs=1）。settings には入っていない
+      if (req.query?.coverThumbs === '1') {
+        const t = await readCoverThumbsRow();
+        res.json({ ok: true, coverThumbs: t, coverThumbsSig: thumbsSig(t), n: Object.keys(t).length });
+        return;
+      }
+
       const full = req.query?.full === '1';
       const photoIds = String(req.query?.photoIds || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 20);
       const lightenItem = (item) => (full || !Array.isArray(item.photos)) ? item
@@ -296,7 +334,7 @@ export default async function handler(req, res) {
       const [inv, sales, cfgRows] = await Promise.all([
         loadInventory(),
         sbFetchPaged('sales?select=id,data,created_at&order=created_at.asc,id.asc', 500),
-        sbFetch('app_settings?select=id,data&id=in.(default,receipts,storePending,secrets)').catch(() => null),
+        sbFetch('app_settings?select=id,data&id=in.(default,receipts,storePending,secrets,coverThumbsMeta)').catch(() => null),
       ]);
       const _cfg = new Map((Array.isArray(cfgRows) ? cfgRows : []).map(r => [r.id, r.data]));
       const cfg = { data: _cfg.get('default') };
@@ -326,12 +364,23 @@ export default async function handler(req, res) {
         headers: { 'Accept': 'application/vnd.pgrst.object+json' },
       }).catch(() => null);
 
+      // 表紙サムネイルは settings に含めない（旧データに残っていても除いて返す）。署名だけ添える
+      let settingsOut = cfg?.data ? { ...stripKeyFields(cfg.data), hasApiKey } : null;
+      if (settingsOut && settingsOut.bundleCovers && typeof settingsOut.bundleCovers === 'object') {
+        const bc = {};
+        for (const [k, v] of Object.entries(settingsOut.bundleCovers)) {
+          if (v && typeof v === 'object') { const { thumbDataUrl, ...rest } = v; bc[k] = rest; } else bc[k] = v;
+        }
+        settingsOut = { ...settingsOut, bundleCovers: bc };
+      }
+      const _meta = _cfg.get('coverThumbsMeta');
       res.json({
         ok: true,
         light: !full,
+        coverThumbsSig: (_meta && typeof _meta.sig === 'string') ? _meta.sig : null,
         inventory: inv,
         sales:     (Array.isArray(sales) ? sales : []).map(r => ({ ...r.data, id: r.id })),
-        settings:  cfg?.data ? { ...stripKeyFields(cfg.data), hasApiKey } : null,
+        settings:  settingsOut,
         receipts:  (rcp?.data && Array.isArray(rcp.data.list)) ? rcp.data.list : [],
         storePending: (sp?.data && Array.isArray(sp.data.list)) ? sp.data.list : [],
         claudeProposals: (cp?.data && Array.isArray(cp.data.list)) ? cp.data.list : [],
@@ -339,7 +388,7 @@ export default async function handler(req, res) {
 
     // ── POST: 差分保存（upsert / delete）──────────────────────
     } else if (req.method === 'POST') {
-      const { invUpsert, invDelete, salesUpsert, salesDelete, settings, receipts, storePendingUpsert, proposalsUpsert } = req.body || {};
+      const { invUpsert, invDelete, salesUpsert, salesDelete, settings, receipts, storePendingUpsert, proposalsUpsert, coverThumbsUpsert } = req.body || {};
       const ops = [];
 
       const skipped = [];
@@ -393,11 +442,31 @@ export default async function handler(req, res) {
           if (Object.keys(merged).length) settingsData = { ...settings, _deletedIds: merged };
         }
         // ★ 表紙(bundleCovers)も保存済みとキーごとにマージ（取得に失敗したら送信分のまま）
+        //   サムネイル(thumbDataUrl)は settings 行に残さず coverThumbs 行へ移す。
+        //   移せなかったとき(書き込み失敗)はサムネイルを消さず settings に残す（データを失わない）
         if (settingsData && typeof settingsData === 'object') {
           try {
             const storedCovers = await fetchStoredBundleCovers();
             const mc = mergeBundleCovers(storedCovers, settingsData.bundleCovers);
-            if (Object.keys(mc).length) settingsData = { ...settingsData, bundleCovers: mc };
+            if (Object.keys(mc).length) {
+              const ups = {}, rem = [];
+              for (const [k, v] of Object.entries(mc)) {
+                if (v && isThumb(v.thumbDataUrl)) ups[k] = v.thumbDataUrl;
+                else if (v && storedCovers[k] && storedCovers[k].photoId !== v.photoId) rem.push(k); // 表紙の写真が変わりサムネイル未提供 → 古いサムネイルを捨てる
+              }
+              let moved = true;
+              if (Object.keys(ups).length || rem.length) {
+                try { await writeCoverThumbs(ups, rem); }
+                catch(e) { moved = false; console.warn('[api/data] coverThumbs の保存に失敗（サムネイルは settings に残します）:', e.message); }
+              }
+              const covers = {};
+              for (const [k, v] of Object.entries(mc)) {
+                if (v && typeof v === 'object' && !moved) covers[k] = v;
+                else if (v && typeof v === 'object') { const { thumbDataUrl, ...rest } = v; covers[k] = rest; }
+                else covers[k] = v;
+              }
+              settingsData = { ...settingsData, bundleCovers: covers };
+            }
           } catch(e) { console.warn('[api/data] bundleCovers の取得に失敗（マージなしで続行）:', e.message); }
         }
         // ★ APIキー: 空/未指定では何も消さない。新しい値だけ secrets へ。default には絶対に書かない
@@ -465,6 +534,11 @@ export default async function handler(req, res) {
           headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
           body: JSON.stringify([{ id: 'claudeProposals', data: { list: Array.from(map.values()) } }]),
         }));
+      }
+
+      // ★ 表紙サムネイルだけの書き込み（移行ツール用・クライアントの直接送信用）
+      if (coverThumbsUpsert && typeof coverThumbsUpsert === 'object' && !Array.isArray(coverThumbsUpsert) && Object.keys(coverThumbsUpsert).length) {
+        await writeCoverThumbs(coverThumbsUpsert, []);
       }
 
       await Promise.all(ops);

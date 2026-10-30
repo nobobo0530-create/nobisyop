@@ -749,6 +749,87 @@ const fetchWithTimeout = (url, opts = {}, ms = 45000) => {
   return fetch(url, { ...opts, signal: ctl.signal }).finally(() => clearTimeout(t));
 };
 
+// ── まとめ買い表紙サムネイルの端末キャッシュ（2026-10-30）──
+// サーバーは settings に表紙サムネイル(base64・約1.3MB)を入れず、別行 coverThumbs に置く。
+// 端末側は IndexedDB（localStorageは容量が足りないので使わない）に署名つきで保存し、
+// GET の coverThumbsSig が変わったときだけ ?coverThumbs=1 を1回取得する。
+// 取得後は settings.bundleCovers[g].thumbDataUrl に戻して返すので、画面側は従来どおり動く。
+let _coverThumbCache = {};      // { groupId: dataURL }（メモリ）
+let _coverThumbSig = null;
+let _coverCacheLoaded = false;
+const _coverIdb = () => new Promise((resolve, reject) => {
+  try {
+    const rq = indexedDB.open('nobushop_cover_cache', 1);
+    rq.onupgradeneeded = () => { try { rq.result.createObjectStore('kv'); } catch(_) {} };
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+    rq.onblocked = () => reject(new Error('blocked'));
+  } catch(e) { reject(e); }
+});
+const _coverIdbGet = async () => {
+  const db = await _coverIdb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const rq = db.transaction('kv', 'readonly').objectStore('kv').get('v1');
+      rq.onsuccess = () => resolve(rq.result || null);
+      rq.onerror = () => reject(rq.error);
+    });
+  } finally { try { db.close(); } catch(_) {} }
+};
+const _coverIdbPut = async (val) => {
+  const db = await _coverIdb();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(val, 'v1');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally { try { db.close(); } catch(_) {} }
+};
+const hydrateCoverThumbs = async (settings, sig) => {
+  const bc = settings && settings.bundleCovers;
+  if (!bc || typeof bc !== 'object') return settings;
+  try {
+    if (!_coverCacheLoaded) {
+      _coverCacheLoaded = true;
+      try {
+        const c = await Promise.race([_coverIdbGet(), new Promise((_, rej) => setTimeout(() => rej(new Error('idb timeout')), 4000))]);
+        if (c && c.thumbs && typeof c.thumbs === 'object') { _coverThumbCache = c.thumbs; _coverThumbSig = c.sig || null; }
+      } catch(e) { console.warn('[CoverThumbs] キャッシュ読み込み失敗:', e?.message || e); }
+    }
+    if (sig && sig !== _coverThumbSig) {
+      const resp = await fetchWithTimeout(`${_API_BASE}/api/data?coverThumbs=1`, { cache: 'no-store', headers: authHeaders() }, 30000);
+      const j = await resp.json();
+      if (resp.ok && j && j.ok && j.coverThumbs && typeof j.coverThumbs === 'object') {
+        _coverThumbCache = j.coverThumbs;
+        _coverThumbSig = j.coverThumbsSig || sig;
+        try { await _coverIdbPut({ sig: _coverThumbSig, thumbs: _coverThumbCache }); } catch(e) { console.warn('[CoverThumbs] キャッシュ保存失敗:', e?.message || e); }
+      }
+    }
+  } catch(e) { console.warn('[CoverThumbs] 取得失敗（キャッシュで表示）:', e?.message || e); }
+  const out = {};
+  for (const k of Object.keys(bc)) {
+    const v = bc[k];
+    out[k] = (v && typeof v === 'object' && !v.thumbDataUrl && _coverThumbCache[k]) ? { ...v, thumbDataUrl: _coverThumbCache[k] } : v;
+  }
+  return { ...settings, bundleCovers: out };
+};
+// 送信用: クラウドの coverThumbs と同じ内容のサムネイルは settings から外して送る（サーバーは新しい/変わったものだけ受け取る）
+const settingsForSend = (st) => {
+  const bc = st && st.bundleCovers;
+  if (!bc || typeof bc !== 'object') return st;
+  let any = false;
+  const out = {};
+  for (const k of Object.keys(bc)) {
+    const v = bc[k];
+    if (v && typeof v === 'object' && v.thumbDataUrl && v.thumbDataUrl === _coverThumbCache[k]) { const { thumbDataUrl, ...rest } = v; out[k] = rest; any = true; }
+    else out[k] = v;
+  }
+  return any ? { ...st, bundleCovers: out } : st;
+};
+
 const fetchSupabaseData = async ({ light = true } = {}) => {
   const url = `${_API_BASE}/api/data` + (light ? '?light=1' : '?full=1');
   // ★ リトライ付き（最大3回）: Supabaseのstatement timeoutなど一時的な500で
@@ -776,7 +857,7 @@ const fetchSupabaseData = async ({ light = true } = {}) => {
         return {
           inventory,
           sales:     json.sales     || [],
-          settings:  json.settings  || getInitialData().settings,
+          settings:  json.settings ? await hydrateCoverThumbs(json.settings, json.coverThumbsSig || null) : getInitialData().settings,
           receipts:  json.receipts  || [],   // ★ クラウドからレシートも取得
           storePending: json.storePending || [],   // ★ 店舗仕入れ未入力
           claudeProposals: json.claudeProposals || [],   // ★ Claudeの確認待ち
@@ -1004,7 +1085,7 @@ const syncToSupabase = async (oldData, newData, opts) => {
             headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(first ? {
               invUpsert: invChunks[0], invDelete, salesUpsert, salesDelete,
-              settings: settingsChanged ? newData.settings : undefined,
+              settings: settingsChanged ? settingsForSend(newData.settings) : undefined,
               receipts: receiptsChanged ? (newData.receipts || []) : undefined,  // ★ レシートも送信
               storePendingUpsert: storePendingUpsert.length ? storePendingUpsert : undefined,
             } : { invUpsert: invChunks[ci] }),
