@@ -1452,6 +1452,12 @@ const markProposalDone = (pr, status, extra = {}) => ({
   alternatives: undefined,   // 候補写真は完了後は不要（クラウドの転送量を減らす）
 });
 
+// Claudeの確認待ち：保留にする／確認待ちに戻す（承認・却下ではないので写真・候補は消さない）
+const markProposalHeld = (pr, held) => ({
+  ...pr, status: held ? 'held' : 'open', updatedAt: new Date().toISOString(),
+  ...(held ? { heldAt: new Date().toISOString() } : { heldAt: undefined }),
+});
+
 // 分割登録の本体（手動の分割フォームと「Claudeの確認待ち」の承認で共通）。
 // orig を削除して子を作り、まとめ買いグループ(bundleType 'set')にする。dataは変更せず、新しい inventory / settings を返す。
 // splitItems[i] = {productName, purchasePrice, photos?, extra?}（photos 指定時はその子の写真、無ければ先頭の子だけ元の写真を引き継ぐ）
@@ -2566,7 +2572,8 @@ const HOME_TASK_ROWS = [
   { key:'noship',           icon:'📦', label:'送料未入力',       bg:'#ffedd5', sales:true },
 ];
 const HomeTodoList = ({ counts, subs, onOpen }) => {
-  const rows = HOME_TASK_ROWS.filter(r => (counts[r.key] || 0) > 0);
+  // 確認待ちが0件でも保留が残っていれば行を出す（保留は「やること」の合計には入れない）
+  const rows = HOME_TASK_ROWS.filter(r => (counts[r.key] || 0) > 0 || (r.key === 'claudeProposals' && (counts.claudeHeld || 0) > 0));
   const total = rows.reduce((a, r) => a + counts[r.key], 0);
   return (
     <div>
@@ -2642,6 +2649,7 @@ const HomeTab = () => {
     const vs = (data.sales || []).filter(sl => !sl.inventoryId || ids.has(sl.inventoryId));
     return {
       claudeProposals: (data.claudeProposals || []).filter(pr => pr && pr.status === 'open').length,
+      claudeHeld: (data.claudeProposals || []).filter(pr => pr && pr.status === 'held').length,
       needsDetail: inv.filter(i => i.needsDetail).length,
       storePending: (data.storePending || []).filter(e => e && e.status === 'open').length,
       priceUnconfirmed: inv.filter(i => i.priceUnconfirmed).length,
@@ -2654,14 +2662,18 @@ const HomeTab = () => {
   const todoSubs = (() => {
     const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open')
       .sort((a, b) => (a.type === 'saleLink' ? 1 : 0) - (b.type === 'saleLink' ? 1 : 0) || String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
-    if (!open.length) return {};
+    const heldN = (data.claudeProposals || []).filter(pr => pr && pr.status === 'held').length;
+    if (!open.length) return heldN ? { claudeProposals: `⏸ 保留 ${heldN}件` } : {};
     const f = open[0];
     const fAmt = f.type === 'saleLink' ? f.sale?.price : f.payment?.amount;
-    return { claudeProposals: `${f.title || ''} ¥${Math.round(Number(fAmt) || 0).toLocaleString()}${open.length > 1 ? ` ほか${open.length - 1}件` : ''}` };
+    return { claudeProposals: `${f.title || ''} ¥${Math.round(Number(fAmt) || 0).toLocaleString()}${open.length > 1 ? ` ほか${open.length - 1}件` : ''}${heldN ? `（保留${heldN}）` : ''}` };
   })();
   const openTodo = (r) => {
     if (r.sales) { window.__salesViewPreset = r.key; setTab('sales'); }
-    else { setPendingInventoryFilter(r.key); setTab('inventory'); }
+    else {
+      if (r.key === 'claudeProposals' && !todoCounts.claudeProposals && todoCounts.claudeHeld) window.__proposalTab = 'held';
+      setPendingInventoryFilter(r.key); setTab('inventory');
+    }
   };
 
   // ── 目標編集モーダル ──
@@ -6959,8 +6971,13 @@ const InventoryTab = () => {
   const proposalsAll = data.claudeProposals || [];
   const proposalsOpen = proposalsAll.filter(pr => pr && pr.status === 'open')
     .sort((a, b) => String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-  const proposalsStoreOpen = proposalsOpen.filter(pr => pr.type !== 'saleLink');
-  const proposalsLinkOpen = proposalsOpen.filter(pr => pr.type === 'saleLink')
+  const proposalsHeld = proposalsAll.filter(pr => pr && pr.status === 'held')
+    .sort((a, b) => String(b.heldAt || b.updatedAt || '').localeCompare(String(a.heldAt || a.updatedAt || '')));
+  // 「確認待ち」「保留」タブ（保留は承認・却下とは別。消えずに残る）
+  const [propTab, setPropTab] = React.useState(() => { const t = window.__proposalTab; window.__proposalTab = undefined; return t === 'held' ? 'held' : 'open'; });
+  const proposalsShown = propTab === 'held' ? proposalsHeld : proposalsOpen;
+  const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink');
+  const proposalsLinkOpen = proposalsShown.filter(pr => pr.type === 'saleLink')
     .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
   const [altOpen, setAltOpen] = React.useState({});     // 「ほかの候補」を開いている提案 {提案id: true}
@@ -6970,7 +6987,7 @@ const InventoryTab = () => {
   //   分割：元の仮登録が消えていて、splitOrigin.id（または storePendingId）が一致する子の仕入れ値合計が支払額と一致
   //   売上の紐付け：売上がすでに在庫に紐付いている
   React.useEffect(() => {
-    const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open');
+    const open = (data.claudeProposals || []).filter(pr => pr && (pr.status === 'open' || pr.status === 'held'));
     if (!open.length) return;
     const inv = data.inventory || [], sales = data.sales || [];
     if (!inv.length) return;   // 在庫が未読込のうちは判断しない
@@ -7027,6 +7044,7 @@ const InventoryTab = () => {
     const sl = pr.sale || {};
     const cs = (data.sales || []).find(x => x.id === pr.saleId) || {};
     setStoreReg({ prId: pr.id, name: String(sl.mailTitle || pr.title || cs.productName || '').trim(), brand: String(sl.brand || cs.brand || ''),
+      kind: 'store', aid: '', ship: '', coupon: '',
       date: '', store: '', price: '', method: 'メルペイ', phId: null, photos: [] });
   };
   const storeNameSuggestions = React.useMemo(() => {
@@ -7057,8 +7075,59 @@ const InventoryTab = () => {
       } catch (e) { toast(`❌ 写真の保存に失敗しました (${e.message})`); }
     }
   };
+  // 電脳（ヤフオク等）モード：オークションIDがすでに在庫にあればその商品を返す（二重登録防止）
+  const findAuctionDup = (aid) => {
+    const k = String(aid || '').trim().toLowerCase();
+    if (!k) return null;
+    return (data.inventory || []).find(i => String(i.yahooAuctionId || '').trim().toLowerCase() === k) || null;
+  };
+  const numOf = (v) => Math.round(Number(String(v == null ? '' : v).replace(/[,，]/g, ''))) || 0;
+  const saveOnlineReg = (pr) => {
+    const f = storeReg;
+    const sale = (data.sales || []).find(x => x.id === pr.saleId);
+    if (!sale || sale.inventoryId || !sale.needsLink) { alert('❌ この売上はすでに紐付け済み（または削除済み）です'); return; }
+    const name = String(f.name || '').trim();
+    const aid = String(f.aid || '').trim();
+    const itemP = numOf(f.price), shipP = numOf(f.ship), cpn = numOf(f.coupon);
+    const total = itemP + shipP - cpn;
+    if (!name) { alert('商品名を入力してください'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(f.date || '')) { alert('仕入れ日を入力してください'); return; }
+    if (!(itemP > 0)) { alert('商品代金を1円以上で入力してください'); return; }
+    if (!(total > 0)) { alert('仕入れ合計が0円以下です（クーポンが大きすぎないか確認してください）'); return; }
+    const dup = findAuctionDup(aid);
+    if (dup) { alert(`❌ このオークションIDはすでに登録されています\n\n${dup.productName || '(名称なし)'}${dup.mgmtNo ? '\n管理番号 ' + dup.mgmtNo : ''}\n\n候補の「これで紐付け」を使ってください`); return; }
+    const nowIso = new Date().toISOString();
+    const ts = Date.now();
+    const ex = (v) => Math.round(v / 1.1);
+    const item = {
+      id: `${ts}_online_${Math.floor(Math.random() * 1000)}`,
+      userId: currentUser,
+      productName: name, brand: String(f.brand || '').trim(), category: '', color: '', gender: 'メンズ', condition: 'A', notes: '',
+      purchaseDate: f.date, purchaseStore: String(f.store || '').trim(), paymentMethod: f.method || 'PayPay',
+      purchaseType: 'online', purchaseTypeSource: 'manual', purchaseStoreType: aid ? 'yahoo' : 'normal',
+      ...(aid ? { yahooAuctionId: aid } : {}),
+      purchasePrice: total, itemPriceTaxIn: itemP, shippingTaxIn: shipP,
+      ...(cpn > 0 ? { couponTaxIn: cpn } : {}),
+      purchaseCost: { totalTaxIn: total, totalTaxEx: Math.max(0, ex(itemP) + ex(shipP) - cpn),
+        itemPriceTaxIn: itemP, itemTaxRate: 10, itemPriceTaxEx: ex(itemP),
+        shippingTaxIn: shipP, shippingTaxRate: 10, shippingTaxEx: ex(shipP),
+        ...(cpn > 0 ? { couponTaxIn: cpn } : {}) },
+      priceUnconfirmed: false, listDate: '', listPrice: 0, photos: f.photos || [],
+      mgmtNo: generateMgmtNo(f.date, '', total, data.settings?.priceSplitDivisor || 100),
+      status: 'unlisted', needsDetail: false,
+      createdAt: nowIso, updatedAt: nowIso,
+    };
+    setProposalBusy(true);
+    try {
+      const data2 = { ...data, inventory: [...(data.inventory || []), item] };
+      const linked = linkSaleToItem({ data: data2, setData, toast, onEditShipping: setLinkShipEdit }, sale, item,
+        { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [item.id], linkedItemId: item.id, onlineRegistered: true })) });
+      if (linked) setStoreReg(null);
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
   const saveStoreReg = (pr) => {
     if (proposalBusy || !storeReg || storeReg.prId !== pr.id) return;
+    if (storeReg.kind === 'online') { saveOnlineReg(pr); return; }
     const f = storeReg;
     const sale = (data.sales || []).find(x => x.id === pr.saleId);
     if (!sale || sale.inventoryId || !sale.needsLink) { alert('❌ この売上はすでに紐付け済み（または削除済み）です'); return; }
@@ -7110,6 +7179,12 @@ const InventoryTab = () => {
         { settings, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [item.id], linkedItemId: item.id, storeRegistered: true })) });
       if (linked) setStoreReg(null);
     } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
+  const holdProposal = (pr, held) => {
+    setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalHeld(x, held)) });
+    if (propEdit && propEdit.id === pr.id) setPropEdit(null);
+    if (storeReg && storeReg.prId === pr.id) setStoreReg(null);
+    toast(held ? '⏸ 保留にしました（「保留」タブにあります）' : '↩ 確認待ちに戻しました');
   };
   const rejectSaleLink = (pr) => {
     setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: 'どれでもない' })) });
@@ -8158,7 +8233,7 @@ const InventoryTab = () => {
     { key:'priceUnconfirmed', icon:'💰', label:'金額未確定',       sub:'仕入れ金額を確定する',           bg:'#fef3c7', fg:'#92400e', line:'#fcd34d' },
     { key:'auditCheck',       icon:'🔍', label:'要確認',           sub:'金額の食い違いを確認する',       bg:'#fee2e2', fg:'#991b1b', line:'#fecaca' },
     { key:'dupCheck',         icon:'🔁', label:'重複候補',         sub:'二重登録でないか確認する',       bg:'#fce7f3', fg:'#9d174d', line:'#fbcfe8' },
-  ].map(d => ({ ...d, cnt: taskCounts[d.key] || 0 }));
+  ].map(d => ({ ...d, cnt: taskCounts[d.key] || 0, held: d.key === 'claudeProposals' ? proposalsHeld.length : 0 }));
   const SALES_TASK_DEFS = [
     { view:'unlinked', icon:'🔗', label:'売上の未紐付け', sub:'売上と在庫を結びつける（売上タブ）', cnt: salesTaskCounts.unlinked, fg:'#1d4ed8', bg:'#dbeafe' },
     { view:'noship',   icon:'📦', label:'送料未入力',     sub:'売れた商品の送料を入れる（売上タブ）', cnt: salesTaskCounts.noship,   fg:'#c2410c', bg:'#ffedd5' },
@@ -8167,6 +8242,7 @@ const InventoryTab = () => {
   const taskDef = TASK_DEFS.find(d => d.key === filter) || null;
   const applyTask = (key) => {
     if (!TASK_DEFS.some(d => d.key === filter)) taskReturnRef.current = ['unlisted','listed','sold','all'].includes(filter) ? filter : 'unlisted';
+    if (key === 'claudeProposals') setPropTab(proposalsOpen.length === 0 && proposalsHeld.length > 0 ? 'held' : 'open');
     setFilter(key); setCheckedIds(new Set()); setSearch(''); setTaskSheetOpen(false);
     try { window.scrollTo(0, 0); } catch (e) {}
   };
@@ -8397,9 +8473,19 @@ const InventoryTab = () => {
         {filter === 'claudeProposals' ? (() => {
           // ★ Claudeの確認待ち：1提案＝1カード。内容を見て ✅登録 / ✏️直す / ❌違う
           const yen = (v) => '¥' + (Math.round(Number(v)) || 0).toLocaleString();
-          if (proposalsOpen.length === 0) return (
-            <div>
-              <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>Claudeの確認待ちはありません</div>
+          const isHeldTab = propTab === 'held';
+          const tabBtn = (key, label, on) => ({flex:1,minHeight:44,padding:'8px 10px',border:'none',borderRadius:10,fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent',
+            background: on ? '#0369a1' : '#e5e7eb', color: on ? 'white' : '#475569'});
+          const propTabs = (
+            <div style={{display:'flex',gap:8}}>
+              <button style={tabBtn('open','', !isHeldTab)} onClick={() => setPropTab('open')}>確認待ち ({proposalsOpen.length})</button>
+              <button style={tabBtn('held','', isHeldTab)} onClick={() => setPropTab('held')}>⏸ 保留 ({proposalsHeld.length})</button>
+            </div>
+          );
+          if (proposalsShown.length === 0) return (
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              {propTabs}
+              <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>{isHeldTab ? '保留中の提案はありません' : 'Claudeの確認待ちはありません'}</div>
               {linkShipEdit && <ShippingEditModal sale={linkShipEdit} data={data} setData={setData} toast={toast} onClose={() => setLinkShipEdit(null)} />}
             </div>
           );
@@ -8408,6 +8494,8 @@ const InventoryTab = () => {
             fontWeight:800,fontSize:14,cursor: dis ? 'default' : 'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'});
           return (
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              {propTabs}
+              {isHeldTab && <div style={{fontSize:12,color:'#64748b',padding:'0 2px'}}>あとで確認するために置いておく場所です。消えずに残ります。</div>}
               {proposalsStoreOpen.map(pr => {
                 const sum = proposalSum(pr), pay = Math.round(Number(pr.payment?.amount) || 0);
                 const ok = sum === pay;
@@ -8578,6 +8666,11 @@ const InventoryTab = () => {
                       <button style={btn('#e0e7ff','#3730a3',false)} onClick={() => startPropEdit(pr)}>✏️ 修正して登録</button>
                       <button style={btn('#fee2e2','#991b1b',false)} onClick={() => rejectProposal(pr)}>❌ 違う</button>
                     </div>
+                    <div style={{display:'flex',gap:8,marginTop:8}}>
+                      {isHeldTab
+                        ? <button style={btn('#e0f2fe','#075985',proposalBusy)} disabled={proposalBusy} onClick={() => holdProposal(pr, false)}>↩ 確認待ちに戻す</button>
+                        : <button style={btn('#f1f5f9','#475569',proposalBusy)} disabled={proposalBusy} onClick={() => holdProposal(pr, true)}>⏸ 保留</button>}
+                    </div>
                   </div>
                 );
               })}
@@ -8677,7 +8770,7 @@ const InventoryTab = () => {
                       );
                     })}
                     {!saleGone && storeReg?.prId !== pr.id && (
-                      <button style={{...btn('#ffedd5','#9a3412',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>🏪 店舗仕入れとして登録して紐付け</button>
+                      <button style={{...btn('#ffedd5','#9a3412',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>＋ 仕入れを登録して紐付け</button>
                     )}
                     {!saleGone && storeReg?.prId === pr.id && (() => {
                       const f = storeReg;
@@ -8687,14 +8780,47 @@ const InventoryTab = () => {
                       const lab = {fontSize:11,fontWeight:700,color:'#475569',margin:'8px 0 2px'};
                       const set = (k, v) => setStoreReg(s => s ? { ...s, [k]: v } : s);
                       const sel = f.phId ? phs.find(p => p.id === f.phId) : null;
-                      const over = sel && Math.round(Number(f.price) || 0) > (Number(sel.purchasePrice) || 0);
+                      const isOnline = f.kind === 'online';
+                      const over = !isOnline && sel && Math.round(Number(f.price) || 0) > (Number(sel.purchasePrice) || 0);
+                      const onTotal = numOf(f.price) + numOf(f.ship) - numOf(f.coupon);
+                      const aidDup = isOnline ? findAuctionDup(f.aid) : null;
+                      const setKind = (k) => setStoreReg(s => s ? { ...s, kind: k, phId: null, method: k === 'online' ? 'PayPay' : 'メルペイ' } : s);
+                      const kBtn = (on) => ({flex:1,minHeight:40,padding:'6px 8px',borderRadius:8,fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation',
+                        border: on ? '2px solid #ea580c' : '1px solid #cbd5e1', background: on ? '#ffedd5' : 'white', color: on ? '#9a3412' : '#475569'});
+                      const numIn = (k) => e => set(k, e.target.value.replace(/[^\d]/g, ''));
                       return (
                         <div style={{marginTop:8,padding:10,borderRadius:10,background:'#fff7ed',border:'1px solid #fdba74'}}>
-                          <div style={{fontSize:13,fontWeight:800,color:'#9a3412'}}>🏪 店舗仕入れとして登録</div>
+                          <div style={{fontSize:13,fontWeight:800,color:'#9a3412'}}>＋ 仕入れを登録して紐付け</div>
+                          <div style={{display:'flex',gap:8,marginTop:6}}>
+                            <button style={kBtn(!isOnline)} onClick={() => setKind('store')}>🏪 店舗</button>
+                            <button style={kBtn(isOnline)} onClick={() => setKind('online')}>💻 電脳（ヤフオク等）</button>
+                          </div>
                           <div style={lab}>商品名</div>
                           <input style={inp} value={f.name} onChange={e => set('name', e.target.value)} />
                           <div style={lab}>ブランド</div>
                           <input style={inp} value={f.brand} onChange={e => set('brand', e.target.value)} />
+                          {isOnline ? (<>
+                            <div style={{display:'flex',gap:8}}>
+                              <div style={{flex:1,minWidth:0}}><div style={lab}>仕入れ日（必須）</div><input type="date" style={inp} value={f.date} onChange={e => set('date', e.target.value)} /></div>
+                              <div style={{flex:1,minWidth:0}}><div style={lab}>仕入れ先（ストア名・出品者）</div><input style={inp} value={f.store} onChange={e => set('store', e.target.value)} /></div>
+                            </div>
+                            <div style={lab}>ヤフオクのオークションID（わかれば）</div>
+                            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                              <input style={{...inp,flex:1,minWidth:0,borderColor: aidDup ? '#dc2626' : '#cbd5e1'}} autoCapitalize="none" value={f.aid} onChange={e => set('aid', e.target.value.trim())} placeholder="例: x1234567890" />
+                              {String(f.aid || '').trim() && <a href={`https://page.auctions.yahoo.co.jp/jp/auction/${String(f.aid).trim()}`} target="_blank" rel="noopener noreferrer" style={{flexShrink:0,display:'inline-flex',alignItems:'center',minHeight:36,padding:'2px 10px',borderRadius:99,border:'1px solid #cbd5e1',background:'white',color:'#334155',fontSize:12,fontWeight:700,textDecoration:'none'}}>ヤフオクで見る</a>}
+                            </div>
+                            {aidDup && <div style={{fontSize:12,color:'#dc2626',fontWeight:700,marginTop:4}}>⚠️ このIDはすでに登録済み：{aidDup.productName || '(名称なし)'}{aidDup.mgmtNo ? `（${aidDup.mgmtNo}）` : ''}。保存できません（上の候補から紐付けてください）</div>}
+                            <div style={{display:'flex',gap:8}}>
+                              <div style={{flex:1,minWidth:0}}><div style={lab}>商品代金（必須）</div><input type="text" inputMode="numeric" style={inp} placeholder="円" value={f.price} onChange={numIn('price')} /></div>
+                              <div style={{flex:1,minWidth:0}}><div style={lab}>送料</div><input type="text" inputMode="numeric" style={inp} placeholder="円" value={f.ship || ''} onChange={numIn('ship')} /></div>
+                            </div>
+                            <div style={{display:'flex',gap:8}}>
+                              <div style={{flex:1,minWidth:0}}><div style={lab}>クーポン（値引き）</div><input type="text" inputMode="numeric" style={inp} placeholder="円" value={f.coupon || ''} onChange={numIn('coupon')} /></div>
+                              <div style={{flex:1,minWidth:0}}><div style={lab}>決済方法</div>
+                                <select style={inp} value={f.method} onChange={e => set('method', e.target.value)}>{PAYMENT_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}</select></div>
+                            </div>
+                            <div style={{fontSize:13,fontWeight:800,color:'#9a3412',marginTop:8}}>仕入れ合計 {yen(Math.max(0, onTotal))}<span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>　（商品代金＋送料−クーポン）</span></div>
+                          </>) : (<>
                           <div style={{display:'flex',gap:8}}>
                             <div style={{flex:1,minWidth:0}}><div style={lab}>仕入れ日（必須）</div><input type="date" style={inp} value={f.date} onChange={e => set('date', e.target.value)} /></div>
                             <div style={{flex:1,minWidth:0}}><div style={lab}>仕入れ値（必須）</div><input type="text" inputMode="numeric" style={{...inp,borderColor: over ? '#dc2626' : '#cbd5e1'}} placeholder="円" value={f.price} onChange={e => set('price', e.target.value.replace(/[^\d]/g, ''))} /></div>
@@ -8707,7 +8833,8 @@ const InventoryTab = () => {
                             <div style={{flex:1,minWidth:0}}><div style={lab}>決済方法</div>
                               <select style={inp} value={f.method} onChange={e => set('method', e.target.value)}>{PAYMENT_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}</select></div>
                           </div>
-                          {phs.length > 0 && (
+                          </>)}
+                          {!isOnline && phs.length > 0 && (
                             <div>
                               <div style={lab}>中身未入力の店舗仕入れから選ぶ（選ぶとその残りから差し引きます）</div>
                               <div style={{maxHeight:180,overflowY:'auto',display:'flex',flexDirection:'column',gap:4}}>
@@ -8727,7 +8854,7 @@ const InventoryTab = () => {
                             </label>
                           </div>
                           <div style={{display:'flex',gap:8,marginTop:10}}>
-                            <button style={btn('#ea580c','white',proposalBusy || over)} disabled={proposalBusy || over} onClick={() => saveStoreReg(pr)}>登録して紐付け</button>
+                            <button style={btn('#ea580c','white',proposalBusy || over || !!aidDup)} disabled={proposalBusy || over || !!aidDup} onClick={() => saveStoreReg(pr)}>登録して紐付け</button>
                             <button style={btn('#f1f5f9','#475569',false)} onClick={() => setStoreReg(null)}>閉じる</button>
                           </div>
                         </div>
@@ -8735,6 +8862,9 @@ const InventoryTab = () => {
                     })()}
                     <div style={{display:'flex',gap:8,marginTop:8}}>
                       <button style={btn('#fee2e2','#991b1b',false)} onClick={() => rejectSaleLink(pr)}>❌ どれでもない</button>
+                      {isHeldTab
+                        ? <button style={btn('#e0f2fe','#075985',proposalBusy)} disabled={proposalBusy} onClick={() => holdProposal(pr, false)}>↩ 確認待ちに戻す</button>
+                        : <button style={btn('#f1f5f9','#475569',proposalBusy)} disabled={proposalBusy} onClick={() => holdProposal(pr, true)}>⏸ 保留</button>}
                     </div>
                   </div>
                 );
@@ -9647,16 +9777,16 @@ const InventoryTab = () => {
             <div style={{fontSize:12,color:'#6b7280',marginBottom:12}}>仕入れ側から順に片付けると、売上との紐付けが進みます</div>
             <div style={{fontSize:11,fontWeight:800,color:'#9ca3af',margin:'4px 2px 6px'}}>仕入れ</div>
             {TASK_DEFS.map(d => (
-              <button key={d.key} disabled={d.cnt === 0} onClick={() => applyTask(d.key)}
+              <button key={d.key} disabled={d.cnt + d.held === 0} onClick={() => applyTask(d.key)}
                 style={{width:'100%',display:'flex',alignItems:'center',gap:10,minHeight:58,padding:'8px 12px',marginBottom:8,borderRadius:12,textAlign:'left',
-                  border:'1.5px solid ' + (d.cnt > 0 ? d.line : '#e5e7eb'),background: d.cnt > 0 ? d.bg : '#f9fafb',
-                  cursor: d.cnt > 0 ? 'pointer' : 'default',opacity: d.cnt > 0 ? 1 : 0.6,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                  border:'1.5px solid ' + (d.cnt + d.held > 0 ? d.line : '#e5e7eb'),background: d.cnt + d.held > 0 ? d.bg : '#f9fafb',
+                  cursor: d.cnt + d.held > 0 ? 'pointer' : 'default',opacity: d.cnt + d.held > 0 ? 1 : 0.6,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
                 <span style={{fontSize:22}}>{d.icon}</span>
                 <span style={{flex:1,minWidth:0}}>
                   <span style={{display:'block',fontWeight:800,fontSize:15,color: d.cnt > 0 ? d.fg : '#6b7280'}}>{d.label}</span>
                   <span style={{display:'block',fontSize:11,color:'#6b7280',marginTop:1}}>{d.sub}</span>
                 </span>
-                <span style={{fontWeight:800,fontSize:16,color: d.cnt > 0 ? d.fg : '#9ca3af'}}>{d.cnt > 0 ? d.cnt + '件 ›' : '完了 ✓'}</span>
+                <span style={{fontWeight:800,fontSize:16,color: d.cnt > 0 ? d.fg : '#9ca3af'}}>{d.cnt > 0 ? d.cnt + '件' + (d.held > 0 ? `（保留${d.held}）` : '') + ' ›' : d.held > 0 ? `⏸ 保留${d.held}件 ›` : '完了 ✓'}</span>
               </button>
             ))}
             <div style={{fontSize:11,fontWeight:800,color:'#9ca3af',margin:'12px 2px 6px'}}>売上</div>
