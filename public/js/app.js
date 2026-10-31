@@ -1542,6 +1542,91 @@ const applySplitRegistration = (data, orig, splitItems, common, ts) => {
   const covers = origPhoto ? { ...(data.settings?.bundleCovers || {}), [bundleGroupId]: { photoId: origPhoto.id || null, thumbId: origPhoto.thumbId || null, thumbDataUrl: null, source: 'splitOrigin', setAt: nowIso } } : (data.settings?.bundleCovers || {});
   return { inventory, newItems, bundleGroupId, nowIso, covers, settings: { ...data.settings, _deletedIds: newDeletedIds, bundleCovers: covers } };
 };
+// ★ まとめ買いの在庫（例「4点セット」）から1点だけ切り出す（2026-10-31）
+//   分割登録をしていないまとめ買いが1点売れたとき、「まとめの1点」として売上に紐付けるための本体。
+//   dataは変更せず、新しい inventory と切り出した child を返す（保存・紐付けは呼び出し側が linkSaleToItem で1回の setData にする）。
+//   金額：まとめ T = 子 P + 残り(T−P)。内訳（商品代・送料・手数料・クーポン）も「子＋残り＝元」で1円もずれない。
+//     子の送料・手数料・クーポンは金額比で切り捨て按分、商品代は P から逆算。残り側は「元 − 子」なので端数は必ず残り側に乗る。
+const LOT_NAME_RE = /(\d+)\s*点|まとめ|セット|おまとめ/;
+const lotCountOf = (it) => { const m = String((it && it.productName) || '').match(/(\d+)\s*点/); const n = m ? parseInt(m[1], 10) : 0; return n >= 2 ? n : 0; };
+const buildLotCarve = (data, lot, priceIn, nameIn, ts = Date.now()) => {
+  const num = v => Number(v) || 0;
+  const T = Math.round(num(lot.purchasePrice));
+  const P = Math.round(Number(priceIn));
+  const name = String(nameIn || '').trim();
+  if (!name) return { error: '商品名を入力してください' };
+  if (!Number.isInteger(P) || P < 1) return { error: 'この1点の仕入れ値を1円以上の整数で入力してください' };
+  if (P >= T) return { error: `仕入れ値がまとめの金額 ¥${T.toLocaleString()} 以上です。全部を使う場合は「これで紐付け」を使ってください` };
+  const pc = lot.purchaseCost || {};
+  let I = num(pc.itemPriceTaxIn ?? lot.itemPriceTaxIn), S = num(pc.shippingTaxIn ?? lot.shippingTaxIn);
+  let F = num(pc.optionalFeeTaxIn ?? lot.optionalFeeTaxIn), C = num(pc.couponTaxIn ?? lot.couponTaxIn);
+  const reliable = I + S + F - C === T;   // 内訳が「商品代＋送料＋手数料−クーポン＝仕入れ値」を満たさないときは全額を商品代として扱う
+  if (!reliable) { I = T; S = 0; F = 0; C = 0; }
+  const prop = x => Math.floor((x * P) / T);
+  let S1 = prop(S), F1 = prop(F), C1 = prop(C), I1 = P - S1 - F1 + C1;
+  if (I1 < 0 || I - I1 < 0) { S1 = 0; F1 = 0; C1 = 0; I1 = P; }   // 按分できない形なら子は商品代のみ
+  const I2 = I - I1, S2 = S - S1, F2 = F - F1, C2 = C - C1;
+  if (I2 < 0 || I1 + S1 + F1 - C1 !== P || I2 + S2 + F2 - C2 !== T - P) return { error: '内訳の按分合計が元の金額と一致しません（保存を中止しました）' };
+  const rate = (v) => (v != null && v !== '' && Number.isFinite(Number(v))) ? Number(v) : 10;
+  const exSplit = (origEx, a, b, r) => (reliable && origEx != null && origEx !== '' && Number.isFinite(Number(origEx)))
+    ? allocLargestRemainder(Number(origEx), [a, b]) : [Math.round(a / (1 + r / 100)), Math.round(b / (1 + r / 100))];
+  const itemR = rate(pc.itemTaxRate), shipR = rate(pc.shippingTaxRate), feeR = rate(pc.optionalTaxRate);
+  const [iE1, iE2] = exSplit(pc.itemPriceTaxEx, I1, I2, itemR);
+  const [sE1, sE2] = exSplit(pc.shippingTaxEx, S1, S2, shipR);
+  const [fE1, fE2] = exSplit(pc.optionalFeeTaxEx, F1, F2, feeR);
+  const [tE1, tE2] = (Number.isFinite(Number(pc.totalTaxEx)) && pc.totalTaxEx != null && pc.totalTaxEx !== '')
+    ? allocLargestRemainder(Number(pc.totalTaxEx), [P, T - P]) : [Math.round(P / 1.1), Math.round((T - P) / 1.1)];
+  const nowIso = new Date(ts).toISOString();
+  const d = new Date(ts);
+  const bg = lot.bundleGroup || `bundle_${lot.id}`;
+  const origin = {   // 切り出し前のまとめのスナップショット（情報表示専用。写真は参照IDのみ）
+    id: lot.id, splitAt: nowIso, productName: lot.productName || '', brand: lot.brand || '', yahooAuctionId: lot.yahooAuctionId || '',
+    purchaseStore: lot.purchaseStore || '', purchaseDate: lot.purchaseDate || '', purchaseType: lot.purchaseType || '',
+    purchasePrice: T, itemPriceTaxIn: I, shippingTaxIn: S, optionalFeeTaxIn: F, couponTaxIn: C, couponNote: pc.couponNote || lot.couponNote || '',
+    breakdownReliable: reliable, purchaseCost: JSON.parse(JSON.stringify(pc)),
+    photos: (lot.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })), carved: true,
+    ...(lot.splitOrigin ? { prev: { id: lot.splitOrigin.id, purchasePrice: lot.splitOrigin.purchasePrice, splitAt: lot.splitOrigin.splitAt } } : {}),
+  };
+  const cost = (i, s, f, c, iE, sE, fE, tIn, tE) => ({ ...(lot.purchaseCost || {}),
+    itemPriceTaxIn: i, itemPriceTaxEx: iE, itemTaxRate: itemR, shippingTaxIn: s, shippingTaxEx: sE, shippingTaxRate: shipR,
+    optionalFeeTaxIn: f, optionalFeeTaxEx: fE, optionalTaxRate: feeR, couponTaxIn: c, totalTaxIn: tIn, totalTaxEx: tE });
+  const pd = lot.purchaseDate || today();
+  const child = {
+    id: `${lot.id}_part_${ts}`, userId: lot.userId,
+    productName: name, brand: lot.brand || '', category: lot.category || '', color: '', gender: lot.gender || 'メンズ', condition: lot.condition || 'A', notes: '',
+    purchaseDate: lot.purchaseDate || '', purchaseStore: lot.purchaseStore || '', paymentMethod: lot.paymentMethod || '',
+    purchaseType: lot.purchaseType || 'online', purchaseTypeSource: lot.purchaseTypeSource || 'manual', purchaseStoreType: lot.purchaseStoreType || 'normal',
+    ...(lot.yahooAuctionId ? { yahooAuctionId: lot.yahooAuctionId } : {}), ...(lot.orderId ? { orderId: lot.orderId } : {}),
+    purchasePrice: P, itemPriceTaxIn: I1, shippingTaxIn: S1, optionalFeeTaxIn: F1, couponTaxIn: C1,
+    purchaseCost: cost(I1, S1, F1, C1, iE1, sE1, fE1, P, tE1),
+    priceUnconfirmed: false, listDate: '', listPrice: 0, photos: [],
+    mgmtNo: generateMgmtNo(pd, '', P, data.settings?.priceSplitDivisor || 100),
+    status: 'unlisted', needsDetail: false,
+    bundleGroup: bg, bundleType: lot.bundleType || 'set', bundleLabel: `切り出し ${d.getMonth() + 1}/${d.getDate()}`,
+    splitOrigin: origin, createdAt: nowIso, updatedAt: nowIso,
+  };
+  const lot2 = { ...lot,
+    purchasePrice: T - P, itemPriceTaxIn: I2, shippingTaxIn: S2, optionalFeeTaxIn: F2, couponTaxIn: C2,
+    purchaseCost: cost(I2, S2, F2, C2, iE2, sE2, fE2, T - P, tE2),
+    bundleGroup: bg, bundleType: lot.bundleType || 'set', bundleLabel: lot.bundleLabel || 'まとめ残り',
+    notes: `${lot.notes ? lot.notes + '\n' : ''}${d.getMonth() + 1}/${d.getDate()} 1点切り出し(¥${P.toLocaleString()}) 売上へ`,
+    updatedAt: nowIso };   // status は触らない（出品中のまま）
+  return { child, lot: lot2, inventory: (data.inventory || []).map(i => i.id === lot.id ? lot2 : i).concat(child) };
+};
+// 切り出し紐付け専用のクラウド確認：通常の guardLinkWithCloud に加え、まとめ在庫が別端末で変更・削除されていないかを見る
+const guardCarveLot = async (ctx, pr, saleId, lot) => {
+  if (!(await guardLinkWithCloud(ctx, pr, saleId, lot.id))) return false;
+  if (typeof _cloudEnabled !== 'undefined' && !_cloudEnabled) return true;
+  const r = await fetchLinkCheck({ itemIds: [lot.id] });
+  if (!r.ok) { ctx.toast('通信できないので切り出しを止めました。もう一度お試しください'); return false; }
+  const ci = r.inventory.find(x => x.id === lot.id);
+  if (!ci) { ctx.toast('クラウドにこのまとめ商品が見つからないため止めました'); return false; }
+  if (ci.purchasePrice != null && Math.round(Number(ci.purchasePrice)) !== Math.round(Number(lot.purchasePrice))) {
+    ctx.toast('このまとめ商品の金額が別の端末で変わっています。更新してからやり直してください'); return false;
+  }
+  return true;
+};
+
 // 分割結果を即座にlocalStorageへ同期書き込み（saveData は setTimeout(0) のため、アプリを即座に閉じても分割結果が消えないように）
 const persistSplitLocal = (newInventory, origId, nowIso, covers) => {
   try {
@@ -7107,12 +7192,22 @@ const InventoryTab = () => {
     if (it.status === 'sold' || (data.sales || []).some(x => x.inventoryId === it.id)) return 'この商品はすでに売却済み／紐付け済みです';
     return null;
   };
-  const approveSaleLink = async (pr, itemId) => {
+  const approveSaleLink = async (pr, itemId, carve) => {
     if (proposalBusy) return;
     const prob = saleLinkProblem(pr, itemId);
     if (prob) { alert('❌ ' + prob); return; }
     setProposalBusy(true);
     try {
+      if (carve) {   // ★ まとめの1点として切り出して紐付け（まとめ在庫の金額を減らし、切り出した1点に売上を紐付ける。保存は1回）
+        const lot = (data.inventory || []).find(x => x.id === itemId);
+        if (!(await guardCarveLot({ setFullDataRaw, dataRef, toast }, pr, pr.saleId, lot))) return;
+        const sl = (data.sales || []).find(x => x.id === pr.saleId);
+        const built = buildLotCarve(data, lot, carve.price, carve.name);
+        if (built.error) { alert('❌ ' + built.error); return; }
+        linkSaleToItem({ data: { ...data, inventory: built.inventory }, setData, toast, onEditShipping: setLinkShipEdit }, sl, built.child,
+          { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [built.child.id], linkedItemId: built.child.id, carvedFrom: lot.id })) });
+        return;
+      }
       // 押した瞬間にクラウドの最新を確認（古い画面のまま誤って付け替えない）
       if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr, pr.saleId, itemId))) return;
       const sl = (data.sales || []).find(x => x.id === pr.saleId);
@@ -7123,7 +7218,8 @@ const InventoryTab = () => {
     } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
   // ★ 売上の紐付け：在庫に無い（店舗仕入れの仕入れ未入力）売上を、その場で店舗仕入れ登録して紐付ける
-  const [findLinkPrId, setFindLinkPrId] = React.useState(null);   // 「登録済みの仕入れから探す」を開いている提案のid
+  const [findLinkPrId, setFindLinkPrId] = React.useState(null);
+  const [carveKey, setCarveKey] = React.useState(null);   // 「まとめの1点として紐付け」フォームを開いている候補（`提案id:在庫id`）   // 「登録済みの仕入れから探す」を開いている提案のid
   const [storeReg, setStoreReg] = React.useState(null);   // {prId, name, brand, date, store, price, method, phId, photos:[]}
   const openStoreReg = (pr) => {
     const sl = pr.sale || {};
@@ -8882,6 +8978,13 @@ const InventoryTab = () => {
                           })()}
                           {prob && !saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ {prob}</div>}
                           <button style={{...btn('#16a34a','white',!!prob || proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={!!prob || proposalBusy} onClick={() => approveSaleLink(pr, it.id)}>✅ これで紐付け</button>
+                          {!prob && !saleGone && curSale && it.status !== 'sold' && (Number(it.purchasePrice) || 0) > 1 && carveKey !== `${pr.id}:${it.id}` && (
+                            <button style={{...btn('#f1f5f9','#475569',proposalBusy),flex:'none',width:'100%',marginTop:6,minHeight:36,fontSize:12}} disabled={proposalBusy} onClick={() => setCarveKey(`${pr.id}:${it.id}`)}>📦 まとめの1点として紐付け</button>
+                          )}
+                          {!prob && carveKey === `${pr.id}:${it.id}` && curSale && (
+                            <LotCarveForm sale={curSale} lot={it} busy={proposalBusy} defaultName={sl.mailTitle || pr.title || curSale.mailTitle || curSale.productName}
+                              onCancel={() => setCarveKey(null)} onSubmit={(carve) => { setCarveKey(null); approveSaleLink(pr, it.id, carve); }} />
+                          )}
                         </div>
                       );
                     })}
@@ -8892,7 +8995,7 @@ const InventoryTab = () => {
                       <InventoryLinkPicker data={data} sale={curSale} busy={proposalBusy}
                         info={{ brand: sl.brand || curSale.brand || guessBrandFromTitle(sl.mailTitle || pr.title || curSale.mailTitle), listingMgmtNo: sl.listingMgmtNo || pr.listingMgmtNo || curSale.listingMgmtNo }}
                         onClose={() => setFindLinkPrId(null)}
-                        onPick={(it) => { setFindLinkPrId(null); approveSaleLink(pr, it.id); }} />
+                        onPick={(it, carve) => { setFindLinkPrId(null); approveSaleLink(pr, it.id, carve); }} />
                     )}
                     {!saleGone && storeReg?.prId !== pr.id && (
                       <button style={{...btn('#ffedd5','#9a3412',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>＋ 仕入れを登録して紐付け</button>
@@ -11369,6 +11472,43 @@ const calcLinkedSaleFields = (sale, item) => {
   return { ship, pp, profit, preShip, shipUnknown, listDate, turnoverDays };
 };
 
+// ★ 「まとめの1点として紐付け」フォーム（確認待ちカードと InventoryLinkPicker で共通）。保存処理は呼び出し側（buildLotCarve + linkSaleToItem）
+const LotCarveForm = ({ sale, lot, busy, defaultName, onSubmit, onCancel }) => {
+  const N = lotCountOf(lot);
+  const T = Math.round(Number(lot.purchasePrice) || 0);
+  const [name, setName] = React.useState(String(defaultName || '').trim());
+  const [price, setPrice] = React.useState(N ? String(Math.round(T / N)) : '');
+  const yenS = (v) => '¥' + (Number(v) || 0).toLocaleString();
+  const P = price === '' ? NaN : Math.round(Number(price));
+  const tooBig = Number.isFinite(P) && P >= T;
+  const valid = !!name.trim() && Number.isInteger(P) && P >= 1 && P < T;
+  const f = valid ? calcLinkedSaleFields(sale, { ...lot, purchasePrice: P }) : null;
+  const inp = {width:'100%',boxSizing:'border-box',minHeight:40,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,background:'white'};
+  const lab = {fontSize:11,fontWeight:700,color:'#475569',margin:'8px 0 2px'};
+  return (
+    <div style={{marginTop:8,padding:10,borderRadius:10,background:'#fff7ed',border:'1px solid #fdba74'}} onClick={e => e.stopPropagation()}>
+      <div style={{fontSize:13,fontWeight:800,color:'#9a3412'}}>📦 まとめの1点として紐付け</div>
+      <div style={{fontSize:11,color:'#64748b',marginTop:2,lineHeight:1.5}}>「{lot.productName || '商品'}」（{yenS(T)}）から1点だけ切り出して、この売上に紐付けます。</div>
+      <div style={lab}>商品名</div>
+      <input style={inp} value={name} onChange={e => setName(e.target.value)} />
+      <div style={lab}>この1点の仕入れ値（円）{N ? `　目安：${yenS(T)} ÷ ${N}点` : ''}</div>
+      <input type="text" inputMode="numeric" style={{...inp,borderColor: tooBig ? '#dc2626' : '#cbd5e1'}} placeholder="円" value={price} onChange={e => setPrice(e.target.value.replace(/[^\d]/g, ''))} />
+      {tooBig && <div style={{fontSize:12,color:'#dc2626',fontWeight:700,marginTop:4}}>⚠️ まとめ全体の金額以上です。全部を使うなら、通常の「これで紐付け」を使ってください</div>}
+      {valid && (
+        <div style={{fontSize:12,color:'#9a3412',fontWeight:800,marginTop:6,lineHeight:1.6}}>
+          まとめ残り {yenS(T - P)}{N ? `（あと${N - 1}点）` : ''}<br/>この売上の利益 {yenS(f.profit)}{f.preShip ? '（送料前）' : ''}
+        </div>
+      )}
+      <div style={{display:'flex',gap:8,marginTop:10}}>
+        <button type="button" disabled={busy || !valid} onClick={() => onSubmit({ name: name.trim(), price: P })}
+          style={{flex:2,minHeight:44,borderRadius:10,border:'none',background: (busy || !valid) ? '#9ca3af' : '#ea580c',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer'}}>この1点を切り出して紐付け</button>
+        <button type="button" onClick={onCancel}
+          style={{flex:1,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>やめる</button>
+      </div>
+    </div>
+  );
+};
+
 // ★ 「登録済みの仕入れから探す」シート（2026-10-31）
 //   候補が外れたとき、登録済みの在庫を自分で検索して売上に紐付ける。確認待ちカードと未紐付け売上画面で共通。
 //   紐付けそのものは onPick(item) に任せる（approveSaleLink / doLink = guardLinkWithCloud つきの既存経路）。
@@ -11382,6 +11522,8 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
   const [fOpen, setFOpen] = React.useState(true);
   const [fDate, setFDate] = React.useState(!!saleDate);
   const [picked, setPicked] = React.useState(null);
+  const [carving, setCarving] = React.useState(false);   // 選んだ行で「まとめの1点として紐付け」フォームを開いている
+  React.useEffect(() => { setCarving(false); }, [picked]);
   const [limit, setLimit] = React.useState(50);   // 50件ずつ「さらに表示」（古い仕入れも辿れるように）
   const [oldFirst, setOldFirst] = React.useState(false);
   React.useEffect(() => { const t = setTimeout(() => setDq(q), 200); return () => clearTimeout(t); }, [q]);
@@ -11456,6 +11598,14 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
                     <button type="button" onClick={() => setPicked(null)}
                       style={{flex:1,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>やめる</button>
                   </div>
+                  {sale && it.status !== 'sold' && (Number(it.purchasePrice) || 0) > 1 && !carving && (
+                    <button type="button" disabled={busy} onClick={() => setCarving(true)}
+                      style={{width:'100%',marginTop:8,minHeight:36,borderRadius:10,border:'1px solid #cbd5e1',background:'#f1f5f9',color:'#475569',fontWeight:700,fontSize:12,cursor:'pointer'}}>📦 まとめの1点として紐付け</button>
+                  )}
+                  {sale && carving && (
+                    <LotCarveForm sale={sale} lot={it} busy={busy} defaultName={sale.mailTitle || sale.productName}
+                      onCancel={() => setCarving(false)} onSubmit={(carve) => onPick(it, carve)} />
+                  )}
                 </div>
               )}
             </div>
@@ -11569,11 +11719,19 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
   const [linkBusy, setLinkBusy] = React.useState(false);
   const [pickSaleId, setPickSaleId] = React.useState(null);   // 「登録済みの仕入れから探す」を開いている売上のid
   // 紐付ける瞬間にクラウドの最新を確認（古い画面のまま付け替えない）。関連する確認待ち提案があればそれも見る
-  const doLink = async (sale, item) => {
+  const doLink = async (sale, item, carve) => {
     if (linkBusy) return;
     setLinkBusy(true);
     try {
       const pr = (data.claudeProposals || []).find(x => x && x.type === 'saleLink' && x.saleId === sale.id && (x.status === 'open' || x.status === 'held'));
+      if (carve) {   // ★ まとめの1点として切り出して紐付け
+        if (!(await guardCarveLot({ setFullDataRaw, dataRef, toast }, pr || null, sale.id, item))) return;
+        const built = buildLotCarve(data, item, carve.price, carve.name);
+        if (built.error) { alert('❌ ' + built.error); return; }
+        linkSaleToItem({ data: { ...data, inventory: built.inventory }, setData, toast, onEditShipping }, sale, built.child,
+          pr ? { claudeProposals: (data.claudeProposals || []).map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [built.child.id], linkedItemId: built.child.id, carvedFrom: item.id })) } : {});
+        return;
+      }
       if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr || null, sale.id, item.id))) return;
       linkSaleToItem({ data, setData, toast, onEditShipping }, sale, item);
     } finally { setLinkBusy(false); }
@@ -11671,7 +11829,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
               <InventoryLinkPicker data={data} sale={s} busy={linkBusy}
                 info={{ brand: s.brand || guessBrandFromTitle(s.mailTitle || s.productName), listingMgmtNo: s.listingMgmtNo }}
                 onClose={() => setPickSaleId(null)}
-                onPick={(it) => { setPickSaleId(null); doLink(s, it); }} />
+                onPick={(it, carve) => { setPickSaleId(null); doLink(s, it, carve); }} />
             )}
             <input type="search" className="input-field" placeholder="🔍 在庫を探す（商品名・ブランド・管理番号）" value={q}
               onChange={e => setQueries(prev => ({ ...prev, [s.id]: e.target.value }))}
