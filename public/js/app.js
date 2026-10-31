@@ -7247,6 +7247,15 @@ const InventoryTab = () => {
       void linked;
     } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
+  // 付け替え：すでに別の売上に紐付いた在庫を、この提案の売上へ付け替える（古い売上は確認待ちに戻る）
+  const doSwapLink = async (pr, itemId) => {
+    if (proposalBusy) return;
+    setProposalBusy(true);
+    try {
+      const sl = (data.sales || []).find(x => x.id === pr.saleId), it = (data.inventory || []).find(x => x.id === itemId);
+      if (sl && it) await swapSaleLink({ data, setData, toast, setFullDataRaw, dataRef, onEditShipping: setLinkShipEdit }, sl, it, pr);
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
   // ★ 売上の紐付け：在庫に無い（店舗仕入れの仕入れ未入力）売上を、その場で店舗仕入れ登録して紐付ける
   const [findLinkPrId, setFindLinkPrId] = React.useState(null);
   const [carveKey, setCarveKey] = React.useState(null);   // 「まとめの1点として紐付け」フォームを開いている候補（`提案id:在庫id`）   // 「登録済みの仕入れから探す」を開いている提案のid
@@ -9007,6 +9016,9 @@ const InventoryTab = () => {
                             );
                           })()}
                           {prob && !saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ {prob}</div>}
+                          {!saleGone && (it.status === 'sold' || (data.sales || []).some(x => x.inventoryId === it.id)) && (
+                            <LinkedSaleBox data={data} item={it} newSale={curSale} busy={proposalBusy} onSwap={() => doSwapLink(pr, it.id)} />
+                          )}
                           <button style={{...btn('#16a34a','white',!!prob || proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={!!prob || proposalBusy} onClick={() => approveSaleLink(pr, it.id)}>✅ これで紐付け</button>
                           {!prob && !saleGone && curSale && it.status !== 'sold' && (Number(it.purchasePrice) || 0) > 1 && carveKey !== `${pr.id}:${it.id}` && (
                             <button style={{...btn('#f1f5f9','#475569',proposalBusy),flex:'none',width:'100%',marginTop:6,minHeight:36,fontSize:12}} disabled={proposalBusy} onClick={() => setCarveKey(`${pr.id}:${it.id}`)}>📦 まとめの1点として紐付け</button>
@@ -9025,7 +9037,8 @@ const InventoryTab = () => {
                       <InventoryLinkPicker data={data} sale={curSale} busy={proposalBusy}
                         info={{ brand: sl.brand || curSale.brand || guessBrandFromTitle(sl.mailTitle || pr.title || curSale.mailTitle), listingMgmtNo: sl.listingMgmtNo || pr.listingMgmtNo || curSale.listingMgmtNo }}
                         onClose={() => setFindLinkPrId(null)}
-                        onPick={(it, carve) => { setFindLinkPrId(null); approveSaleLink(pr, it.id, carve); }} />
+                        onPick={(it, carve) => { setFindLinkPrId(null); approveSaleLink(pr, it.id, carve); }}
+                        onSwap={(it) => { setFindLinkPrId(null); doSwapLink(pr, it.id); }} />
                     )}
                     {!saleGone && storeReg?.prId !== pr.id && (
                       <button style={{...btn('#ffedd5','#9a3412',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>＋ 仕入れを登録して紐付け</button>
@@ -11589,7 +11602,7 @@ const LotCarveForm = ({ sale, lot, busy, defaultName, onSubmit, onCancel }) => {
 //   候補が外れたとき、登録済みの在庫を自分で検索して売上に紐付ける。確認待ちカードと未紐付け売上画面で共通。
 //   紐付けそのものは onPick(item) に任せる（approveSaleLink / doLink = guardLinkWithCloud つきの既存経路）。
 //   sale: 紐付け先の売上（利益計算用）  info: { brand, listingMgmtNo }
-const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onClose }) => {
+const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onSwap, onClose }) => {
   const saleBrand = String(info.brand || '').trim();
   const saleDate = String((sale && sale.saleDate) || '').slice(0, 10);
   const [q, setQ] = React.useState(saleBrand);
@@ -11665,7 +11678,13 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
                   </div>
                 </div>
               </div>
-              {on && (
+              {on && (it.status === 'sold' || linkedIds.has(it.id)) && (
+                <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bfdbfe'}}>
+                  <div style={{fontSize:12,color:'#b45309',fontWeight:700}}>⚠️ この商品はすでに売却済み／紐付け済みです</div>
+                  <LinkedSaleBox data={data} item={it} newSale={sale} busy={busy} onSwap={() => onSwap && onSwap(it)} />
+                </div>
+              )}
+              {on && !(it.status === 'sold' || linkedIds.has(it.id)) && (
                 <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bfdbfe'}}>
                   <div style={{fontSize:13,fontWeight:800,color:'#1e3a8a'}}>この仕入れに紐付けますか？{f ? ` 利益 ${yenS(f.profit)}（${f.preShip ? '送料前' : '送料込み'}）` : ''}</div>
                   <div style={{display:'flex',gap:8,marginTop:8}}>
@@ -11696,8 +11715,102 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
   );
 };
 
+// ★ 紐付け解除（売上を在庫から外す）の共通処理（2026-10-31）
+//   売上：inventoryId を外して「未紐付け」に戻し、仕入れ・利益の写しを消す。在庫：売却済みの印を外して 出品中/未出品 に戻す。
+//   売上編集で付け替えたときの在庫の戻し方（listDate があれば出品中）と同じ。{ sales, inventory } を返す（保存は呼び出し側）
+const unlinkSaleFromItem = (data, oldSale, itemId) => {
+  const nowIso = new Date().toISOString();
+  const stillHas = (data.sales || []).some(s => s.id !== oldSale.id && s.inventoryId === itemId);   // 他の売上も同じ在庫を指していれば在庫は戻さない
+  return {
+    sales: (data.sales || []).map(s => s.id !== oldSale.id ? s : {
+      ...s, inventoryId: null, needsLink: true, noStock: false,
+      purchasePrice: 0, purchaseDate: '', purchaseStore: '', listDate: '', turnoverDays: null, profit: null,
+      productName: '', brand: '', updatedAt: nowIso,
+    }),
+    inventory: (data.inventory || []).map(i => i.id !== itemId || stillHas ? i : { ...i, status: i.listDate ? 'listed' : 'unlisted', soldAt: undefined, soldDate: undefined }),
+  };
+};
+// 売れた出品の写真URL（確認待ちカードと同じ規則：メルカリは公開画像、他は保存済みURL）
+const soldListingPhotoUrl = (sale) => {
+  const sid = String(sale.platformId || '').trim(), plat = String(sale.platform || '');
+  return sale.photoUrl || (sid && /メルカリ/.test(plat) && /^m\d+$/.test(sid) ? `https://static.mercdn.net/item/detail/orig/photos/${sid}_1.jpg` : '');
+};
+// ★ 「いま紐付いている売上」ボックス：売却済み／紐付け済みの在庫が、どの売上に紐付いているかを見せ、付け替えボタンを出す
+//   item: 候補の在庫  newSale: これから紐付けたい売上（無ければ付け替えボタンなし）  onSwap(oldSale|null)
+const LinkedSaleBox = ({ data, item, newSale, busy = false, onSwap }) => {
+  const [open, setOpen] = React.useState(false);
+  const old = (data.sales || []).find(s => s.inventoryId === item.id) || null;
+  const yenB = (v) => '¥' + (Number(v) || 0).toLocaleString();
+  const purl = old ? soldListingPhotoUrl(old) : '';
+  const title = old ? (old.mailTitle || old.productName || '') : '';
+  const profitOk = old && old.profit != null && old.profit !== '' && !isNaN(Number(old.profit));
+  return (
+    <div style={{marginTop:8,padding:8,borderRadius:10,background:'#fffbeb',border:'1px solid #fcd34d'}}>
+      <div style={{fontSize:12,fontWeight:800,color:'#92400e'}}>いま紐付いている売上</div>
+      {old ? (
+        <div style={{display:'flex',gap:8,alignItems:'flex-start',marginTop:6}}>
+          {purl && (
+            <img src={purl} alt="売れた商品" loading="lazy" onError={e => { e.currentTarget.style.display = 'none'; }}
+              style={{width:64,height:64,objectFit:'cover',borderRadius:8,border:'1px solid #fcd34d',background:'#f1f5f9',flexShrink:0}}/>
+          )}
+          <div style={{flex:1,minWidth:0,fontSize:12,color:'#374151'}}>
+            <div><b>{(old.saleDate || '').slice(0, 10)}</b>　{old.platform || ''}　<b>{yenB(old.salePrice)}</b></div>
+            <div onClick={() => setOpen(v => !v)} style={open ? {marginTop:2,wordBreak:'break-all',cursor:'pointer',lineHeight:1.4} : {marginTop:2,wordBreak:'break-all',cursor:'pointer',lineHeight:1.4,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{title || '（タイトルなし）'}</div>
+            <div style={{marginTop:2,color:'#6b7280'}}>利益 {profitOk ? yenB(old.profit) : '未計算'}</div>
+          </div>
+        </div>
+      ) : (
+        <div style={{fontSize:12,color:'#374151',marginTop:4}}>売上の記録なし（売却済みの印だけ）</div>
+      )}
+      {newSale && onSwap && old && (
+        <button type="button" disabled={busy} onClick={() => onSwap(old)}
+          style={{width:'100%',marginTop:8,minHeight:44,borderRadius:10,border:'none',background: busy ? '#9ca3af' : '#d97706',color:'#fff',fontWeight:800,fontSize:13,cursor:'pointer',touchAction:'manipulation'}}>↔ この売上から外して、こちらに付け替える</button>
+      )}
+    </div>
+  );
+};
+// ★ 付け替え本体：古い売上の紐付けを外し、新しい売上を同じ在庫に紐付ける（保存は1回）。古い売上は「確認待ち」に戻す
+//   ctx: { data, setData, toast, setFullDataRaw, dataRef, onEditShipping }  pr: 新しい売上の提案（無ければ null）
+const swapSaleLink = async (ctx, newSale, item, pr) => {
+  const { data, setData, toast, onEditShipping } = ctx;
+  const curNew = (data.sales || []).find(s => s.id === newSale.id);
+  const curItem = (data.inventory || []).find(i => i.id === item.id);
+  const old = (data.sales || []).find(s => s.inventoryId === item.id);
+  if (!curNew || curNew.inventoryId || !curNew.needsLink) { alert('❌ この売上はすでに紐付け済み（または対象外）です'); return false; }
+  if (!curItem || !old) { alert('❌ 付け替え元の売上が見つかりません'); return false; }
+  const nm = `${curItem.brand ? curItem.brand + ' ' : ''}${curItem.productName || ''}`.trim();
+  const fmt = (s) => `${(s.saleDate || '').slice(0, 10)}・${s.platform || ''}・¥${formatMoney(s.salePrice)}`;
+  if (!window.confirm(`${fmt(old)} の紐付けを外し、${fmt(curNew)} に付け替えます。外した売上は『確認待ち』に戻ります。\n\n在庫：${nm}`)) return false;
+  // 押した瞬間にクラウドの最新を確認（両方の売上と在庫）。ずれていたら何も変えずに止める
+  if (typeof _cloudEnabled === 'undefined' || _cloudEnabled) {
+    const r = await fetchLinkCheck({ saleIds: [curNew.id, old.id], itemIds: [curItem.id], proposalIds: pr ? [pr.id] : [] });
+    if (!r.ok) { toast('通信できないので付け替えを止めました。もう一度お試しください'); return false; }
+    const cNew = r.sales.find(x => x.id === curNew.id), cOld = r.sales.find(x => x.id === old.id);
+    const cp = pr ? r.claudeProposals.find(x => x.id === pr.id) : null;
+    const others = (r.itemSales || []).filter(x => x.inventoryId === curItem.id);
+    if ((cNew && cNew.inventoryId) || (cp && (cp.status === 'approved' || cp.status === 'rejected'))) { alert('❌ この売上は別の端末ですでに紐付け済みです。画面を開き直してください'); return false; }
+    if ((cOld && cOld.inventoryId !== curItem.id) || others.some(x => x.id !== old.id) || (!cOld && others.length === 0 && r.itemSales)) { alert('❌ この商品の紐付けが別の端末で変わっています。画面を開き直してください'); return false; }
+  }
+  const nowIso = new Date().toISOString();
+  const un = unlinkSaleFromItem(data, old, curItem.id);
+  const data2 = { ...data, sales: un.sales, inventory: un.inventory };
+  const note = `付け替えで紐付けを外しました（前の仕入れ: ${nm || '不明'}）`;
+  const props = data.claudeProposals || [];
+  const oldPr = props.filter(x => x && x.type === 'saleLink' && x.saleId === old.id).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+  const reopened = oldPr
+    ? { ...oldPr, status: 'open', note, updatedAt: nowIso, linkedItemId: undefined, resultItemIds: undefined, autoHealed: undefined, heldAt: undefined }
+    : { id: 'cp_sl_' + old.id, type: 'saleLink', status: 'open', saleId: old.id, title: old.mailTitle || old.productName || '売上',
+        sale: { date: old.saleDate || '', price: old.salePrice, platform: old.platform || '', mailTitle: old.mailTitle || old.productName || '', photoUrl: soldListingPhotoUrl(old) || undefined },
+        candidates: [], confidence: '低', note, createdAt: nowIso, updatedAt: nowIso };
+  let nextProps = props.filter(x => !(x && x.id === reopened.id)).map(x => (pr && x.id === pr.id) ? markProposalDone(x, 'approved', { resultItemIds: [curItem.id], linkedItemId: curItem.id }) : x);
+  nextProps = [...nextProps, reopened];
+  const linked = linkSaleToItem({ data: data2, setData, toast, onEditShipping }, curNew, { ...curItem, status: 'unlisted' }, { claudeProposals: nextProps }, true);
+  if (linked) toast('付け替えました。外した売上は確認待ちに戻しました');
+  return !!linked;
+};
+
 // 未紐付け売上⇔在庫の紐付け本体（売上タブの未紐付け画面と「Claudeの確認待ち」で共通）。成功したら紐付け後の売上を返す
-const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, extraData = {}) => {
+const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, extraData = {}, skipConfirm = false) => {
   const curSale = (data.sales || []).find(s => s.id === sale.id);
   const curItem = (data.inventory || []).find(i => i.id === item.id);
   if (!curSale || curSale.inventoryId) { toast('この売上はすでに紐付け済みです'); return null; }
@@ -11705,7 +11818,7 @@ const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, ex
   const f = calcLinkedSaleFields(curSale, curItem);
   const nm = `${curItem.brand ? curItem.brand + ' ' : ''}${curItem.productName || ''}`.trim();
   const msg = `この売上に紐付けます\n\n売上：${curSale.platform} ¥${formatMoney(curSale.salePrice)}\n${(curSale.mailTitle || '').slice(0, 40)}\n\n在庫：${nm}\n${curItem.mgmtNo || ''}\n\n仕入れ ¥${formatMoney(f.pp)} → 利益 ¥${formatMoney(f.profit)}${f.preShip ? '（送料前・送料は未定）' : ''}\n在庫は「売却済み」になります。`;
-  if (!window.confirm(msg)) return null;
+  if (!skipConfirm && !window.confirm(msg)) return null;   // 付け替え時は呼び出し側で確認済みなので省略
   const nowIso = new Date().toISOString();
   const linked = {
     ...curSale,
@@ -11814,6 +11927,16 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
     } finally { setLinkBusy(false); }
   };
 
+  // 付け替え（すでに別の売上に紐付いた在庫を、この売上へ）
+  const doSwap = async (sale, item) => {
+    if (linkBusy) return;
+    setLinkBusy(true);
+    try {
+      const pr = (data.claudeProposals || []).find(x => x && x.type === 'saleLink' && x.saleId === sale.id && (x.status === 'open' || x.status === 'held'));
+      await swapSaleLink({ data, setData, toast, setFullDataRaw, dataRef, onEditShipping }, sale, item, pr || null);
+    } finally { setLinkBusy(false); }
+  };
+
   const markNoStock = (sale) => {
     if (!window.confirm('在庫なし（記録だけ）にしますか？\n\n売上には含まれたまま、利益は計算されません。\n（2025年の仕入れ分など、在庫に無い商品用）')) return;
     const nowIso = new Date().toISOString();
@@ -11906,7 +12029,8 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
               <InventoryLinkPicker data={data} sale={s} busy={linkBusy}
                 info={{ brand: s.brand || guessBrandFromTitle(s.mailTitle || s.productName), listingMgmtNo: s.listingMgmtNo }}
                 onClose={() => setPickSaleId(null)}
-                onPick={(it, carve) => { setPickSaleId(null); doLink(s, it, carve); }} />
+                onPick={(it, carve) => { setPickSaleId(null); doLink(s, it, carve); }}
+                onSwap={(it) => { setPickSaleId(null); doSwap(s, it); }} />
             )}
             <input type="search" className="input-field" placeholder="🔍 在庫を探す（商品名・ブランド・管理番号）" value={q}
               onChange={e => setQueries(prev => ({ ...prev, [s.id]: e.target.value }))}
