@@ -1,4 +1,4 @@
-/*APP_SRC_SHA256:8b58ef70cf5ef24d21c5fb1a692f86f026cf9d362498bcd585a4c0325b711650*/
+/*APP_SRC_SHA256:dfdee6e6010d5435582abe6d1606013c9f404a726400bb1e7210d22aee929ec2*/
 // ============================================================
 // CONFIG - 変更しやすい設定値を集約
 // ============================================================
@@ -164,11 +164,23 @@ const getStorageUsage=()=>{let main=0,thumbs=0,total=0;try{for(let i=0;i<localSt
 // ★ バックアップリマインダー（30日以上バックアップしていなければ起動時に通知）
 const LAST_BACKUP_KEY='nobushop_last_backup';const BACKUP_SNOOZE_KEY='nobushop_backup_snooze';const BACKUP_REMIND_DAYS=30;let _onBackupDone=null;// App側でバナーを閉じるためのコールバック
 const markBackupDone=()=>{try{localStorage.setItem(LAST_BACKUP_KEY,String(Date.now()));}catch(_){}if(_onBackupDone){try{_onBackupDone();}catch(_){}}};const needsBackupReminder=()=>{try{const snooze=Number(localStorage.getItem(BACKUP_SNOOZE_KEY)||0);if(Date.now()<snooze)return false;const last=Number(localStorage.getItem(LAST_BACKUP_KEY)||0);// 一度もバックアップしていない場合は「初回起動日」を基準にする（初日から警告しない）
-if(!last){localStorage.setItem(LAST_BACKUP_KEY,String(Date.now()));return false;}return Date.now()-last>BACKUP_REMIND_DAYS*86400000;}catch{return false;}};const snoozeBackupReminder=(days=3)=>{try{localStorage.setItem(BACKUP_SNOOZE_KEY,String(Date.now()+days*86400000));}catch(_){}};let _saveTimer=null,_savePending=null;const saveData=data=>{// 圧縮に時間がかかる（約1秒）ので、続けて変更されたら最後の1回だけ保存する（0.8秒まとめ）
-_savePending=data;if(_saveTimer)clearTimeout(_saveTimer);_saveTimer=setTimeout(()=>{_saveTimer=null;const data=_savePending;_savePending=null;if(!data)return;try{const stripped=stripPhotosForStorage(data);writeStoredRaw(JSON.stringify(stripped));if(_onStorageError){try{_onStorageError(null);}catch(_){}}// 成功 → 警告を消す
-}catch(e){console.error('[saveData] error:',e);// ★ 容量不足 → 消えても安全なデータを削除して1回だけ再試行（本体データを最優先）
-try{freeStorageSpace();writeStoredRaw(JSON.stringify(stripPhotosForStorage(data)));console.warn('[saveData] 空きを確保して保存に成功');if(_onStorageError){try{_onStorageError(null);}catch(_){}}}catch(e2){// それでも失敗 → 画面に警告を出す（サイレント失敗させない）
-if(_onStorageError){try{_onStorageError(e2);}catch(_){}}}}// ★ thumbDataUrlを別キーに保存（IndexedDB消失時の保険・3重バックアップの1つ目）
+if(!last){localStorage.setItem(LAST_BACKUP_KEY,String(Date.now()));return false;}return Date.now()-last>BACKUP_REMIND_DAYS*86400000;}catch{return false;}};const snoozeBackupReminder=(days=3)=>{try{localStorage.setItem(BACKUP_SNOOZE_KEY,String(Date.now()+days*86400000));}catch(_){}};let _saveTimer=null,_savePending=null,_saveDirty=false;// ★ 圧縮は別スレッド（Web Worker）で行い、画面を止めない（2026-10-31 同期中にフリーズした対策）
+//   中身は lzCompress と同じ処理。Worker が使えない端末では従来どおりその場で圧縮する
+const LZ_WORKER_SRC=`
+const bitLen=(n)=>{let b=0;while(n>0){b++;n>>>=1;}return Math.max(2,b);};
+const comp=(s)=>{const out=[];let buf=0,nb=0;
+const put=(v,n)=>{for(let i=0;i<n;i++){buf=(buf<<1)|((v>>>i)&1);if(++nb===15){out.push(String.fromCharCode(buf+32));buf=0;nb=0;}}};
+const dict=new Map();let next=2,w='';
+for(let i=0;i<s.length;i++){const c=s.charAt(i);
+if(!dict.has(c)){if(w!==''){put(dict.get(w),bitLen(next));dict.set(w+c,next++);}put(0,bitLen(next));put(c.charCodeAt(0),16);dict.set(c,next++);w='';continue;}
+const wc=w+c;if(dict.has(wc)){w=wc;continue;}put(dict.get(w),bitLen(next));dict.set(wc,next++);w=c;}
+if(w!=='')put(dict.get(w),bitLen(next));put(1,bitLen(next));if(nb>0){buf<<=(15-nb);out.push(String.fromCharCode(buf+32));}
+return out.join('');};
+onmessage=(e)=>{let out=null,err=null;try{out=comp(e.data.json);}catch(x){err=String(x&&x.message||x);}postMessage({seq:e.data.seq,out:out,err:err});};
+`;let _lzWorker=null,_lzSeq=0;const getLzWorker=()=>{if(_lzWorker!==null)return _lzWorker;try{const w=new Worker(URL.createObjectURL(new Blob([LZ_WORKER_SRC],{type:'text/javascript'})));w.onmessage=e=>{const{seq,out,err}=e.data||{};if(seq!==_lzSeq)return;// 途中で新しい保存が来ていたら古い結果は捨てる
+if(err||typeof out!=='string'){console.warn('[saveData] worker失敗→その場で保存',err);_writeMainNow();return;}_storeCompressed(out);};w.onerror=()=>{_lzWorker=false;_writeMainNow();};_lzWorker=w;}catch(_){_lzWorker=false;}return _lzWorker;};let _lastJson=null;// Worker に渡した最新のJSON（失敗時にその場で保存し直す用）
+const _storeCompressed=z=>{try{localStorage.setItem(STORAGE_KEY,LZ_PREFIX+z);_saveDirty=false;if(_onStorageError){try{_onStorageError(null);}catch(_){}}}catch(e){console.error('[saveData] error:',e);try{freeStorageSpace();localStorage.setItem(STORAGE_KEY,LZ_PREFIX+z);_saveDirty=false;if(_onStorageError){try{_onStorageError(null);}catch(_){}}}catch(e2){if(_onStorageError){try{_onStorageError(e2);}catch(_){}}}}};const _writeMainNow=()=>{if(_lastJson!=null){try{_storeCompressed(lzCompress(_lastJson));}catch(e){if(_onStorageError){try{_onStorageError(e);}catch(_){}}}}};const saveData=data=>{// 続けて変更されたら最後の1回だけ保存する（0.8秒まとめ）。圧縮は Worker で行う
+_savePending=data;_saveDirty=true;if(_saveTimer)clearTimeout(_saveTimer);_saveTimer=setTimeout(()=>{_saveTimer=null;const data=_savePending;_savePending=null;if(!data)return;try{_lastJson=JSON.stringify(stripPhotosForStorage(data));const w=getLzWorker();if(w)w.postMessage({seq:++_lzSeq,json:_lastJson});else{++_lzSeq;_writeMainNow();}}catch(e){console.error('[saveData] error:',e);if(_onStorageError){try{_onStorageError(e);}catch(_){}}}// ★ thumbDataUrlを別キーに保存（IndexedDB消失時の保険・3重バックアップの1つ目）
 try{saveThumbMap(data);}catch(e){}},800);};// ============================================================
 // クラウド同期（/api/data 経由 – iOS Safari CORS問題を構造的に解消）
 // iPhone/MacBook ともに同じURLを使えば自動でデータが共有される
@@ -1671,8 +1683,10 @@ syncToSupabase({},full);},[]);// ★★★ iOS Safari タッチ不能バグ 全�
 React.useEffect(()=>{const reflow=()=>{try{window.scrollTo(0,window.scrollY);}catch(_){}};const onFocusOut=e=>{const tag=e.target?.tagName;if(tag!=='INPUT'&&tag!=='TEXTAREA')return;reflow();setTimeout(reflow,80);setTimeout(reflow,200);setTimeout(reflow,400);};document.addEventListener('focusout',onFocusOut,{passive:true,capture:true});return()=>document.removeEventListener('focusout',onFocusOut,{capture:true});},[]);// ── アプリ終了・バックグラウンド移行時に同期保存（データ消失防止）──
 React.useEffect(()=>{const forceSave=()=>{// ★ バックグラウンド移行時のみ保存（前面復帰時は不要＆大量データでブロックを避ける）
 if(!document.hidden)return;try{// ★ thumbDataUrl（base64画像）を除外して保存（iOS Safariの5MB上限＋同期書き込みフリーズ防止）
+if(!_saveDirty)return;// 保存済み（Worker の保存も完了）なら何もしない＝重い圧縮をしない
 if(_saveTimer){clearTimeout(_saveTimer);_saveTimer=null;_savePending=null;}// まとめ待ちの保存はここで済ませる
-const stripped=stripPhotosForStorage(dataRef.current);writeStoredRaw(JSON.stringify(stripped));}catch(e){// ★ 容量不足 → 消えても安全なデータを削除して再試行
+++_lzSeq;// Worker で処理中の古い結果は使わない
+const stripped=stripPhotosForStorage(dataRef.current);writeStoredRaw(JSON.stringify(stripped));_saveDirty=false;}catch(e){// ★ 容量不足 → 消えても安全なデータを削除して再試行
 try{freeStorageSpace();writeStoredRaw(JSON.stringify(stripPhotosForStorage(dataRef.current)));}catch(e2){if(_onStorageError){try{_onStorageError(e2);}catch(_){}}}}// ★ thumbMapはsaveDataのsetTimeout(0)で保存済みのため、ここでは呼ばない
 // （visibilitychangeでJSON.stringify+localStorageの重い処理をするとiOSカメラピッカーが起動しなくなる）
 };// visibilitychange: タブ切り替え・ホームボタンなどでバックグラウンドに入るとき
