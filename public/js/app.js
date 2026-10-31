@@ -890,6 +890,56 @@ const fetchCloudSig = async () => {
     return (resp.ok && json && json.ok && typeof json.sig === 'string' && json.sig) ? json.sig : null;
   } catch(_) { return null; }
 };
+// ★ 売上の紐付け直前の「クラウド最新確認」（2026-10-31）
+//   端末のデータが古いまま「これで紐付け」を押すと、紐付け済みの売上を別の在庫へ付け替えてしまう事故になる。
+//   → 押した瞬間に、その売上・提案・在庫の3種だけを /api/data?check=1 で引き直す（読み取り専用・数KB）。
+//   結果: { ok:false }（通信失敗・タイムアウト）／ { ok:true, sale, item, proposal, itemSales }
+const fetchLinkCheck = async ({ saleIds = [], itemIds = [], proposalIds = [] }) => {
+  try {
+    const q = [`check=1`, saleIds.length ? `saleIds=${encodeURIComponent(saleIds.join(','))}` : '', itemIds.length ? `itemIds=${encodeURIComponent(itemIds.join(','))}` : '',
+      proposalIds.length ? `proposalIds=${encodeURIComponent(proposalIds.join(','))}` : ''].filter(Boolean).join('&');
+    const resp = await fetchWithTimeout(`${_API_BASE}/api/data?${q}`, { cache: 'no-store', headers: authHeaders() }, 15000);
+    const json = await resp.json();
+    if (!resp.ok || !json || !json.ok || !json.check) return { ok: false };
+    return { ok: true, sales: json.sales || [], inventory: json.inventory || [], itemSales: json.itemSales, claudeProposals: json.claudeProposals || [] };
+  } catch(_) { return { ok: false }; }
+};
+// クラウドの最新を見て、この紐付けを進めてよいか判定する。{ ok:true } なら進めてよい。
+// 古い端末データだった場合は、クラウドの内容を端末に反映して（カードが消える）理由を返す。
+//   ctx: { data, setFullDataRaw, dataRef, toast }  pr: 提案（無ければ null）  saleId / itemId: 紐付け先（新規登録の在庫は itemId なし）
+const guardLinkWithCloud = async ({ setFullDataRaw, dataRef, toast }, pr, saleId, itemId) => {
+  if (typeof _cloudEnabled !== 'undefined' && !_cloudEnabled) return true;   // クラウド未使用の端末は端末データが正
+  const r = await fetchLinkCheck({ saleIds: [saleId], itemIds: itemId ? [itemId] : [], proposalIds: pr ? [pr.id] : [] });
+  if (!r.ok) { toast('通信できないので紐付けを止めました。もう一度お試しください'); return false; }
+  const cs = r.sales.find(x => x.id === saleId), ci = itemId ? r.inventory.find(x => x.id === itemId) : null;
+  const cp = pr ? r.claudeProposals.find(x => x.id === pr.id) : null;
+  const saleLinked = !!(cs && cs.inventoryId);
+  const propClosed = !!(cp && (cp.status === 'approved' || cp.status === 'rejected'));
+  const itemSold = !!(ci && ci.status === 'sold');
+  const itemTaken = (r.itemSales || []).some(x => x.id !== saleId && x.inventoryId === itemId);
+  if (!saleLinked && !propClosed && !itemSold && !itemTaken) return true;
+  // 古い端末データ：クラウドの版を端末へ反映（updatedAtはクラウドのまま＝再送されない）
+  const cloudSaleLinkedItemId = cs && cs.inventoryId;
+  setFullDataRaw(prev => {
+    const keepPhotos = (loc, cl) => ({ ...cl, photos: loc?.photos || cl.photos });
+    const nf = { ...prev,
+      sales: (prev.sales || []).map(x => cs && x.id === cs.id ? cs : x),
+      inventory: (prev.inventory || []).map(x => {
+        const c = r.inventory.find(y => y.id === x.id);
+        return c && c.status === 'sold' && x.status !== 'sold' ? keepPhotos(x, c) : x;
+      }),
+      claudeProposals: (prev.claudeProposals || []).map(x => {
+        if (!pr || x.id !== pr.id) return x;
+        if (cp && cp.status !== 'open') return cp;
+        // 提案は未完了でも売上が紐付け済みなら、カードを消すため承認済みに直す（クラウド側の売上が根拠）
+        return saleLinked ? { ...x, status: 'approved', linkedItemId: cloudSaleLinkedItemId, resultItemIds: [cloudSaleLinkedItemId], autoHealed: true, items: (x.items || []).map(it => ({ ...it, photo: null })), alternatives: undefined } : x;
+      }) };
+    dataRef.current = nf; saveData(nf); return nf;
+  });
+  toast(saleLinked || propClosed ? 'すでに紐付け済みでした（最新に更新しました）' : 'この商品はすでに売却済み／紐付け済みでした（最新に更新しました）');
+  return false;
+};
+
 // ── Claudeの確認待ち：承認/却下の結果を確実にクラウドへ送る ──
 // 以前は大きな在庫差分と同じPOSTに相乗りし、失敗・アプリ終了・サーバー側の同時書き込みで提案だけが
 // 'open' のまま残ることがあった（提案は端末に保存しないため、再起動すると open に戻って見える）。
@@ -6911,7 +6961,7 @@ const MercariPrepPanel = ({ item, onClose, toast }) => {
 const InventoryTab = () => {
   const { data, setData, setTab, setEditingItem, setPendingSaleItemId, setPendingReturnTab,
           pendingInventoryFilter, setPendingInventoryFilter,
-          pendingInventoryScrollY, setPendingInventoryScrollY, currentUser, setPendingStorePurchase } = React.useContext(AppContext);
+          pendingInventoryScrollY, setPendingInventoryScrollY, currentUser, setPendingStorePurchase, setFullDataRaw, dataRef } = React.useContext(AppContext);
   const toast = useToast();
   // ★ 店舗仕入れ未入力（PayPay/メルペイの店舗払いで、在庫がまだ無いもの）
   const [devStorePending, setDevStorePending] = React.useState(null); // 表示確認用（保存しない・通常はnull）
@@ -7014,6 +7064,38 @@ const InventoryTab = () => {
     if (!healed.size) return;
     setData({ ...data, claudeProposals: (data.claudeProposals || []).map(x => healed.get(x.id) || x) });
   }, [data.claudeProposals, data.inventory, data.sales]);
+  // ★ 確認待ちを開いたとき、表示中の売上紐付け提案（最大10件・1リクエスト）をクラウドの最新と照合して、古いカードを自動で消す
+  //   （端末が古いまま「紐付け済み」の提案を未処理として出し続けるのを防ぐ。読み取りだけ・失敗しても何もしない）
+  const linkCheckKey = proposalsLinkOpen.slice(0, 10).map(pr => pr.id).join(',');
+  React.useEffect(() => {
+    if (!linkCheckKey) return;
+    if (Date.now() - (window.__linkCheckAt || 0) < 60000) return;   // 1分に1回まで
+    window.__linkCheckAt = Date.now();
+    const prs = proposalsLinkOpen.slice(0, 10);
+    let dead = false;
+    (async () => {
+      const r = await fetchLinkCheck({ saleIds: prs.map(pr => pr.saleId).filter(Boolean), proposalIds: prs.map(pr => pr.id) });
+      if (dead || !r.ok) return;
+      const closed = new Map(r.claudeProposals.filter(x => x.status === 'approved' || x.status === 'rejected').map(x => [x.id, x]));
+      const csales = new Map(r.sales.filter(x => x.inventoryId).map(x => [x.id, x]));
+      const stale = prs.filter(pr => closed.has(pr.id) || csales.has(pr.saleId));
+      if (!stale.length) return;
+      setFullDataRaw(prev => {
+        const nf = { ...prev,
+          sales: (prev.sales || []).map(x => csales.get(x.id) || x),
+          claudeProposals: (prev.claudeProposals || []).map(x => {
+            const st = stale.find(p => p.id === x.id);
+            if (!st) return x;
+            if (closed.has(x.id)) return closed.get(x.id);
+            const sl = csales.get(x.saleId);
+            return { ...x, status: 'approved', linkedItemId: sl.inventoryId, resultItemIds: [sl.inventoryId], autoHealed: true, items: (x.items || []).map(it => ({ ...it, photo: null })), alternatives: undefined };
+          }) };
+        dataRef.current = nf; saveData(nf); return nf;
+      });
+      toast('最新の状態に更新しました（紐付け済みの提案を消しました）');
+    })();
+    return () => { dead = true; };
+  }, [linkCheckKey]);
   const [linkShipEdit, setLinkShipEdit] = React.useState(null);   // 売上の紐付け提案：送料入力モーダルの対象売上
   // 売上の紐付け提案：承認前の検査（売上がまだ未紐付けで、在庫が売れていないか）
   const saleLinkProblem = (pr, itemId) => {
@@ -7025,14 +7107,16 @@ const InventoryTab = () => {
     if (it.status === 'sold' || (data.sales || []).some(x => x.inventoryId === it.id)) return 'この商品はすでに売却済み／紐付け済みです';
     return null;
   };
-  const approveSaleLink = (pr, itemId) => {
+  const approveSaleLink = async (pr, itemId) => {
     if (proposalBusy) return;
     const prob = saleLinkProblem(pr, itemId);
     if (prob) { alert('❌ ' + prob); return; }
-    const sl = (data.sales || []).find(x => x.id === pr.saleId);
-    const it = (data.inventory || []).find(x => x.id === itemId);
     setProposalBusy(true);
     try {
+      // 押した瞬間にクラウドの最新を確認（古い画面のまま誤って付け替えない）
+      if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr, pr.saleId, itemId))) return;
+      const sl = (data.sales || []).find(x => x.id === pr.saleId);
+      const it = (data.inventory || []).find(x => x.id === itemId);
       const linked = linkSaleToItem({ data, setData, toast, onEditShipping: setLinkShipEdit }, sl, it,
         { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [itemId], linkedItemId: itemId })) });
       void linked;
@@ -7082,7 +7166,7 @@ const InventoryTab = () => {
     return (data.inventory || []).find(i => String(i.yahooAuctionId || '').trim().toLowerCase() === k) || null;
   };
   const numOf = (v) => Math.round(Number(String(v == null ? '' : v).replace(/[,，]/g, ''))) || 0;
-  const saveOnlineReg = (pr) => {
+  const saveOnlineReg = async (pr) => {
     const f = storeReg;
     const sale = (data.sales || []).find(x => x.id === pr.saleId);
     if (!sale || sale.inventoryId || !sale.needsLink) { alert('❌ この売上はすでに紐付け済み（または削除済み）です'); return; }
@@ -7119,13 +7203,14 @@ const InventoryTab = () => {
     };
     setProposalBusy(true);
     try {
+      if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr, pr.saleId, null))) { setStoreReg(null); return; }   // 古い画面なら止める
       const data2 = { ...data, inventory: [...(data.inventory || []), item] };
       const linked = linkSaleToItem({ data: data2, setData, toast, onEditShipping: setLinkShipEdit }, sale, item,
         { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [item.id], linkedItemId: item.id, onlineRegistered: true })) });
       if (linked) setStoreReg(null);
     } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
-  const saveStoreReg = (pr) => {
+  const saveStoreReg = async (pr) => {
     if (proposalBusy || !storeReg || storeReg.prId !== pr.id) return;
     if (storeReg.kind === 'online') { saveOnlineReg(pr); return; }
     const f = storeReg;
@@ -7174,6 +7259,7 @@ const InventoryTab = () => {
     }
     setProposalBusy(true);
     try {
+      if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr, pr.saleId, null))) { setStoreReg(null); return; }   // 古い画面なら止める
       const data2 = { ...data, inventory, settings };
       const linked = linkSaleToItem({ data: data2, setData, toast, onEditShipping: setLinkShipEdit }, sale, item,
         { settings, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [item.id], linkedItemId: item.id, storeRegistered: true })) });
@@ -11339,7 +11425,18 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
     return m;
   }, [shown.map(s => s.id).join(','), data.inventory, linkedIds]);
 
-  const doLink = (sale, item) => linkSaleToItem({ data, setData, toast, onEditShipping }, sale, item);
+  const { setFullDataRaw, dataRef } = React.useContext(AppContext);
+  const [linkBusy, setLinkBusy] = React.useState(false);
+  // 紐付ける瞬間にクラウドの最新を確認（古い画面のまま付け替えない）。関連する確認待ち提案があればそれも見る
+  const doLink = async (sale, item) => {
+    if (linkBusy) return;
+    setLinkBusy(true);
+    try {
+      const pr = (data.claudeProposals || []).find(x => x && x.type === 'saleLink' && x.saleId === sale.id && (x.status === 'open' || x.status === 'held'));
+      if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr || null, sale.id, item.id))) return;
+      linkSaleToItem({ data, setData, toast, onEditShipping }, sale, item);
+    } finally { setLinkBusy(false); }
+  };
 
   const markNoStock = (sale) => {
     if (!window.confirm('在庫なし（記録だけ）にしますか？\n\n売上には含まれたまま、利益は計算されません。\n（2025年の仕入れ分など、在庫に無い商品用）')) return;
@@ -14391,8 +14488,12 @@ function mergeCloudIntoLocal(localFull, cloudFull) {
       if (!c) { result.push(l); continue; }
       const lt = new Date(l.updatedAt || l.createdAt || 0).getTime();
       const ct = new Date(c.updatedAt || c.createdAt || 0).getTime();
-      const winner = lt >= ct ? l : c;
-      const loser  = lt >= ct ? c : l;
+      // 同時刻のときは端末優先だが、クラウドが「紐付け済み／売却済み」で端末が未了なら必ずクラウドを採る
+      //（更新時刻を付けずに書き換えられた行で、古い端末の版が勝って二重紐付けになるのを防ぐ）
+      const cloudDoneOnly = (c.inventoryId && !c.needsLink && !(l.inventoryId && !l.needsLink)) || (c.status === 'sold' && l.status !== 'sold');
+      const localWins = lt > ct || (lt === ct && !cloudDoneOnly);
+      const winner = localWins ? l : c;
+      const loser  = localWins ? c : l;
       const loserPhotoMap = new Map((loser.photos || []).map(p => [p.id, p]));
       const mergedPhotos = (winner.photos || []).map(p => ({
         ...p,

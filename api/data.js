@@ -296,6 +296,39 @@ export default async function handler(req, res) {
         return;
       }
 
+      // ★ 紐付け直前の最新確認（?check=1&saleIds=a&itemIds=b&proposalIds=c・読み取り専用・各最大10件）
+      //   端末が古いまま「これで紐付け」を押して二重/誤紐付けにならないよう、その行だけをid指定で引く（軽量）。
+      //   itemSales: 指定した在庫に紐付いている売上（無関係の売上に既に紐付いていないか）。取れなければ null
+      if (req.query?.check === '1') {
+        const ids10 = (v) => String(v || '').split(',').map(x => x.trim().replace(/"/g, '')).filter(Boolean).slice(0, 10);
+        const inList = (a) => a.map(id => `"${id}"`).join(',');
+        const saleIds = ids10(req.query.saleIds), itemIds = ids10(req.query.itemIds), proposalIds = ids10(req.query.proposalIds);
+        const out = { ok: true, check: true, sales: [], inventory: [], itemSales: null, claudeProposals: [] };
+        if (saleIds.length) {
+          const rows = await sbFetch(`sales?select=id,data&id=in.(${inList(saleIds)})`);
+          out.sales = (Array.isArray(rows) ? rows : []).map(r => ({ ...r.data, id: r.id }));
+        }
+        if (itemIds.length) {
+          let rows;
+          try { rows = await sbFetch(`inventory?select=id,light&id=in.(${inList(itemIds)})`); if ((rows || []).some(r => !r.light)) throw new Error('no light'); }
+          catch(e) { rows = (await sbFetch(`inventory?select=id,data&id=in.(${inList(itemIds)})`)).map(r => ({ id: r.id, light: { ...r.data, photos: undefined } })); }
+          out.inventory = (Array.isArray(rows) ? rows : []).map(r => ({ ...r.light, id: r.id }));
+          try {
+            const ls = await sbFetch(`sales?select=id,data&data->>inventoryId=in.(${inList(itemIds)})`);
+            out.itemSales = (Array.isArray(ls) ? ls : []).map(r => ({ id: r.id, inventoryId: r.data?.inventoryId, needsLink: r.data?.needsLink }));
+          } catch(e) { out.itemSales = null; }
+        }
+        if (proposalIds.length) {
+          const cp = await sbFetch('app_settings?select=data&id=eq.claudeProposals', { headers: { 'Accept': 'application/vnd.pgrst.object+json' } }).catch(() => null);
+          const want = new Set(proposalIds);
+          // open は写真が重いので要点だけ。承認/却下済みは写真なしで小さいのでそのまま返す
+          out.claudeProposals = ((cp?.data && Array.isArray(cp.data.list)) ? cp.data.list : []).filter(x => x && want.has(x.id))
+            .map(x => x.status === 'open' ? { id: x.id, type: x.type, status: x.status, saleId: x.saleId, updatedAt: x.updatedAt } : x);
+        }
+        res.json(out);
+        return;
+      }
+
       const full = req.query?.full === '1';
       const photoIds = String(req.query?.photoIds || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 20);
       const lightenItem = (item) => (full || !Array.isArray(item.photos)) ? item
