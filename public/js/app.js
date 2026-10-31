@@ -7123,6 +7123,7 @@ const InventoryTab = () => {
     } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
   // ★ 売上の紐付け：在庫に無い（店舗仕入れの仕入れ未入力）売上を、その場で店舗仕入れ登録して紐付ける
+  const [findLinkPrId, setFindLinkPrId] = React.useState(null);   // 「登録済みの仕入れから探す」を開いている提案のid
   const [storeReg, setStoreReg] = React.useState(null);   // {prId, name, brand, date, store, price, method, phId, photos:[]}
   const openStoreReg = (pr) => {
     const sl = pr.sale || {};
@@ -8855,6 +8856,15 @@ const InventoryTab = () => {
                         </div>
                       );
                     })}
+                    {!saleGone && (
+                      <button style={{...btn('#dbeafe','#1e40af',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => setFindLinkPrId(pr.id)}>🔎 登録済みの仕入れから探す</button>
+                    )}
+                    {!saleGone && findLinkPrId === pr.id && (
+                      <InventoryLinkPicker data={data} sale={curSale} busy={proposalBusy}
+                        info={{ brand: sl.brand || curSale.brand || guessBrandFromTitle(sl.mailTitle || pr.title || curSale.mailTitle), listingMgmtNo: sl.listingMgmtNo || pr.listingMgmtNo || curSale.listingMgmtNo }}
+                        onClose={() => setFindLinkPrId(null)}
+                        onPick={(it) => { setFindLinkPrId(null); approveSaleLink(pr, it.id); }} />
+                    )}
                     {!saleGone && storeReg?.prId !== pr.id && (
                       <button style={{...btn('#ffedd5','#9a3412',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>＋ 仕入れを登録して紐付け</button>
                     )}
@@ -11330,6 +11340,99 @@ const calcLinkedSaleFields = (sale, item) => {
   return { ship, pp, profit, preShip, shipUnknown, listDate, turnoverDays };
 };
 
+// ★ 「登録済みの仕入れから探す」シート（2026-10-31）
+//   候補が外れたとき、登録済みの在庫を自分で検索して売上に紐付ける。確認待ちカードと未紐付け売上画面で共通。
+//   紐付けそのものは onPick(item) に任せる（approveSaleLink / doLink = guardLinkWithCloud つきの既存経路）。
+//   sale: 紐付け先の売上（利益計算用）  info: { brand, listingMgmtNo }
+const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onClose }) => {
+  const saleBrand = String(info.brand || '').trim();
+  const saleDate = String((sale && sale.saleDate) || '').slice(0, 10);
+  const [q, setQ] = React.useState(saleBrand);
+  const [dq, setDq] = React.useState(saleBrand);   // 入力が止まって200ms後の検索語（1,500件でも軽く）
+  const [fBrand, setFBrand] = React.useState(!!saleBrand);
+  const [fOpen, setFOpen] = React.useState(true);
+  const [fDate, setFDate] = React.useState(!!saleDate);
+  const [picked, setPicked] = React.useState(null);
+  React.useEffect(() => { const t = setTimeout(() => setDq(q), 200); return () => clearTimeout(t); }, [q]);
+  const linkedIds = React.useMemo(() => new Set((data.sales || []).map(s => s.inventoryId).filter(Boolean)), [data.sales]);
+  // 在庫ごとの検索用テキストは在庫が変わったときだけ作る
+  const hays = React.useMemo(() => (data.inventory || []).map(it => ({
+    it, hay: searchFold([it.productName, it.brand, it.mgmtNo, it.purchaseStore, it.yahooAuctionId].join(' ')).replace(/\s/g, ''),
+    brandFold: searchFold(it.brand || '').replace(/\s/g, ''),
+  })), [data.inventory]);
+  const { rows, total } = React.useMemo(() => {
+    const toks = searchTokens(dq);
+    const bf = searchFold(saleBrand).replace(/\s/g, '');
+    const lm = String(info.listingMgmtNo || '').trim();
+    const out = [];
+    for (const { it, hay, brandFold } of hays) {
+      if (fOpen && (it.status === 'sold' || linkedIds.has(it.id))) continue;
+      if (fBrand && bf && !(brandFold && (brandFold.includes(bf) || bf.includes(brandFold)))) continue;
+      if (fDate && saleDate && it.purchaseDate && String(it.purchaseDate).slice(0, 10) > saleDate) continue;
+      if (toks.length && !toks.every(t => hay.includes(t))) continue;
+      out.push(it);
+    }
+    out.sort((a, b) => ((lm && b.mgmtNo === lm) - (lm && a.mgmtNo === lm)) || String(b.purchaseDate || '').localeCompare(String(a.purchaseDate || '')));
+    return { rows: out.slice(0, 50), total: out.length };
+  }, [hays, dq, fBrand, fOpen, fDate, linkedIds, saleBrand, saleDate, info.listingMgmtNo]);
+  const chip = (on, label, set, disabled) => (
+    <button type="button" disabled={disabled} onClick={() => set(v => !v)}
+      style={{padding:'5px 12px',borderRadius:99,fontSize:12,fontWeight:800,cursor:'pointer',touchAction:'manipulation',opacity: disabled ? 0.4 : 1,
+        border: on ? '1.5px solid #2563eb' : '1.5px solid #e5e7eb', background: on ? '#2563eb' : '#fff', color: on ? '#fff' : '#444'}}>{label}</button>
+  );
+  const yenS = (v) => '¥' + (Number(v) || 0).toLocaleString();
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:480,maxHeight:'88vh',overflowY:'auto'}}>
+        <div className="modal-handle"/>
+        <div style={{fontWeight:800,fontSize:17,marginBottom:10}}>🔎 登録済みの仕入れから探す</div>
+        <input type="search" className="input-field" placeholder="商品名・ブランド・管理番号・仕入れ先（空白で絞り込み）" value={q}
+          onChange={e => { setQ(e.target.value); setPicked(null); }} style={{width:'100%',fontSize:16}} />
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
+          {chip(fBrand, '同じブランド', setFBrand, !saleBrand)}
+          {chip(fOpen, '未出品・出品中のみ', setFOpen)}
+          {chip(fDate, '売れた日より前', setFDate, !saleDate)}
+        </div>
+        <div style={{fontSize:11,color:'#6b7280',margin:'8px 0 4px'}}>{total}件ヒット{total > 50 ? '（上位50件を表示）' : ''}{total === 0 ? '　条件をゆるめてください' : ''}</div>
+        {rows.map(it => {
+          const on = picked === it.id;
+          const f = on && sale ? calcLinkedSaleFields(sale, it) : null;
+          return (
+            <div key={it.id} style={{marginTop:6,padding:8,borderRadius:10,background: on ? '#eff6ff' : '#f8fafc',border: on ? '1.5px solid #2563eb' : '1px solid #e2e8f0'}}>
+              <div onClick={() => setPicked(on ? null : it.id)} style={{display:'flex',gap:10,alignItems:'flex-start',cursor:'pointer',touchAction:'manipulation'}}>
+                <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={56} fallback="📦" />
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#111',lineHeight:1.35,wordBreak:'break-all',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                    {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
+                  </div>
+                  <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yenS(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}</div>
+                  <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+                    <span>{it.mgmtNo || '管理番号なし'}</span>
+                    <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
+                    {it.purchaseStore && <span>🛒 {it.purchaseStore}</span>}
+                  </div>
+                </div>
+              </div>
+              {on && (
+                <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bfdbfe'}}>
+                  <div style={{fontSize:13,fontWeight:800,color:'#1e3a8a'}}>この仕入れに紐付けますか？{f ? ` 利益 ${yenS(f.profit)}（${f.preShip ? '送料前' : '送料込み'}）` : ''}</div>
+                  <div style={{display:'flex',gap:8,marginTop:8}}>
+                    <button type="button" disabled={busy} onClick={() => onPick(it)}
+                      style={{flex:1,minHeight:44,borderRadius:10,border:'none',background: busy ? '#9ca3af' : '#16a34a',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer'}}>紐付ける</button>
+                    <button type="button" onClick={() => setPicked(null)}
+                      style={{flex:1,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>やめる</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <button type="button" onClick={onClose} style={{width:'100%',marginTop:12,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>閉じる</button>
+      </div>
+    </div>
+  );
+};
+
 // 未紐付け売上⇔在庫の紐付け本体（売上タブの未紐付け画面と「Claudeの確認待ち」で共通）。成功したら紐付け後の売上を返す
 const linkSaleToItem = ({ data, setData, toast, onEditShipping }, sale, item, extraData = {}) => {
   const curSale = (data.sales || []).find(s => s.id === sale.id);
@@ -11427,6 +11530,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
 
   const { setFullDataRaw, dataRef } = React.useContext(AppContext);
   const [linkBusy, setLinkBusy] = React.useState(false);
+  const [pickSaleId, setPickSaleId] = React.useState(null);   // 「登録済みの仕入れから探す」を開いている売上のid
   // 紐付ける瞬間にクラウドの最新を確認（古い画面のまま付け替えない）。関連する確認待ち提案があればそれも見る
   const doLink = async (sale, item) => {
     if (linkBusy) return;
@@ -11524,6 +11628,14 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
             {cands.map(c => renderItemRow(s, c.item,
               (c.item.listPrice || 0) > 0 && c.item.listPrice === s.salePrice ? <span style={{color:'#b45309',fontWeight:800}}>価格一致</span> : null,
               c.item.id))}
+            <button type="button" onClick={() => setPickSaleId(s.id)}
+              style={{width:'100%',marginTop:10,minHeight:40,borderRadius:10,border:'1px solid #bfdbfe',background:'#dbeafe',color:'#1e40af',fontWeight:800,fontSize:13,cursor:'pointer'}}>🔎 登録済みの仕入れから探す</button>
+            {pickSaleId === s.id && (
+              <InventoryLinkPicker data={data} sale={s} busy={linkBusy}
+                info={{ brand: s.brand || guessBrandFromTitle(s.mailTitle || s.productName), listingMgmtNo: s.listingMgmtNo }}
+                onClose={() => setPickSaleId(null)}
+                onPick={(it) => { setPickSaleId(null); doLink(s, it); }} />
+            )}
             <input type="search" className="input-field" placeholder="🔍 在庫を探す（商品名・ブランド・管理番号）" value={q}
               onChange={e => setQueries(prev => ({ ...prev, [s.id]: e.target.value }))}
               style={{width:'100%',marginTop:10,fontSize:14}} />
