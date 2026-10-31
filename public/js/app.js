@@ -7219,10 +7219,9 @@ const InventoryTab = () => {
   const [propTab, setPropTab] = React.useState(() => { const t = window.__proposalTab; window.__proposalTab = undefined; return t === 'held' ? 'held' : 'open'; });
   const proposalsShown = propTab === 'held' ? proposalsHeld : proposalsOpen;
   const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink' && pr.type !== 'bundleSale');
-  const proposalsLinkOpen = proposalsShown.filter(pr => pr.type === 'saleLink')
+  // まとめ売りも同じ一覧に入れて売上日の新しい順に並べる（別欄だと一番下までスクロールが必要だった 2026-10-31）
+  const proposalsLinkOpen = proposalsShown.filter(pr => pr.type === 'saleLink' || pr.type === 'bundleSale')
     .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-  const proposalsBundleOpen = proposalsShown.filter(pr => pr.type === 'bundleSale')
-    .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
   const [altOpen, setAltOpen] = React.useState({});     // 「ほかの候補」を開いている提案 {提案id: true}
   const [propEdit, setPropEdit] = React.useState(null);   // 「修正して登録」中の提案 {id, items:[{name,brand,category,price}]}
@@ -9029,6 +9028,10 @@ const InventoryTab = () => {
                 </div>
               )}
               {proposalsLinkOpen.map(pr => {
+                if (pr.type === 'bundleSale') return (
+                  <BundleSaleCard key={pr.id} pr={pr} data={data} yen={yen} cs={confStyle(pr.confidence)} btn={btn} busy={proposalBusy} isHeldTab={isHeldTab} toast={toast}
+                    onApprove={(picks) => approveBundleSale(pr, picks)} onReject={() => rejectSaleLink(pr)} onHold={(h) => holdProposal(pr, h)} />
+                );
                 const cs = confStyle(pr.confidence);
                 const sl = pr.sale || {};
                 const curSale = (data.sales || []).find(x => x.id === pr.saleId);
@@ -9260,15 +9263,6 @@ const InventoryTab = () => {
                   </div>
                 );
               })}
-              {proposalsBundleOpen.length > 0 && (
-                <div style={{fontSize:13,fontWeight:800,color:'#6d28d9',margin:'8px 2px 0',padding:'6px 10px',background:'#ede9fe',borderRadius:8}}>
-                  📦 まとめ売りの紐付け（{proposalsBundleOpen.length}件）
-                </div>
-              )}
-              {proposalsBundleOpen.map(pr => (
-                <BundleSaleCard key={pr.id} pr={pr} data={data} yen={yen} cs={confStyle(pr.confidence)} btn={btn} busy={proposalBusy} isHeldTab={isHeldTab} toast={toast}
-                  onApprove={(picks) => approveBundleSale(pr, picks)} onReject={() => rejectSaleLink(pr)} onHold={(h) => holdProposal(pr, h)} />
-              ))}
               {linkShipEdit && <ShippingEditModal sale={linkShipEdit} data={data} setData={setData} toast={toast} onClose={() => setLinkShipEdit(null)} />}
             </div>
           );
