@@ -11353,7 +11353,10 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
   const [fOpen, setFOpen] = React.useState(true);
   const [fDate, setFDate] = React.useState(!!saleDate);
   const [picked, setPicked] = React.useState(null);
+  const [limit, setLimit] = React.useState(50);   // 50件ずつ「さらに表示」（古い仕入れも辿れるように）
+  const [oldFirst, setOldFirst] = React.useState(false);
   React.useEffect(() => { const t = setTimeout(() => setDq(q), 200); return () => clearTimeout(t); }, [q]);
+  React.useEffect(() => { setLimit(50); }, [dq, fBrand, fOpen, fDate, oldFirst]);
   const linkedIds = React.useMemo(() => new Set((data.sales || []).map(s => s.inventoryId).filter(Boolean)), [data.sales]);
   // 在庫ごとの検索用テキストは在庫が変わったときだけ作る
   const hays = React.useMemo(() => (data.inventory || []).map(it => ({
@@ -11372,9 +11375,9 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
       if (toks.length && !toks.every(t => hay.includes(t))) continue;
       out.push(it);
     }
-    out.sort((a, b) => ((lm && b.mgmtNo === lm) - (lm && a.mgmtNo === lm)) || String(b.purchaseDate || '').localeCompare(String(a.purchaseDate || '')));
-    return { rows: out.slice(0, 50), total: out.length };
-  }, [hays, dq, fBrand, fOpen, fDate, linkedIds, saleBrand, saleDate, info.listingMgmtNo]);
+    out.sort((a, b) => ((lm && b.mgmtNo === lm) - (lm && a.mgmtNo === lm)) || (oldFirst ? -1 : 1) * String(b.purchaseDate || '').localeCompare(String(a.purchaseDate || '')));
+    return { rows: out.slice(0, limit), total: out.length };
+  }, [hays, dq, fBrand, fOpen, fDate, linkedIds, saleBrand, saleDate, info.listingMgmtNo, limit, oldFirst]);
   const chip = (on, label, set, disabled) => (
     <button type="button" disabled={disabled} onClick={() => set(v => !v)}
       style={{padding:'5px 12px',borderRadius:99,fontSize:12,fontWeight:800,cursor:'pointer',touchAction:'manipulation',opacity: disabled ? 0.4 : 1,
@@ -11392,8 +11395,9 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
           {chip(fBrand, '同じブランド', setFBrand, !saleBrand)}
           {chip(fOpen, '未出品・出品中のみ', setFOpen)}
           {chip(fDate, '売れた日より前', setFDate, !saleDate)}
+          {chip(oldFirst, '古い順', setOldFirst)}
         </div>
-        <div style={{fontSize:11,color:'#6b7280',margin:'8px 0 4px'}}>{total}件ヒット{total > 50 ? '（上位50件を表示）' : ''}{total === 0 ? '　条件をゆるめてください' : ''}</div>
+        <div style={{fontSize:11,color:'#6b7280',margin:'8px 0 4px'}}>{total}件ヒット{total > rows.length ? `（${rows.length}件を表示中）` : ''}{total === 0 ? '　条件をゆるめてください' : ''}</div>
         {rows.map(it => {
           const on = picked === it.id;
           const f = on && sale ? calcLinkedSaleFields(sale, it) : null;
@@ -11427,6 +11431,9 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
             </div>
           );
         })}
+        {total > rows.length && (
+          <button type="button" onClick={() => setLimit(n => n + 50)} style={{width:'100%',marginTop:10,minHeight:44,borderRadius:10,border:'1.5px solid #2563eb',background:'#eff6ff',color:'#1d4ed8',fontWeight:800,fontSize:14,cursor:'pointer'}}>さらに表示（残り{total - rows.length}件）</button>
+        )}
         <button type="button" onClick={onClose} style={{width:'100%',marginTop:12,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>閉じる</button>
       </div>
     </div>
