@@ -1627,6 +1627,35 @@ const guardCarveLot = async (ctx, pr, saleId, lot) => {
   return true;
 };
 
+// ★ まとめを丸ごと分けて、先頭の1点を売上に紐付ける（2026-10-31）
+//   「残りの商品もまとめて分ける」用。子の作成・按分・元のまとめの削除記録は分割登録（applySplitRegistration）をそのまま使う。
+//   rows[i] = {name, price}（rows[0] = 売れた1点）。合計がまとめの金額と1円も違わないこと、各子の仕入れ値が入力と同額であることを確認し、ずれたら中止する。
+const buildLotSplitLink = (data, lot, rows, ts = Date.now()) => {
+  const T = Math.round(Number(lot.purchasePrice) || 0);
+  if (!Array.isArray(rows) || rows.length < 2) return { error: '2行以上必要です' };
+  const items = rows.map(r => ({ productName: String(r.name || '').trim(), purchasePrice: Math.round(Number(r.price)) }));
+  if (items.some(si => !si.productName)) return { error: '商品名を入力してください' };
+  if (items.some(si => !Number.isInteger(si.purchasePrice) || si.purchasePrice < 1)) return { error: '仕入れ値は1円以上の整数で入力してください' };
+  const res = applySplitRegistration(data, lot, items, null, ts);
+  if (res.error) return { error: res.error };
+  const kids = res.newItems;
+  const exist = new Set((data.inventory || []).map(i => i.id));
+  if (kids.length !== items.length || new Set(kids.map(k => k.id)).size !== kids.length || kids.some(k => exist.has(k.id))) return { error: '商品IDが重複するため中止しました。もう一度お試しください' };
+  if (kids.some((k, i) => k.purchasePrice !== items[i].purchasePrice) || kids.reduce((a, k) => a + k.purchasePrice, 0) !== T) return { error: '分けた後の金額の合計が合わないため中止しました' };
+  return { ...res, child: kids[0] };
+};
+// 切り出し／丸ごと分割の共通入口：紐付け用の data・売れた子・提案に残す情報を返す（carve.rows があれば丸ごと分割）
+const buildCarveResult = (data, lot, carve) => {
+  if (carve.rows) {
+    const r = buildLotSplitLink(data, lot, [{ name: carve.name, price: carve.price }, ...carve.rows]);
+    if (r.error) return { error: r.error };
+    return { child: r.child, data: { ...data, inventory: r.inventory, settings: r.settings }, proposalExtra: { resultItemIds: r.newItems.map(i => i.id), linkedItemId: r.child.id, splitFrom: lot.id }, persist: () => persistSplitLocal(r.inventory, lot.id, r.nowIso, r.covers) };
+  }
+  const b = buildLotCarve(data, lot, carve.price, carve.name);
+  if (b.error) return { error: b.error };
+  return { child: b.child, data: { ...data, inventory: b.inventory }, proposalExtra: { resultItemIds: [b.child.id], linkedItemId: b.child.id, carvedFrom: lot.id }, persist: null };
+};
+
 // 分割結果を即座にlocalStorageへ同期書き込み（saveData は setTimeout(0) のため、アプリを即座に閉じても分割結果が消えないように）
 const persistSplitLocal = (newInventory, origId, nowIso, covers) => {
   try {
@@ -7202,10 +7231,11 @@ const InventoryTab = () => {
         const lot = (data.inventory || []).find(x => x.id === itemId);
         if (!(await guardCarveLot({ setFullDataRaw, dataRef, toast }, pr, pr.saleId, lot))) return;
         const sl = (data.sales || []).find(x => x.id === pr.saleId);
-        const built = buildLotCarve(data, lot, carve.price, carve.name);
+        const built = buildCarveResult(data, lot, carve);
         if (built.error) { alert('❌ ' + built.error); return; }
-        linkSaleToItem({ data: { ...data, inventory: built.inventory }, setData, toast, onEditShipping: setLinkShipEdit }, sl, built.child,
-          { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [built.child.id], linkedItemId: built.child.id, carvedFrom: lot.id })) });
+        const okLink = linkSaleToItem({ data: built.data, setData, toast, onEditShipping: setLinkShipEdit }, sl, built.child,
+          { claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', built.proposalExtra)) });
+        if (okLink && built.persist) built.persist();   // 丸ごと分割のときは分割登録と同じく即localStorageへ
         return;
       }
       // 押した瞬間にクラウドの最新を確認（古い画面のまま誤って付け替えない）
@@ -11481,7 +11511,24 @@ const LotCarveForm = ({ sale, lot, busy, defaultName, onSubmit, onCancel }) => {
   const yenS = (v) => '¥' + (Number(v) || 0).toLocaleString();
   const P = price === '' ? NaN : Math.round(Number(price));
   const tooBig = Number.isFinite(P) && P >= T;
-  const valid = !!name.trim() && Number.isInteger(P) && P >= 1 && P < T;
+  // 「残りの商品もまとめて分ける」：先頭=この1点、残りの行を rest に持つ（既定はオフ＝従来の切り出し）
+  const [split, setSplit] = React.useState(false);
+  const [rest, setRest] = React.useState([]);   // [{name, price}]（文字列）
+  const lotHead = String(lot.productName || '商品').slice(0, 20);
+  const restDefaults = (cnt, p) => {   // 残り(T−p)を均等割り。端数の円は最後の行
+    const left = T - p;
+    return Array.from({ length: cnt }, (_, i) => ({ name: `${lotHead} 残り${i + 1}`,
+      price: (Number.isInteger(p) && p >= 1 && left >= cnt) ? String(Math.floor(left / cnt) + (i === cnt - 1 ? left % cnt : 0)) : '' }));
+  };
+  const toggleSplit = () => {
+    if (!split && rest.length === 0) setRest(restDefaults(Math.max(1, (N || 2) - 1), P));
+    setSplit(!split);
+  };
+  const restSum = rest.reduce((a, r) => a + (Number(r.price) || 0), 0);
+  const allSum = (Number.isFinite(P) ? P : 0) + restSum;
+  const splitValid = split && !!name.trim() && Number.isInteger(P) && P >= 1 && rest.length >= 1
+    && rest.every(r => r.name.trim() && Number.isInteger(Number(r.price)) && Number(r.price) >= 1 && r.price !== '') && allSum === T;
+  const valid = split ? splitValid : (!!name.trim() && Number.isInteger(P) && P >= 1 && P < T);
   const f = valid ? calcLinkedSaleFields(sale, { ...lot, purchasePrice: P }) : null;
   const inp = {width:'100%',boxSizing:'border-box',minHeight:40,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,background:'white'};
   const lab = {fontSize:11,fontWeight:700,color:'#475569',margin:'8px 0 2px'};
@@ -11491,17 +11538,46 @@ const LotCarveForm = ({ sale, lot, busy, defaultName, onSubmit, onCancel }) => {
       <div style={{fontSize:11,color:'#64748b',marginTop:2,lineHeight:1.5}}>「{lot.productName || '商品'}」（{yenS(T)}）から1点だけ切り出して、この売上に紐付けます。</div>
       <div style={lab}>商品名</div>
       <input style={inp} value={name} onChange={e => setName(e.target.value)} />
-      <div style={lab}>この1点の仕入れ値（円）{N ? `　目安：${yenS(T)} ÷ ${N}点` : ''}</div>
+      <div style={lab}>{split ? '売れた1点の仕入れ値（円）' : 'この1点の仕入れ値（円）'}{N ? `　目安：${yenS(T)} ÷ ${N}点` : ''}</div>
       <input type="text" inputMode="numeric" style={{...inp,borderColor: tooBig ? '#dc2626' : '#cbd5e1'}} placeholder="円" value={price} onChange={e => setPrice(e.target.value.replace(/[^\d]/g, ''))} />
-      {tooBig && <div style={{fontSize:12,color:'#dc2626',fontWeight:700,marginTop:4}}>⚠️ まとめ全体の金額以上です。全部を使うなら、通常の「これで紐付け」を使ってください</div>}
-      {valid && (
+      {tooBig && !split && <div style={{fontSize:12,color:'#dc2626',fontWeight:700,marginTop:4}}>⚠️ まとめ全体の金額以上です。全部を使うなら、通常の「これで紐付け」を使ってください</div>}
+      <label style={{display:'flex',alignItems:'center',gap:8,marginTop:10,fontSize:13,fontWeight:700,color:'#9a3412'}}>
+        <input type="checkbox" checked={split} onChange={toggleSplit} style={{width:20,height:20}} />残りの商品もまとめて分ける
+      </label>
+      {split && (
+        <div style={{marginTop:6}}>
+          <div style={{fontSize:11,color:'#64748b',lineHeight:1.5}}>まとめを下の行に分けて登録します（上の1点が売上に紐付きます）。</div>
+          {rest.map((r, i) => (
+            <div key={i} style={{marginTop:8,padding:8,borderRadius:8,background:'#fff',border:'1px solid #fed7aa'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div style={{...lab,margin:0}}>商品{i + 2}</div>
+                {rest.length > 1 && <button type="button" onClick={() => setRest(rest.filter((_, j) => j !== i))}
+                  style={{border:'none',background:'none',color:'#dc2626',fontWeight:700,fontSize:12,cursor:'pointer'}}>× 削除</button>}
+              </div>
+              <input style={{...inp,marginTop:2}} value={r.name} placeholder="商品名" onChange={e => setRest(rest.map((x, j) => j === i ? { ...x, name: e.target.value } : x))} />
+              <input type="text" inputMode="numeric" style={{...inp,marginTop:4}} placeholder="仕入れ値（円）" value={r.price}
+                onChange={e => setRest(rest.map((x, j) => j === i ? { ...x, price: e.target.value.replace(/[^\d]/g, '') } : x))} />
+            </div>
+          ))}
+          <div style={{display:'flex',gap:8,marginTop:8}}>
+            <button type="button" onClick={() => setRest([...rest, { name: `${lotHead} 残り${rest.length + 1}`, price: '' }])}
+              style={{flex:1,minHeight:36,borderRadius:8,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:12,cursor:'pointer'}}>＋ 行を追加</button>
+            <button type="button" onClick={() => setRest(restDefaults(rest.length, P).map((d, i) => ({ ...d, name: rest[i].name })))}
+              style={{flex:1,minHeight:36,borderRadius:8,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:12,cursor:'pointer'}}>残りを均等に振り直す</button>
+          </div>
+          <div style={{fontSize:13,fontWeight:800,marginTop:8,color: allSum === T ? '#15803d' : '#dc2626'}}>
+            合計 {yenS(allSum)} / まとめ {yenS(T)}（差 {allSum - T > 0 ? '+' : ''}{yenS(allSum - T).replace('¥-', '-¥')}）
+          </div>
+        </div>
+      )}
+      {valid && !split && (
         <div style={{fontSize:12,color:'#9a3412',fontWeight:800,marginTop:6,lineHeight:1.6}}>
           まとめ残り {yenS(T - P)}{N ? `（あと${N - 1}点）` : ''}<br/>この売上の利益 {yenS(f.profit)}{f.preShip ? '（送料前）' : ''}
         </div>
       )}
       <div style={{display:'flex',gap:8,marginTop:10}}>
-        <button type="button" disabled={busy || !valid} onClick={() => onSubmit({ name: name.trim(), price: P })}
-          style={{flex:2,minHeight:44,borderRadius:10,border:'none',background: (busy || !valid) ? '#9ca3af' : '#ea580c',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer'}}>この1点を切り出して紐付け</button>
+        <button type="button" disabled={busy || !valid} onClick={() => onSubmit(split ? { name: name.trim(), price: P, rows: rest.map(r => ({ name: r.name.trim(), price: Math.round(Number(r.price)) })) } : { name: name.trim(), price: P })}
+          style={{flex:2,minHeight:44,borderRadius:10,border:'none',background: (busy || !valid) ? '#9ca3af' : '#ea580c',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer'}}>{split ? '分けて登録・この1点を紐付け' : 'この1点を切り出して紐付け'}</button>
         <button type="button" onClick={onCancel}
           style={{flex:1,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>やめる</button>
       </div>
@@ -11726,10 +11802,11 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
       const pr = (data.claudeProposals || []).find(x => x && x.type === 'saleLink' && x.saleId === sale.id && (x.status === 'open' || x.status === 'held'));
       if (carve) {   // ★ まとめの1点として切り出して紐付け
         if (!(await guardCarveLot({ setFullDataRaw, dataRef, toast }, pr || null, sale.id, item))) return;
-        const built = buildLotCarve(data, item, carve.price, carve.name);
+        const built = buildCarveResult(data, item, carve);
         if (built.error) { alert('❌ ' + built.error); return; }
-        linkSaleToItem({ data: { ...data, inventory: built.inventory }, setData, toast, onEditShipping }, sale, built.child,
-          pr ? { claudeProposals: (data.claudeProposals || []).map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [built.child.id], linkedItemId: built.child.id, carvedFrom: item.id })) } : {});
+        const okLink = linkSaleToItem({ data: built.data, setData, toast, onEditShipping }, sale, built.child,
+          pr ? { claudeProposals: (data.claudeProposals || []).map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', built.proposalExtra)) } : {});
+        if (okLink && built.persist) built.persist();   // 丸ごと分割のときは分割登録と同じく即localStorageへ
         return;
       }
       if (!(await guardLinkWithCloud({ setFullDataRaw, dataRef, toast }, pr || null, sale.id, item.id))) return;
