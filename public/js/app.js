@@ -441,6 +441,58 @@ const copyToClipboard = async (text) => {
 // ストレージ
 // ============================================================
 const STORAGE_KEY = 'nobushop_data';
+// ★ 端末保存の圧縮（LZW・15ビット/文字のUTF-16。iOS Safariの約5MB上限対策 2026-10-31）
+//   保存形式: 'LZ1:' + 圧縮文字列。読み込みは旧形式（そのままのJSON）にも対応
+const lzBitLen = (n) => { let b = 0; while (n > 0) { b++; n >>>= 1; } return Math.max(2, b); };
+const lzCompress = (s) => {
+  const out = []; let buf = 0, nb = 0;
+  const put = (v, n) => { for (let i = 0; i < n; i++) { buf = (buf << 1) | ((v >>> i) & 1); if (++nb === 15) { out.push(String.fromCharCode(buf + 32)); buf = 0; nb = 0; } } };
+  const dict = new Map(); let next = 2, w = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charAt(i);
+    if (!dict.has(c)) {
+      if (w !== '') { put(dict.get(w), lzBitLen(next)); dict.set(w + c, next++); }
+      put(0, lzBitLen(next)); put(c.charCodeAt(0), 16); dict.set(c, next++);
+      w = ''; continue;   // 文字そのものは出力済み。次の文字から新しく始める
+    }
+    const wc = w + c;
+    if (dict.has(wc)) { w = wc; continue; }
+    put(dict.get(w), lzBitLen(next)); dict.set(wc, next++); w = c;
+  }
+  if (w !== '') put(dict.get(w), lzBitLen(next));
+  put(1, lzBitLen(next));
+  if (nb > 0) { buf <<= (15 - nb); out.push(String.fromCharCode(buf + 32)); }
+  // 大きな配列の join はメモリに優しい
+  return out.join('');
+};
+const lzDecompress = (z) => {
+  let pos = 0, cur = 0, left = 0;
+  const bit = () => { if (left === 0) { if (pos >= z.length) throw new Error('lz: 途中で終わりました'); cur = z.charCodeAt(pos++) - 32; left = 15; } left--; return (cur >>> left) & 1; };
+  const get = (n) => { let v = 0; for (let i = 0; i < n; i++) v |= bit() << i; return v; };
+  const dict = []; dict.length = 2; let next = 2, prev = null; const out = [];
+  for (;;) {
+    const code = get(lzBitLen(next + (prev !== null ? 1 : 0)));
+    if (code === 1) break;
+    if (code === 0) {
+      const c = String.fromCharCode(get(16));
+      if (prev !== null) dict[next++] = prev + c;
+      dict[next++] = c; out.push(c); prev = null;   // 文字の直後は「前の語＋先頭」を追加しない（圧縮側と同じ）
+      continue;
+    }
+    let e;
+    if (code < next) e = dict[code];
+    else if (code === next && prev !== null) e = prev + prev.charAt(0);
+    else throw new Error('lz: 不正なコード');
+    if (prev !== null) dict[next++] = prev + e.charAt(0);
+    out.push(e); prev = e;
+  }
+  return out.join('');
+};
+const LZ_PREFIX = 'LZ1:';
+// 端末に保存してある本体データを読む（圧縮・旧形式どちらも）
+const readStoredRaw = () => { const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return raw; return raw.startsWith(LZ_PREFIX) ? lzDecompress(raw.slice(LZ_PREFIX.length)) : raw; };
+// 本体データを圧縮して保存（容量は約1/10。iPhoneの「端末への保存に失敗しました」対策）
+const writeStoredRaw = (json) => localStorage.setItem(STORAGE_KEY, LZ_PREFIX + lzCompress(json));
 // ★ thumbDataUrl専用の別キー（メインデータとは分離してlocalStorage容量問題を回避）
 const THUMBS_KEY  = 'nobushop_thumbs_v1';
 
@@ -510,7 +562,7 @@ const KNOWN_YAHOO_STORE_LICENSES = {
 const loadData = () => {
   try {
     const thumbMap = loadThumbMap();
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = readStoredRaw();
     if (!raw) return getInitialData();
     const parsed = JSON.parse(raw);
     // ★ thumbDataUrlをthumbMapから復元（IndexedDB消失後でも表示できるようにする）
@@ -619,19 +671,25 @@ const snoozeBackupReminder = (days = 3) => {
   try { localStorage.setItem(BACKUP_SNOOZE_KEY, String(Date.now() + days * 86400000)); } catch(_) {}
 };
 
+let _saveTimer = null, _savePending = null;
 const saveData = (data) => {
-  // setTimeout(0) で JSON.stringify を非同期化し、大きなデータでもUIをブロックしない
-  setTimeout(() => {
+  // 圧縮に時間がかかる（約1秒）ので、続けて変更されたら最後の1回だけ保存する（0.8秒まとめ）
+  _savePending = data;
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    const data = _savePending; _savePending = null;
+    if (!data) return;
     try {
       const stripped = stripPhotosForStorage(data);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+      writeStoredRaw(JSON.stringify(stripped));
       if (_onStorageError) { try { _onStorageError(null); } catch(_) {} } // 成功 → 警告を消す
     } catch(e) {
       console.error('[saveData] error:', e);
       // ★ 容量不足 → 消えても安全なデータを削除して1回だけ再試行（本体データを最優先）
       try {
         freeStorageSpace();
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripPhotosForStorage(data)));
+        writeStoredRaw(JSON.stringify(stripPhotosForStorage(data)));
         console.warn('[saveData] 空きを確保して保存に成功');
         if (_onStorageError) { try { _onStorageError(null); } catch(_) {} }
       } catch(e2) {
@@ -641,7 +699,7 @@ const saveData = (data) => {
     }
     // ★ thumbDataUrlを別キーに保存（IndexedDB消失時の保険・3重バックアップの1つ目）
     try { saveThumbMap(data); } catch(e) {}
-  }, 0);
+  }, 800);
 };
 
 // ============================================================
@@ -1659,7 +1717,7 @@ const buildCarveResult = (data, lot, carve) => {
 // 分割結果を即座にlocalStorageへ同期書き込み（saveData は setTimeout(0) のため、アプリを即座に閉じても分割結果が消えないように）
 const persistSplitLocal = (newInventory, origId, nowIso, covers) => {
   try {
-    const _raw = localStorage.getItem('nobushop_data');
+    const _raw = readStoredRaw();
     const _stored = _raw ? JSON.parse(_raw) : {};
     const _cu = _stored.currentUser || 'self';
     // 他ユーザーの在庫は保持、現ユーザーは分割後の新アイテムに置き換え
@@ -1672,7 +1730,7 @@ const persistSplitLocal = (newInventory, origId, nowIso, covers) => {
     _stored.settings._deletedIds = { ...(_stored.settings._deletedIds || {}), [origId]: nowIso };
     _stored.settings.bundleCovers = mergeBundleCovers(_stored.settings.bundleCovers, covers);
     _stored.inventory = [..._otherInv, ..._strippedNew];
-    localStorage.setItem('nobushop_data', JSON.stringify(_stored));
+    writeStoredRaw(JSON.stringify(_stored));
   } catch(_e) {}
 };
 
@@ -7513,11 +7571,11 @@ const InventoryTab = () => {
         setData({ ...data, inventory,
           claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [ph.id], ...(override ? { edited: true } : {}) })) });
         try {
-          const raw = localStorage.getItem('nobushop_data');
+          const raw = readStoredRaw();
           const st = raw ? JSON.parse(raw) : null;
           if (st && Array.isArray(st.inventory)) {
             st.inventory = st.inventory.map(i => i.id === ph.id ? { ...upd, photos: (upd.photos || []).map(p => ({ id: p.id, thumbId: p.thumbId })) } : i);
-            localStorage.setItem('nobushop_data', JSON.stringify(st));
+            writeStoredRaw(JSON.stringify(st));
           }
         } catch (_e) {}
         setPropEdit(null);
@@ -21173,13 +21231,14 @@ const App = () => {
       if (!document.hidden) return;
       try {
         // ★ thumbDataUrl（base64画像）を除外して保存（iOS Safariの5MB上限＋同期書き込みフリーズ防止）
+        if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; _savePending = null; }   // まとめ待ちの保存はここで済ませる
         const stripped = stripPhotosForStorage(dataRef.current);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(stripped));
+        writeStoredRaw(JSON.stringify(stripped));
       } catch(e) {
         // ★ 容量不足 → 消えても安全なデータを削除して再試行
         try {
           freeStorageSpace();
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(stripPhotosForStorage(dataRef.current)));
+          writeStoredRaw(JSON.stringify(stripPhotosForStorage(dataRef.current)));
         } catch(e2) {
           if (_onStorageError) { try { _onStorageError(e2); } catch(_) {} }
         }
