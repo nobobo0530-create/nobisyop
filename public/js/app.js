@@ -7132,7 +7132,7 @@ const InventoryTab = () => {
     if (ps && typeof ps === 'object') {
       setStoreReg({ prId: pr.id, name: String(ps.name || sl.mailTitle || '').trim(), brand: String(ps.brand || sl.brand || cs.brand || ''),
         kind: 'online', aid: String(ps.aid || ''), ship: ps.ship != null ? String(ps.ship) : '', coupon: ps.coupon != null ? String(ps.coupon) : '',
-        date: String(ps.date || ''), store: String(ps.store || ''), price: ps.price != null ? String(ps.price) : '', method: ps.method || 'PayPay', phId: null, photos: [] });
+        date: String(ps.date || ''), store: String(ps.store || ''), price: ps.price != null ? String(ps.price) : '', method: ps.method || 'PayPay', phId: null, photos: Array.isArray(ps.photos) ? ps.photos.slice(0, 5) : [] });
       return;
     }
     setStoreReg({ prId: pr.id, name: String(sl.mailTitle || pr.title || cs.productName || '').trim(), brand: String(sl.brand || cs.brand || ''),
@@ -8818,6 +8818,28 @@ const InventoryTab = () => {
                     </div>
                     {pr.note && <div style={{fontSize:12,color:'#64748b',marginTop:6,wordBreak:'break-all'}}>{pr.note}</div>}
                     {saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ この売上はすでに紐付け済み（または削除済み）です。「どれでもない」で片付けてください</div>}
+                    {pr.purchaseSuggestion && !saleGone && (() => {
+                      // ★ Claudeがメールで見つけた「未登録の仕入れ」を候補と同じ見た目で出す（押すと入力済みの登録画面。保存はユーザー）
+                      const ps = pr.purchaseSuggestion;
+                      const tot = (Number(ps.price) || 0) + (Number(ps.ship) || 0) - (Number(ps.coupon) || 0);
+                      const ph = Array.isArray(ps.photos) ? ps.photos[0] : null;
+                      const prof = curSale ? calcLinkedSaleFields(curSale, { purchasePrice: tot }) : null;
+                      return (
+                        <div style={{marginTop:8,padding:8,borderRadius:10,background:'#fffbeb',border:'1.5px solid #f59e0b'}}>
+                          <div style={{fontSize:11,fontWeight:800,color:'#b45309',marginBottom:4}}>📩 メールで見つけた仕入れ（まだ未登録）</div>
+                          <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                            <ItemThumbnail thumbDataUrl={ph?.thumbDataUrl} size={64} fallback="📦" />
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{fontSize:13,fontWeight:700,color:'#111',wordBreak:'break-all'}}>{ps.name}</div>
+                              <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yen(tot)}</b>{ps.date ? `　${ps.date}` : ''}{prof ? `　→ 利益 ${yen(prof.profit)}${prof.preShip ? '（送料前）' : ''}` : ''}</div>
+                              <div style={{fontSize:11,color:'#6b7280',marginTop:2}}>商品 {yen(ps.price)} ＋ 送料 {yen(ps.ship)}{Number(ps.coupon) ? ` − クーポン ${yen(ps.coupon)}` : ''}</div>
+                              <div style={{fontSize:11,color:'#475569',marginTop:2,wordBreak:'break-all'}}>🛒 {ps.store}{ps.aid ? `　ID ${ps.aid}` : ''}</div>
+                            </div>
+                          </div>
+                          <button style={{...btn('#16a34a','white',proposalBusy),flex:'none',width:'100%',marginTop:8}} disabled={proposalBusy} onClick={() => openStoreReg(pr)}>✅ この仕入れを登録して紐付け</button>
+                        </div>
+                      );
+                    })()}
                     {(pr.candidates || []).map((c, i) => {
                       const it = (data.inventory || []).find(x => x.id === c.itemId);
                       if (!it) return (
