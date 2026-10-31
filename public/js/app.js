@@ -11725,7 +11725,7 @@ const unlinkSaleFromItem = (data, oldSale, itemId) => {
     sales: (data.sales || []).map(s => s.id !== oldSale.id ? s : {
       ...s, inventoryId: null, needsLink: true, noStock: false,
       purchasePrice: 0, purchaseDate: '', purchaseStore: '', listDate: '', turnoverDays: null, profit: null,
-      productName: '', brand: '', updatedAt: nowIso,
+      productName: '', updatedAt: nowIso,   // ブランドはメール由来のこともあるので残す
     }),
     inventory: (data.inventory || []).map(i => i.id !== itemId || stillHas ? i : { ...i, status: i.listDate ? 'listed' : 'unlisted', soldAt: undefined, soldDate: undefined }),
   };
