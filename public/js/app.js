@@ -1459,6 +1459,12 @@ const paymentOptionsFor = (v) => (v && !PAYMENT_OPTIONS.includes(v)) ? [...PAYME
 const isStorePlaceholder = (it) => !!(it && it.needsDetail && it.purchaseType === 'store'
   && String(it.productName || '').startsWith('店舗仕入れ（中身未入力）'));
 // 仮在庫の決済方法 → フォームの選択肢（PayPay銀行/PayPay（彼女）等はPayPay、空・不明はメルペイ）
+// ★ まとめを分割した商品は名前・写真が同じになるので、どの1点か分かる印を出す（2026-10-31）
+const SplitBadge = ({ it }) => {
+  if (!it || !it.bundleGroup) return null;
+  const total = it.splitOrigin && it.splitOrigin.purchaseCost && it.splitOrigin.purchaseCost.totalTaxIn;
+  return <span style={{background:'#ede9fe',color:'#5b21b6',borderRadius:99,padding:'0 6px',fontWeight:800}}>📦 まとめを分けた1点{it.bundleLabel ? `（${it.bundleLabel}）` : ''}{total ? `・元の合計 ¥${Number(total).toLocaleString()}` : ''}</span>;
+};
 const placeholderPayment = (m) => {
   const v = String(m || '').trim();
   if (PAYMENT_OPTIONS.includes(v)) return v;
@@ -9093,7 +9099,7 @@ const InventoryTab = () => {
                                 {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
                               </div>
                               <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
-                                <span>{it.mgmtNo || '管理番号なし'}</span>
+                                <span>{it.mgmtNo || '管理番号なし'}</span><SplitBadge it={it} />
                                 <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
                                 {(it.listPrice || 0) > 0 && <span style={{color: it.listPrice === Number(sl.price) ? '#b45309' : '#6b7280', fontWeight: it.listPrice === Number(sl.price) ? 800 : 400}}>出品 {yen(it.listPrice)}{it.listPrice === Number(sl.price) ? '（価格一致）' : ''}</span>}
                               </div>
@@ -11789,7 +11795,7 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = f
                   </div>
                   <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yenS(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}</div>
                   <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
-                    <span>{it.mgmtNo || '管理番号なし'}</span>
+                    <span>{it.mgmtNo || '管理番号なし'}</span><SplitBadge it={it} />
                     <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
                     {it.purchaseStore && <span>🛒 {it.purchaseStore}</span>}
                   </div>
@@ -12285,7 +12291,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
           {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
         </div>
         <div style={{fontSize:10,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
-          <span>{it.mgmtNo || '管理番号なし'}</span>
+          <span>{it.mgmtNo || '管理番号なし'}</span><SplitBadge it={it} />
           <span>出品 {it.listPrice > 0 ? '¥' + formatMoney(it.listPrice) : '−'}</span>
           <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{statusLabel(it.status)}</span>
           {it.purchaseDate && <span>仕入 {it.purchaseDate}</span>}
