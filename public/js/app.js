@@ -7128,6 +7128,13 @@ const InventoryTab = () => {
   const openStoreReg = (pr) => {
     const sl = pr.sale || {};
     const cs = (data.sales || []).find(x => x.id === pr.saleId) || {};
+    const ps = pr.purchaseSuggestion;   // Claudeがメールで見つけた仕入れ（電脳）。入力欄に下書きとして入れるだけで、保存はユーザーが押す
+    if (ps && typeof ps === 'object') {
+      setStoreReg({ prId: pr.id, name: String(ps.name || sl.mailTitle || '').trim(), brand: String(ps.brand || sl.brand || cs.brand || ''),
+        kind: 'online', aid: String(ps.aid || ''), ship: ps.ship != null ? String(ps.ship) : '', coupon: ps.coupon != null ? String(ps.coupon) : '',
+        date: String(ps.date || ''), store: String(ps.store || ''), price: ps.price != null ? String(ps.price) : '', method: ps.method || 'PayPay', phId: null, photos: [] });
+      return;
+    }
     setStoreReg({ prId: pr.id, name: String(sl.mailTitle || pr.title || cs.productName || '').trim(), brand: String(sl.brand || cs.brand || ''),
       kind: 'store', aid: '', ship: '', coupon: '',
       date: '', store: '', price: '', method: 'メルペイ', phId: null, photos: [] });
