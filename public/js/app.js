@@ -11697,8 +11697,11 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = f
   );
   const yenS = (v) => '¥' + (Number(v) || 0).toLocaleString();
   return (
+    // ★ body直下に出す（カード一覧のスクロールやアニメーションの中に置くと、iPhoneで時々スクロールできなくなる）
+    ReactDOM.createPortal(
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:480,maxHeight:'88vh',overflowY:'auto'}}>
+      <div className="modal-content slide-up" onClick={e => e.stopPropagation()}
+        style={{maxWidth:480,margin:'0 auto',maxHeight:'85dvh',overflowY:'auto',WebkitOverflowScrolling:'touch',overscrollBehavior:'contain',touchAction:'pan-y'}}>
         <div className="modal-handle"/>
         <div style={{position:'sticky',top:-1,zIndex:2,background:'#fff',display:'flex',alignItems:'center',gap:8,padding:'4px 0 8px',marginBottom:2}}>
           <div style={{flex:1,fontWeight:800,fontSize:17}}>🔎 登録済みの仕入れから探す</div>
@@ -11767,7 +11770,8 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = f
         )}
         <button type="button" onClick={onClose} style={{width:'100%',marginTop:12,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>閉じる</button>
       </div>
-    </div>
+    </div>,
+    document.body)
   );
 };
 
