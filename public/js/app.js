@@ -2825,11 +2825,11 @@ const HomeTab = () => {
   }, [data.inventory, data.sales, data.claudeProposals, data.storePending]);
   const todoSubs = (() => {
     const open = (data.claudeProposals || []).filter(pr => pr && pr.status === 'open')
-      .sort((a, b) => (a.type === 'saleLink' ? 1 : 0) - (b.type === 'saleLink' ? 1 : 0) || String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
+      .sort((a, b) => ((a.type === 'saleLink' || a.type === 'bundleSale') ? 1 : 0) - ((b.type === 'saleLink' || b.type === 'bundleSale') ? 1 : 0) || String(b.payment?.date || '').localeCompare(String(a.payment?.date || '')));
     const heldN = (data.claudeProposals || []).filter(pr => pr && pr.status === 'held').length;
     if (!open.length) return heldN ? { claudeProposals: `⏸ 保留 ${heldN}件` } : {};
     const f = open[0];
-    const fAmt = f.type === 'saleLink' ? f.sale?.price : f.payment?.amount;
+    const fAmt = (f.type === 'saleLink' || f.type === 'bundleSale') ? f.sale?.price : f.payment?.amount;
     return { claudeProposals: `${f.title || ''} ¥${Math.round(Number(fAmt) || 0).toLocaleString()}${open.length > 1 ? ` ほか${open.length - 1}件` : ''}${heldN ? `（保留${heldN}）` : ''}` };
   })();
   const openTodo = (r) => {
@@ -7140,9 +7140,11 @@ const InventoryTab = () => {
   // 「確認待ち」「保留」タブ（保留は承認・却下とは別。消えずに残る）
   const [propTab, setPropTab] = React.useState(() => { const t = window.__proposalTab; window.__proposalTab = undefined; return t === 'held' ? 'held' : 'open'; });
   const proposalsShown = propTab === 'held' ? proposalsHeld : proposalsOpen;
-  const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink');
+  const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink' && pr.type !== 'bundleSale');
   const proposalsLinkOpen = proposalsShown.filter(pr => pr.type === 'saleLink')
     .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const proposalsBundleOpen = proposalsShown.filter(pr => pr.type === 'bundleSale')
+    .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
   const [altOpen, setAltOpen] = React.useState({});     // 「ほかの候補」を開いている提案 {提案id: true}
   const [propEdit, setPropEdit] = React.useState(null);   // 「修正して登録」中の提案 {id, items:[{name,brand,category,price}]}
@@ -7414,6 +7416,46 @@ const InventoryTab = () => {
     if (propEdit && propEdit.id === pr.id) setPropEdit(null);
     if (storeReg && storeReg.prId === pr.id) setStoreReg(null);
     toast(held ? '⏸ 保留にしました（「保留」タブにあります）' : '↩ 確認待ちに戻しました');
+  };
+  // ★ まとめ売り：1件の売上を N 件に分けて、それぞれ在庫に紐付ける（保存は1回）。直前にクラウドの最新を確認する
+  const approveBundleSale = async (pr, picks) => {
+    if (proposalBusy) return;
+    const sale = (data.sales || []).find(x => x.id === pr.saleId);
+    if (!sale || sale.inventoryId || !sale.needsLink) { alert('❌ この売上はすでに紐付け済み（または削除済み）です'); return; }
+    for (const pk of picks) {
+      const cur = (data.inventory || []).find(x => x.id === pk.item.id);
+      if (!cur || cur.status === 'sold' || (data.sales || []).some(x => x.inventoryId === cur.id)) { alert('❌ 売却済み／紐付け済みの商品が含まれています：' + (pk.item.productName || '')); return; }
+    }
+    const built = buildBundleSaleRecords(sale, picks.map(pk => ({ item: (data.inventory || []).find(x => x.id === pk.item.id), alloc: pk.alloc })));
+    if (built.error) { alert('❌ ' + built.error); return; }
+    if (built.records.slice(1).some(r => (data.sales || []).some(x => x.id === r.id))) { alert('❌ 同じ売上idがすでにあります（登録を止めました）'); return; }
+    const msg = `この売上を ${picks.length}点に分けて紐付けます\n\n売上：${sale.platform} ¥${formatMoney(sale.salePrice)}\n${(sale.mailTitle || '').slice(0, 40)}\n\n` +
+      built.records.map(r => `・${(r.productName || '').slice(0, 20)} 売価¥${formatMoney(r.salePrice)} → 利益¥${formatMoney(r.profit)}${r.shippingUnknown ? '（送料前）' : ''}`).join('\n') +
+      `\n\n在庫は「売却済み」になります。`;
+    if (!window.confirm(msg)) return;
+    setProposalBusy(true);
+    try {
+      // 押した瞬間にクラウドの最新を確認：売上・提案・選んだ在庫すべて（1つでも売却済み／紐付け済みなら止める）
+      if (typeof _cloudEnabled === 'undefined' || _cloudEnabled) {
+        const ids = picks.map(pk => pk.item.id);
+        const r = await fetchLinkCheck({ saleIds: [sale.id], itemIds: ids, proposalIds: [pr.id] });
+        if (!r.ok) { toast('通信できないので紐付けを止めました。もう一度お試しください'); return; }
+        const cs = r.sales.find(x => x.id === sale.id), cp = r.claudeProposals.find(x => x.id === pr.id);
+        const bad = (cs && (cs.inventoryId || cs.needsLink === false || cs.salePrice !== sale.salePrice)) ? 'この売上はクラウド側で変更または紐付け済みです'
+          : (cp && cp.status !== 'open' && cp.status !== 'held') ? 'この提案はすでに処理済みです'
+          : r.inventory.some(x => ids.includes(x.id) && x.status === 'sold') || (r.itemSales || []).some(x => x.id !== sale.id && ids.includes(x.inventoryId)) ? '選んだ商品に売却済み／紐付け済みのものがあります' : '';
+        if (bad) { alert('❌ ' + bad + '。最新の状態を読み込み直してからやり直してください'); return; }
+      }
+      const nowIso = new Date().toISOString();
+      const idSet = new Set(picks.map(pk => pk.item.id));
+      setData({
+        ...data,
+        inventory: data.inventory.map(i => idSet.has(i.id) ? { ...i, status: 'sold', soldAt: nowIso, soldDate: sale.saleDate || '' } : i),
+        sales: data.sales.flatMap(s => s.id === sale.id ? built.records : [s]),
+        claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [...idSet] })),
+      });
+      toast(`✅ ${picks.length}点に分けて紐付けました`);
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
   };
   const rejectSaleLink = (pr) => {
     setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: 'どれでもない' })) });
@@ -9140,6 +9182,15 @@ const InventoryTab = () => {
                   </div>
                 );
               })}
+              {proposalsBundleOpen.length > 0 && (
+                <div style={{fontSize:13,fontWeight:800,color:'#6d28d9',margin:'8px 2px 0',padding:'6px 10px',background:'#ede9fe',borderRadius:8}}>
+                  📦 まとめ売りの紐付け（{proposalsBundleOpen.length}件）
+                </div>
+              )}
+              {proposalsBundleOpen.map(pr => (
+                <BundleSaleCard key={pr.id} pr={pr} data={data} yen={yen} cs={confStyle(pr.confidence)} btn={btn} busy={proposalBusy} isHeldTab={isHeldTab} toast={toast}
+                  onApprove={(picks) => approveBundleSale(pr, picks)} onReject={() => rejectSaleLink(pr)} onHold={(h) => holdProposal(pr, h)} />
+              ))}
               {linkShipEdit && <ShippingEditModal sale={linkShipEdit} data={data} setData={setData} toast={toast} onClose={() => setLinkShipEdit(null)} />}
             </div>
           );
@@ -11602,7 +11653,8 @@ const LotCarveForm = ({ sale, lot, busy, defaultName, onSubmit, onCancel }) => {
 //   候補が外れたとき、登録済みの在庫を自分で検索して売上に紐付ける。確認待ちカードと未紐付け売上画面で共通。
 //   紐付けそのものは onPick(item) に任せる（approveSaleLink / doLink = guardLinkWithCloud つきの既存経路）。
 //   sale: 紐付け先の売上（利益計算用）  info: { brand, listingMgmtNo }
-const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onSwap, onClose }) => {
+// pickOnly: 紐付けはせず、選んだ在庫を onPick(item) に返すだけ（まとめ売りカードの「探す」用。付け替え・切り出しは出さない）
+const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = false, onPick, onSwap, onClose }) => {
   const saleBrand = String(info.brand || '').trim();
   const saleDate = String((sale && sale.saleDate) || '').slice(0, 10);
   const [q, setQ] = React.useState(saleBrand);
@@ -11681,19 +11733,19 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onSw
               {on && (it.status === 'sold' || linkedIds.has(it.id)) && (
                 <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bfdbfe'}}>
                   <div style={{fontSize:12,color:'#b45309',fontWeight:700}}>⚠️ この商品はすでに売却済み／紐付け済みです</div>
-                  <LinkedSaleBox data={data} item={it} newSale={sale} busy={busy} onSwap={() => onSwap && onSwap(it)} />
+                  {!pickOnly && <LinkedSaleBox data={data} item={it} newSale={sale} busy={busy} onSwap={() => onSwap && onSwap(it)} />}
                 </div>
               )}
               {on && !(it.status === 'sold' || linkedIds.has(it.id)) && (
                 <div style={{marginTop:8,paddingTop:8,borderTop:'1px solid #bfdbfe'}}>
-                  <div style={{fontSize:13,fontWeight:800,color:'#1e3a8a'}}>この仕入れに紐付けますか？{f ? ` 利益 ${yenS(f.profit)}（${f.preShip ? '送料前' : '送料込み'}）` : ''}</div>
+                  <div style={{fontSize:13,fontWeight:800,color:'#1e3a8a'}}>{pickOnly ? 'この仕入れを選びますか？' : 'この仕入れに紐付けますか？'}{f ? ` 利益 ${yenS(f.profit)}（${f.preShip ? '送料前' : '送料込み'}）` : ''}</div>
                   <div style={{display:'flex',gap:8,marginTop:8}}>
                     <button type="button" disabled={busy} onClick={() => onPick(it)}
-                      style={{flex:1,minHeight:44,borderRadius:10,border:'none',background: busy ? '#9ca3af' : '#16a34a',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer'}}>紐付ける</button>
+                      style={{flex:1,minHeight:44,borderRadius:10,border:'none',background: busy ? '#9ca3af' : '#16a34a',color:'#fff',fontWeight:800,fontSize:14,cursor:'pointer'}}>{pickOnly ? '選ぶ' : '紐付ける'}</button>
                     <button type="button" onClick={() => setPicked(null)}
                       style={{flex:1,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>やめる</button>
                   </div>
-                  {sale && it.status !== 'sold' && (Number(it.purchasePrice) || 0) > 1 && !carving && (
+                  {!pickOnly && sale && it.status !== 'sold' && (Number(it.purchasePrice) || 0) > 1 && !carving && (
                     <button type="button" disabled={busy} onClick={() => setCarving(true)}
                       style={{width:'100%',marginTop:8,minHeight:36,borderRadius:10,border:'1px solid #cbd5e1',background:'#f1f5f9',color:'#475569',fontWeight:700,fontSize:12,cursor:'pointer'}}>📦 まとめの1点として紐付け</button>
                   )}
@@ -11710,6 +11762,213 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onSw
           <button type="button" onClick={() => setLimit(n => n + 50)} style={{width:'100%',marginTop:10,minHeight:44,borderRadius:10,border:'1.5px solid #2563eb',background:'#eff6ff',color:'#1d4ed8',fontWeight:800,fontSize:14,cursor:'pointer'}}>さらに表示（残り{total - rows.length}件）</button>
         )}
         <button type="button" onClick={onClose} style={{width:'100%',marginTop:12,minHeight:44,borderRadius:10,border:'1px solid #cbd5e1',background:'#fff',color:'#475569',fontWeight:700,fontSize:14,cursor:'pointer'}}>閉じる</button>
+      </div>
+    </div>
+  );
+};
+
+// ★ まとめ売り（1件の売上＝複数の在庫）の按分・レコード作成（純粋関数。確認待ちカード BundleSaleCard が使う）
+// total を weights の比率で分け、合計がちょうど total になる整数配列を返す（最大剰余法）。重みが全部0なら均等割り
+const splitExact = (total, weights) => {
+  const n = weights.length;
+  if (!n) return [];
+  const T0 = Math.round(Number(total) || 0), sign = T0 < 0 ? -1 : 1, T = Math.abs(T0);
+  let w = weights.map(x => Math.max(0, Math.round(Number(x) || 0)));
+  let W = w.reduce((a, b) => a + b, 0);
+  if (W === 0) { w = w.map(() => 1); W = n; }
+  const rem = w.map(x => (T * x) % W);
+  const base = w.map((x, i) => (T * x - rem[i]) / W);
+  let left = T - base.reduce((a, b) => a + b, 0);
+  const order = base.map((_, i) => i).sort((a, b) => rem[b] - rem[a] || a - b);
+  for (let k = 0; k < left; k++) base[order[k]] += 1;
+  return base.map(x => x * sign);
+};
+// sale（未紐付けの1件）を picks=[{item, alloc}] の N件に分けた売上レコードを作る。{ records } か { error }。
+//   1件目は元の売上id、2件目以降は `${sale.id}_b2`…（メールの重複判定が platformId で元の売上を見つけられるように）
+//   手数料・送料・受取額・落札者送料は売価の割り振り比で按分（合計は元とぴったり一致を確認、ずれたらエラー）。利益は linkSaleToItem と同じ calcLinkedSaleFields
+const buildBundleSaleRecords = (sale, picks) => {
+  if (!sale || !picks || !picks.length) return { error: '商品が選ばれていません' };
+  if (picks.some(p => !p || !p.item)) return { error: '在庫が見つかりません' };
+  const allocs = picks.map(p => Number(p.alloc));
+  if (allocs.some(a => !isFinite(a) || a < 0 || a !== Math.round(a))) return { error: '売価の割り振りは0円以上の整数にしてください' };
+  const price = Number(sale.salePrice) || 0;
+  if (price !== Math.round(price)) return { error: '売価が整数ではないため按分できません' };
+  if (allocs.reduce((a, b) => a + b, 0) !== price) return { error: '売価の合計が一致していません' };
+  if (new Set(picks.map(p => p.item.id)).size !== picks.length) return { error: '同じ商品が重複しています' };
+  const fields = ['fee', 'shipping', 'netAmount', 'buyerShipReceived'].filter(k => sale[k] != null && sale[k] !== '' && isFinite(Number(sale[k])));
+  const parts = {};
+  for (const k of fields) {
+    const v = Number(sale[k]);
+    if (v !== Math.round(v)) return { error: `${k} が整数ではないため按分できません` };
+    parts[k] = splitExact(v, allocs);
+  }
+  const nowIso = new Date().toISOString();
+  const records = picks.map((p, i) => {
+    const part = { ...sale, salePrice: allocs[i] };
+    for (const k of fields) part[k] = parts[k][i];
+    const f = calcLinkedSaleFields(part, p.item);
+    return {
+      ...part,
+      id: i === 0 ? sale.id : `${sale.id}_b${i + 1}`,
+      inventoryId: p.item.id, needsLink: false, noStock: false,
+      purchasePrice: f.pp, purchaseDate: p.item.purchaseDate || '', purchaseStore: p.item.purchaseStore || '',
+      listDate: f.listDate, turnoverDays: f.turnoverDays,
+      shipping: f.ship, profit: f.profit,
+      ...(f.shipUnknown ? { shippingUnknown: true } : {}),
+      productName: p.item.productName || '', brand: p.item.brand || '',
+      bundleGroup: `bundle_${sale.id}`,
+      updatedAt: nowIso,
+    };
+  });
+  for (const k of ['salePrice', ...fields]) {   // 最終確認：各項目の合計が元の売上とぴったり一致
+    if (records.reduce((a, r) => a + (Number(r[k]) || 0), 0) !== (Number(sale[k]) || 0)) return { error: `${k} の合計が元の売上と一致しません（登録を止めました）` };
+  }
+  return { records };
+};
+
+// ★ 確認待ちの「まとめ売り」カード：売上1件を複数の在庫に割り振って登録する。保存は onApprove(picks=[{item, alloc}]) に任せる
+const BundleSaleCard = ({ pr, data, yen, cs, btn, busy, isHeldTab, toast, onApprove, onReject, onHold }) => {
+  const sl = pr.sale || {};
+  const curSale = (data.sales || []).find(x => x.id === pr.saleId);
+  const saleGone = !curSale || curSale.inventoryId || !curSale.needsLink;
+  const comps = pr.components || [];
+  const [sel, setSel] = React.useState(() => comps.map(() => []));       // 行ごとの選択中の在庫id
+  const [extra, setExtra] = React.useState(() => comps.map(() => []));   // 「探す」で足した在庫id
+  const [pickRow, setPickRow] = React.useState(null);
+  const [manual, setManual] = React.useState(null);                       // 手で直した割り振り { key, vals:{在庫id:文字列} }
+  const invById = React.useMemo(() => new Map((data.inventory || []).map(i => [i.id, i])), [data.inventory]);
+  const linkedIds = React.useMemo(() => new Set((data.sales || []).map(s => s.inventoryId).filter(Boolean)), [data.sales]);
+  const blockedWhy = (it, ri) => {
+    if (it.status === 'sold' || linkedIds.has(it.id)) return '売却済み／紐付け済み';
+    if (sel.some((ids, k) => k !== ri && ids.includes(it.id))) return '別の行で選択済み';
+    return '';
+  };
+  const toggle = (ri, it) => {
+    const why = blockedWhy(it, ri);
+    if (why) { toast('選べません：' + why); return; }
+    const cnt = Math.max(1, Math.round(Number(comps[ri].count) || 1));
+    setSel(prev => prev.map((ids, k) => {
+      if (k !== ri) return ids;
+      if (ids.includes(it.id)) return ids.filter(x => x !== it.id);
+      if (cnt === 1) return [it.id];
+      if (ids.length >= cnt) { toast(`この行は${cnt}点までです`); return ids; }
+      return [...ids, it.id];
+    }));
+  };
+  const chosen = sel.flatMap(ids => ids.map(id => invById.get(id)).filter(Boolean));
+  const selKey = chosen.map(it => it.id).join(',');
+  const price = curSale ? Math.round(Number(curSale.salePrice) || 0) : 0;
+  const defAlloc = splitExact(price, chosen.map(it => Number(it.purchasePrice) || 0));
+  const allocStr = chosen.map((it, i) => (manual && manual.key === selKey && manual.vals[it.id] != null) ? manual.vals[it.id] : String(defAlloc[i]));
+  const allocNum = allocStr.map(v => /^\d+$/.test(v) ? Number(v) : NaN);
+  const allocSum = allocNum.reduce((a, b) => a + (isFinite(b) ? b : 0), 0);
+  const rowsOk = comps.length > 0 && sel.every(ids => ids.length >= 1);
+  const allocOk = chosen.length > 0 && allocNum.every(isFinite) && allocSum === price;
+  const prev = (rowsOk && allocOk && curSale) ? buildBundleSaleRecords(curSale, chosen.map((it, i) => ({ item: it, alloc: allocNum[i] }))) : null;
+  const canRegister = !!(prev && prev.records) && !saleGone && !busy && !chosen.some(it => it.status === 'sold' || linkedIds.has(it.id));
+  const purl = soldListingPhotoUrl({ platformId: curSale && curSale.platformId, platform: sl.platform, photoUrl: sl.photoUrl });
+  const chip = (it, ri) => {
+    const on = sel[ri].includes(it.id), why = blockedWhy(it, ri);
+    return (
+      <div key={it.id} onClick={() => toggle(ri, it)}
+        style={{display:'flex',gap:8,alignItems:'center',marginTop:6,padding:6,borderRadius:10,cursor:'pointer',touchAction:'manipulation',opacity: why ? 0.55 : 1,
+          background: on ? '#ede9fe' : '#f8fafc', border: on ? '2px solid #7c3aed' : '1px solid #e2e8f0'}}>
+        <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={48} fallback="📦" />
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#111',wordBreak:'break-all',lineHeight:1.35}}>{it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}</div>
+          <div style={{fontSize:11,color:'#475569',marginTop:1}}><b style={{color:'#0f172a'}}>仕入れ {yen(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}</div>
+          {why && <div style={{fontSize:11,color:'#b45309',fontWeight:700}}>⚠️ {why}</div>}
+        </div>
+        <div style={{fontSize:18,color: on ? '#7c3aed' : '#cbd5e1',flexShrink:0}}>{on ? '☑' : '☐'}</div>
+      </div>
+    );
+  };
+  return (
+    <div className="card" style={{padding:12,borderLeft:'3px solid #7c3aed'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+        <div style={{minWidth:0,flex:1}}>
+          <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+            <span style={{fontSize:11,color:'#6b7280',fontWeight:700}}>{sl.date}</span>
+            <span style={{fontSize:11,background:'#f3f4f6',color:'#555',borderRadius:99,padding:'2px 8px',fontWeight:700}}>{sl.platform}</span>
+            <span style={{fontSize:11,background:'#ede9fe',color:'#6d28d9',borderRadius:99,padding:'2px 8px',fontWeight:800}}>📦 まとめ売り</span>
+            <span style={{padding:'2px 8px',borderRadius:99,background:cs.bg,color:cs.fg,fontSize:11,fontWeight:800}}>確度 {pr.confidence}</span>
+          </div>
+          <div style={{fontSize:13,fontWeight:700,color:'#111',lineHeight:1.4,wordBreak:'break-all'}}>{sl.mailTitle || pr.title}</div>
+          {purl && (
+            <a href={purl} target="_blank" rel="noopener noreferrer" style={{display:'inline-block',marginTop:8}}>
+              <img src={purl} alt="売れた商品" loading="lazy" onError={e => { e.currentTarget.parentNode.style.display = 'none'; }}
+                style={{width:140,height:140,objectFit:'cover',borderRadius:10,border:'2px solid #7c3aed',background:'#f1f5f9'}}/>
+              <div style={{fontSize:10,color:'#7c3aed',fontWeight:700,marginTop:2}}>売れた商品の写真</div>
+            </a>
+          )}
+        </div>
+        <div style={{fontWeight:800,fontSize:16,color:'#111',flexShrink:0}}>{yen(sl.price)}</div>
+      </div>
+      {pr.note && <div style={{fontSize:12,color:'#64748b',marginTop:6,wordBreak:'break-all'}}>{pr.note}</div>}
+      {saleGone && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ この売上はすでに紐付け済み（または削除済み）です。「どれでもない」で片付けてください</div>}
+      {!saleGone && curSale && price !== Math.round(Number(sl.price) || 0) && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ 売上の金額が提案と違います（売上 {yen(price)}）。売上の金額で割り振ります</div>}
+      {!saleGone && comps.map((c, ri) => {
+        const cnt = Math.max(1, Math.round(Number(c.count) || 1));
+        const ids = [...new Set([...(c.candidates || []).map(x => x.itemId), ...extra[ri]])];
+        const reasonOf = (id) => ((c.candidates || []).find(x => x.itemId === id) || {}).reason;
+        return (
+          <div key={ri} style={{marginTop:10,padding:8,borderRadius:10,border:'1px solid #ddd6fe',background:'#faf5ff'}}>
+            <div style={{display:'flex',justifyContent:'space-between',gap:8,alignItems:'flex-start'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#4c1d95',wordBreak:'break-all'}}>{ri + 1}. {c.label || '商品'}{cnt > 1 ? `（${cnt}点ぶん）` : ''}</div>
+              <div style={{fontSize:11,fontWeight:800,flexShrink:0,color: sel[ri].length ? '#166534' : '#b91c1c'}}>{sel[ri].length ? `選択 ${sel[ri].length}${cnt > 1 ? '/' + cnt : ''}点` : '未選択'}</div>
+            </div>
+            {ids.map(id => {
+              const it = invById.get(id);
+              if (!it) return <div key={id} style={{fontSize:12,color:'#b45309',marginTop:6}}>⚠️ 候補の在庫が見つかりません</div>;
+              return (<React.Fragment key={id}>{chip(it, ri)}{reasonOf(id) && <div style={{fontSize:11,color:'#7c3aed',marginLeft:4,wordBreak:'break-all'}}>{reasonOf(id)}</div>}</React.Fragment>);
+            })}
+            <button type="button" style={{...btn('#ede9fe','#5b21b6',busy),flex:'none',width:'100%',marginTop:8,minHeight:40}} disabled={busy} onClick={() => setPickRow(ri)}>🔎 探す</button>
+          </div>
+        );
+      })}
+      {pickRow != null && (
+        <InventoryLinkPicker data={data} sale={null} pickOnly info={{}} busy={busy} onClose={() => setPickRow(null)}
+          onPick={(it) => {
+            const ri = pickRow;
+            const why = blockedWhy(it, ri);
+            if (why) { toast('選べません：' + why); return; }
+            setExtra(prev => prev.map((a, k) => k === ri && !a.includes(it.id) ? [...a, it.id] : a));
+            toggle(ri, it);
+            setPickRow(null);
+          }} />
+      )}
+      {!saleGone && rowsOk && curSale && (
+        <div style={{marginTop:10,padding:8,borderRadius:10,border:'1.5px solid #7c3aed',background:'white'}}>
+          <div style={{fontSize:13,fontWeight:800,color:'#4c1d95',marginBottom:4}}>売価の割り振り（仕入れ値の比で自動。直せます）</div>
+          {chosen.map((it, i) => {
+            const r = prev && prev.records ? prev.records[i] : null;
+            return (
+              <div key={it.id} style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}>
+                <div style={{flex:1,minWidth:0,fontSize:12,color:'#111',wordBreak:'break-all',lineHeight:1.35}}>{it.productName || '商品'}
+                  <div style={{fontSize:11,color:'#6b7280'}}>仕入れ {yen(it.purchasePrice)}{r ? `　→ 利益 ${yen(r.profit)}${r.shippingUnknown ? '（送料前）' : ''}` : ''}</div>
+                </div>
+                <input type="text" inputMode="numeric" value={allocStr[i]}
+                  onChange={e => { const v = e.target.value.replace(/[^\d]/g, ''); setManual(m => ({ key: selKey, vals: { ...((m && m.key === selKey) ? m.vals : Object.fromEntries(chosen.map((c2, j) => [c2.id, allocStr[j]]))), [it.id]: v } })); }}
+                  style={{width:96,minHeight:40,boxSizing:'border-box',padding:'6px 8px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16,textAlign:'right'}} />
+              </div>
+            );
+          })}
+          <div style={{marginTop:8,fontSize:12,fontWeight:800,color: allocOk ? '#166534' : '#b91c1c'}}>
+            合計 {yen(allocSum)} ／ 売価 {yen(price)} ／ 差 {allocSum - price >= 0 ? '+' : '-'}{yen(Math.abs(allocSum - price))}{allocOk ? ' ✔' : '（ぴったり合わせてください）'}
+          </div>
+        </div>
+      )}
+      {!saleGone && (
+        <button style={{...btn('#7c3aed','white',!canRegister),flex:'none',width:'100%',marginTop:10}} disabled={!canRegister}
+          onClick={() => onApprove(chosen.map((it, i) => ({ item: it, alloc: allocNum[i] })))}>
+          {rowsOk ? 'まとめ売りとして登録・紐付け' : '各行の商品を選んでください'}
+        </button>
+      )}
+      <div style={{display:'flex',gap:8,marginTop:8}}>
+        <button style={btn('#fee2e2','#991b1b',false)} onClick={onReject}>❌ どれでもない（あとで）</button>
+        {isHeldTab
+          ? <button style={btn('#e0f2fe','#075985',busy)} disabled={busy} onClick={() => onHold(false)}>↩ 確認待ちに戻す</button>
+          : <button style={btn('#f1f5f9','#475569',busy)} disabled={busy} onClick={() => onHold(true)}>⏸ 保留</button>}
       </div>
     </div>
   );
