@@ -11700,7 +11700,11 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = f
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content slide-up" onClick={e => e.stopPropagation()} style={{maxWidth:480,maxHeight:'88vh',overflowY:'auto'}}>
         <div className="modal-handle"/>
-        <div style={{fontWeight:800,fontSize:17,marginBottom:10}}>🔎 登録済みの仕入れから探す</div>
+        <div style={{position:'sticky',top:-1,zIndex:2,background:'#fff',display:'flex',alignItems:'center',gap:8,padding:'4px 0 8px',marginBottom:2}}>
+          <div style={{flex:1,fontWeight:800,fontSize:17}}>🔎 登録済みの仕入れから探す</div>
+          {/* 一覧が長いと下の「閉じる」まで行けないので、上にも常に見える閉じるボタン */}
+          <button type="button" onClick={onClose} aria-label="閉じる" style={{flexShrink:0,width:40,height:40,borderRadius:99,border:'none',background:'#f1f5f9',color:'#334155',fontSize:20,fontWeight:800,cursor:'pointer',touchAction:'manipulation'}}>×</button>
+        </div>
         <input type="search" className="input-field" placeholder="商品名・ブランド・管理番号・仕入れ先（空白で絞り込み）" value={q}
           onChange={e => { setQ(e.target.value); setPicked(null); }} style={{width:'100%',fontSize:16}} />
         <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:8}}>
