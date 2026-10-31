@@ -1497,16 +1497,26 @@ const buildSplitChildren = (orig, splitInputs, ts) => {
   const totals = splitInputs.map(si => Math.round(num(si.purchasePrice)));
   const sumTotals = totals.reduce((a, b) => a + b, 0);
   if (sumTotals !== total) return { error: `分割後の合計 ¥${sumTotals.toLocaleString()} が元の仕入れ値 ¥${total.toLocaleString()} と一致しません` };
-  // 方針：送料・任意手数料は均等割り（端数は先頭から1円ずつ）、クーポンは入力合計が最も高い1点だけ（同額なら先頭）
+  // 方針：送料・任意手数料は各商品の金額に比例して割り振る（最大剰余法で1円単位まで合わせる）。
+  //   均等割りだと安い1点が送料負けしてマイナスになるため（2026-10-31 ¥19,000＋¥500 の分割で発生）
+  //   クーポンは入力合計が最も高い1点だけ（同額なら先頭）
   const nKids = totals.length;
-  const evenA = (T) => totals.map((_, i) => Math.floor(T / nKids) + (i < T % nKids ? 1 : 0));
-  const shipA = evenA(ship);
-  const feeA = evenA(fee);
+  const propA = (T) => {
+    if (!T) return totals.map(() => 0);
+    if (sumTotals <= 0) return totals.map((_, i) => Math.floor(T / nKids) + (i < T % nKids ? 1 : 0));
+    const raw = totals.map(t => (T * Math.max(0, t)) / sumTotals);
+    const out = raw.map(Math.floor);
+    let rest = T - out.reduce((a, b) => a + b, 0);
+    raw.map((r, i) => [r - out[i], i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).forEach(([, i]) => { if (rest > 0) { out[i]++; rest--; } });
+    return out;
+  };
+  const shipA = propA(ship);
+  const feeA = propA(fee);
   let topIdx = 0;
   totals.forEach((t, i) => { if (t > totals[topIdx]) topIdx = i; });
   const couponA = totals.map((_, i) => (i === topIdx ? coupon : 0));
   const itemA = totals.map((t, i) => t - shipA[i] - feeA[i] + couponA[i]);
-  if (itemA.some(v => v < 0)) return { error: '送料を均等割り・クーポンを最高額の1点に集約すると商品代がマイナスになる商品があります。各商品の金額の割り振りを見直してください' };
+  if (itemA.some(v => v < 0)) return { error: '送料を金額に比例して割り振り・クーポンを最高額の1点に集約すると商品代がマイナスになる商品があります。各商品の金額の割り振りを見直してください' };
   const sum = a => a.reduce((x, y) => x + y, 0);
   if (sum(itemA) !== item || sum(shipA) !== ship || sum(couponA) !== coupon || sum(feeA) !== fee || sum(totals) !== total) {
     return { error: '内訳の按分合計が元の金額と一致しません（保存を中止しました）' };
