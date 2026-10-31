@@ -1462,8 +1462,12 @@ const isStorePlaceholder = (it) => !!(it && it.needsDetail && it.purchaseType ==
 // ★ まとめを分割した商品は名前・写真が同じになるので、どの1点か分かる印を出す（2026-10-31）
 const SplitBadge = ({ it }) => {
   if (!it || !it.bundleGroup) return null;
+  const lab = it.bundleLabel ? `（${it.bundleLabel}）` : '';
+  //   分割で作ったもの（splitOrigin あり）と、1回の注文で複数買った同梱・セットは別の表示にする
   const total = it.splitOrigin && it.splitOrigin.purchaseCost && it.splitOrigin.purchaseCost.totalTaxIn;
-  return <span style={{background:'#ede9fe',color:'#5b21b6',borderRadius:99,padding:'0 6px',fontWeight:800}}>📦 まとめを分けた1点{it.bundleLabel ? `（${it.bundleLabel}）` : ''}{total ? `・元の合計 ¥${Number(total).toLocaleString()}` : ''}</span>;
+  const text = it.splitOrigin ? `📦 まとめを分けた1点${lab}${total ? `・元の合計 ¥${Number(total).toLocaleString()}` : ''}`
+    : it.bundleType === 'individual' ? `🧺 同じ注文で買った1点${lab}` : `📦 セット購入の1点${lab}`;
+  return <span style={{background:'#ede9fe',color:'#5b21b6',borderRadius:99,padding:'0 6px',fontWeight:800}}>{text}</span>;
 };
 const placeholderPayment = (m) => {
   const v = String(m || '').trim();
