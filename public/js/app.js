@@ -11404,9 +11404,10 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, onPick, onCl
           return (
             <div key={it.id} style={{marginTop:6,padding:8,borderRadius:10,background: on ? '#eff6ff' : '#f8fafc',border: on ? '1.5px solid #2563eb' : '1px solid #e2e8f0'}}>
               <div onClick={() => setPicked(on ? null : it.id)} style={{display:'flex',gap:10,alignItems:'flex-start',cursor:'pointer',touchAction:'manipulation'}}>
-                <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={56} fallback="📦" />
+                <ItemThumbnail thumbId={it.photos?.[0]?.thumbId} thumbDataUrl={it.photos?.[0]?.thumbDataUrl} size={on ? 110 : 56} fallback="📦" />
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:700,color:'#111',lineHeight:1.35,wordBreak:'break-all',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
+                  {/* タップした行はタイトル全文（2行で切らない）。写真は同じサムネを大きく出すだけなので重くならない */}
+                  <div style={on ? {fontSize:13,fontWeight:700,color:'#111',lineHeight:1.45,wordBreak:'break-all'} : {fontSize:13,fontWeight:700,color:'#111',lineHeight:1.35,wordBreak:'break-all',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
                     {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
                   </div>
                   <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yenS(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}</div>
