@@ -20948,7 +20948,7 @@ const MercariPanelRoot = () => {
 // ★ 起動時のスプレッドシート自動同期
 // ToastProvider の中に置くことで useToast() を使用可能にしている
 const CloudAutoSync = () => {
-  const { setFullDataRaw, dataRef, editingItem, pendingEditSaleId, dbStatus } = React.useContext(AppContext);
+  const { setFullDataRaw, dataRef, editingItem, pendingEditSaleId, dbStatus, tab } = React.useContext(AppContext);
   const toast = useToast();
 
   // ── visibilitychange クラウド再取得（120秒スロットル）──
@@ -20959,7 +20959,8 @@ const CloudAutoSync = () => {
     const onVisible = async () => {
       if (document.visibilityState !== 'visible') return;
       // 編集中はスキップ（データ上書きを防止）
-      if (editingItem || pendingEditSaleId) return;
+      // editingItem は他タブへ移っても残るため、編集画面(purchaseタブ)を実際に表示中のときだけスキップ
+      if ((editingItem && tab === 'purchase') || pendingEditSaleId) { console.warn('[CloudAutoSync] skip: editing'); return; }
       // 120秒スロットル + 取得中は重ねない（サーバー負荷・通信量の抑制。以前は30秒）
       flushPendingProposals().catch(() => {});   // 未送信の承認/却下を再送
       if (inFlightRef.current) return;
@@ -21006,7 +21007,7 @@ const CloudAutoSync = () => {
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   // editingItem / pendingEditSaleId が変わるたびに最新値を参照するため依存配列に含める
-  }, [editingItem, pendingEditSaleId, setFullDataRaw]);
+  }, [editingItem, pendingEditSaleId, tab, setFullDataRaw]);
 
   // ── 起動時スプレッドシート自動同期（クラウドロード完了後・24時間以上未同期時）──
   const autoSyncDoneRef = React.useRef(false);

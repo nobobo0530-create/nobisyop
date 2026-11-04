@@ -1,4 +1,4 @@
-/*APP_SRC_SHA256:dfdee6e6010d5435582abe6d1606013c9f404a726400bb1e7210d22aee929ec2*/
+/*APP_SRC_SHA256:1d5e3566b9349f878ebde43fafd99a076398a24fb89f6296162d44f026a1efbe*/
 // ============================================================
 // CONFIG - 変更しやすい設定値を集約
 // ============================================================
@@ -1628,16 +1628,17 @@ const _now=new Date().toISOString();const _newDeletedIds={...(data.settings?._de
 const MercariPanelRoot=()=>{const{mercariItem,setMercariItem}=React.useContext(AppContext);const toast=useToast();if(!mercariItem)return null;return React.createElement(MercariPrepPanel,{item:mercariItem,onClose:()=>setMercariItem(null),toast});};// ★ visibilitychange でクラウドから最新を取得（Mac⇔iPhone 間の反映）
 // ★ 起動時のスプレッドシート自動同期
 // ToastProvider の中に置くことで useToast() を使用可能にしている
-const CloudAutoSync=()=>{const{setFullDataRaw,dataRef,editingItem,pendingEditSaleId,dbStatus}=React.useContext(AppContext);const toast=useToast();// ── visibilitychange クラウド再取得（120秒スロットル）──
+const CloudAutoSync=()=>{const{setFullDataRaw,dataRef,editingItem,pendingEditSaleId,dbStatus,tab}=React.useContext(AppContext);const toast=useToast();// ── visibilitychange クラウド再取得（120秒スロットル）──
 const lastFetchRef=React.useRef(0);const inFlightRef=React.useRef(false);React.useEffect(()=>{const onVisible=async()=>{if(document.visibilityState!=='visible')return;// 編集中はスキップ（データ上書きを防止）
-if(editingItem||pendingEditSaleId)return;// 120秒スロットル + 取得中は重ねない（サーバー負荷・通信量の抑制。以前は30秒）
+// editingItem は他タブへ移っても残るため、編集画面(purchaseタブ)を実際に表示中のときだけスキップ
+if(editingItem&&tab==='purchase'||pendingEditSaleId){console.warn('[CloudAutoSync] skip: editing');return;}// 120秒スロットル + 取得中は重ねない（サーバー負荷・通信量の抑制。以前は30秒）
 flushPendingProposals().catch(()=>{});// 未送信の承認/却下を再送
 if(inFlightRef.current)return;if(Date.now()-lastFetchRef.current<120000)return;lastFetchRef.current=Date.now();inFlightRef.current=true;try{// ★ まず変更チェック（数百バイト）。前回の全件取得と署名が同じなら取得しない（24時間に1回は強制取得）
 const sig=await fetchCloudSig();if(sig&&_lastFullSig&&_lastFullSig.sig===sig&&Date.now()-_lastFullSig.t<SIG_FORCE_FULL_MS)return;// 変更あり（または署名が取れない）でも、全件取得は10分に1回まで
 if(Date.now()-_lastFullFetchAt<FULL_FETCH_MIN_MS)return;const cloudData=await fetchSupabaseDataTracked(sig);if(!cloudData||cloudData._connError)return;const current=dataRef.current;const merged=mergeCloudIntoLocal(current,cloudData);repushNewerProposals(cloudData.claudeProposals,merged.claudeProposals);// 内容として変化があった場合のみ setFullDataRaw
 // （マージでキー順が変わるだけの差分を拾わないよう stableJson で比較）
 const invChanged=stableJson(merged.inventory)!==stableJson(current.inventory);const salesChanged=stableJson(merged.sales)!==stableJson(current.sales);const settingsChanged=stableJson(merged.settings)!==stableJson(current.settings);const receiptsChanged=stableJson(merged.receipts||[])!==stableJson(current.receipts||[])||stableJson(merged.storePending||[])!==stableJson(current.storePending||[])||stableJson(merged.claudeProposals||[])!==stableJson(current.claudeProposals||[]);if(invChanged||salesChanged||settingsChanged||receiptsChanged){setFullDataRaw(prev=>{const nf={...merged,currentUser:prev.currentUser,userProfiles:prev.userProfiles};dataRef.current=nf;saveData(nf);return nf;});toast('☁️ 最新データを取得しました');}}catch(e){console.warn('[CloudAutoSync] visibilitychange 再取得失敗:',e.message);}finally{inFlightRef.current=false;}};document.addEventListener('visibilitychange',onVisible);return()=>document.removeEventListener('visibilitychange',onVisible);// editingItem / pendingEditSaleId が変わるたびに最新値を参照するため依存配列に含める
-},[editingItem,pendingEditSaleId,setFullDataRaw]);// ── 起動時スプレッドシート自動同期（クラウドロード完了後・24時間以上未同期時）──
+},[editingItem,pendingEditSaleId,tab,setFullDataRaw]);// ── 起動時スプレッドシート自動同期（クラウドロード完了後・24時間以上未同期時）──
 const autoSyncDoneRef=React.useRef(false);React.useEffect(()=>{if(dbStatus!=='ok'&&dbStatus!=='migrated')return;if(autoSyncDoneRef.current)return;const settings=dataRef.current.settings||{};const token=getStoredGToken();// 条件①② スプレッドシートIDとトークンが揃っているか
 if(!settings.googleSpreadsheetId||!token)return;// 条件③ 前回同期から24時間以上経過しているか
 const lastSync=settings.googleLastSyncTime?new Date(settings.googleLastSyncTime).getTime():0;if(Date.now()-lastSync<24*60*60*1000)return;autoSyncDoneRef.current=true;(async()=>{try{const currentData=dataRef.current;const user=currentData.currentUser||'self';// 現在のユーザーの在庫・売上のみを対象
