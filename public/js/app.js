@@ -10704,6 +10704,33 @@ const InventoryTab = () => {
                       📋 説明文コピー
                     </button>
                   </div>
+                  {/* サイズ・タイトル・管理番号コピー */}
+                  {(() => {
+                    const sizeText = [selected.sizeTag ? `サイズ：${selected.sizeTag}` : '', ...measureLinesOf(selected)].filter(Boolean).join('\n');
+                    const titleText = selected.englishTitle || selected.productName || '';
+                    const mgmtText = selected.mgmtNo ? String(selected.mgmtNo) : '';
+                    const mk = (text, label, emptyMsg) => (
+                      <button
+                        onClick={() => {
+                          if (!text) { toast(emptyMsg); return; }
+                          copyToClipboard(text).then(ok => toast(ok ? `📋 ${label}をコピー` : 'コピー失敗'));
+                        }}
+                        style={{padding:'10px 4px',borderRadius:10,border:'1.5px solid #e0e0e0',
+                          background: text ? 'white' : '#f9fafb',
+                          fontSize:12,fontWeight:700,cursor:'pointer',color:'#333',
+                          opacity:text?1:0.5,whiteSpace:'nowrap',
+                          WebkitTapHighlightColor:'transparent'}}>
+                        📋 {label}
+                      </button>
+                    );
+                    return (
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginTop:8}}>
+                        {mk(sizeText, 'サイズ', '⚠️ サイズ・採寸がありません')}
+                        {mk(titleText, 'タイトル', '⚠️ タイトルがありません')}
+                        {mk(mgmtText, '管理番号', '⚠️ 管理番号がありません')}
+                      </div>
+                    );
+                  })()}
                   {/* 未完了の場合ヒント */}
                   {!allDone && (
                     <div style={{marginTop:8,fontSize:11,color:'#9ca3af',textAlign:'center'}}>
