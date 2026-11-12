@@ -107,7 +107,7 @@ def main():
     cloud = cloud_get.get_cloud(max_age=0)
     have = {str(i.get('yahooAuctionId') or '').strip().lower() for i in cloud.get('inventory', [])}
     for p in cloud.get('claudeProposals', []):
-        if p.get('type') == 'purchaseDraft' and p.get('status') in ('open', 'approved', 'held'):
+        if p.get('type') == 'purchaseDraft' and p.get('status') in ('open', 'approved', 'held', 'rejected'):
             have.add(str((p.get('draft') or {}).get('yahooAuctionId') or '').strip().lower())
     now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
     base = int(time.time() * 1000)
