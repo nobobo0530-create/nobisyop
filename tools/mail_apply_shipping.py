@@ -80,6 +80,10 @@ def build_updates(orders, inv):
             # 分割登録された商品は注文全額ではなく按分済み。上書きしない
             if '_split_' in str(v.get('id', '')) or v.get('splitOrigin'):
                 continue
+            # 実際の引き落とし額（PayPay履歴）で直した商品は、メールの仮の送料で戻さない
+            #   例: クイックドゥは購入時メールが送料¥5,080/点の仮表示で、後から実額に直して引き落とす（2026-10-31）
+            if v.get('paidAmountFixed'):
+                continue
             price = (it['unitPrice'] or 0) * it['qty']
             rec = dict(v)
             rec['purchaseStore'] = od['store']

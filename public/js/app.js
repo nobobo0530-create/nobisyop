@@ -7257,7 +7257,9 @@ const InventoryTab = () => {
   // 「確認待ち」「保留」タブ（保留は承認・却下とは別。消えずに残る）
   const [propTab, setPropTab] = React.useState(() => { const t = window.__proposalTab; window.__proposalTab = undefined; return t === 'held' ? 'held' : 'open'; });
   const proposalsShown = propTab === 'held' ? proposalsHeld : proposalsOpen;
-  const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink' && pr.type !== 'bundleSale');
+  const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink' && pr.type !== 'bundleSale' && pr.type !== 'purchaseDraft');
+  const proposalsDraftOpen = proposalsShown.filter(pr => pr.type === 'purchaseDraft' && pr.draft && typeof pr.draft === 'object');
+  const [draftCat, setDraftCat] = React.useState({});   // 登録前に直したカテゴリ {提案id: カテゴリ}
   // まとめ売りも同じ一覧に入れて売上日の新しい順に並べる（別欄だと一番下までスクロールが必要だった 2026-10-31）
   const proposalsLinkOpen = proposalsShown.filter(pr => pr.type === 'saleLink' || pr.type === 'bundleSale')
     .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
@@ -7669,6 +7671,39 @@ const InventoryTab = () => {
     if (reason === null) return;
     setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: String(reason).trim() })) });
     toast('❌ 却下しました');
+  };
+  // ★ ヤフオク仕入れの下書き（purchaseDraft）：「登録する」で在庫に保存、「登録しない」で却下。保存は通常の setData 経路（クラウド同期される）
+  const registerPurchaseDraft = (pr) => {
+    if (proposalBusy) return;
+    const d = pr.draft;
+    if (!d || typeof d !== 'object') { alert('❌ 下書きの内容が読み込めません'); return; }
+    const aid = String(d.yahooAuctionId || '').trim();
+    const dup = aid ? findAuctionDup(aid) : null;
+    if (dup) {
+      setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [dup.id], duplicateOf: dup.id })) });
+      toast('すでに登録済みでした（二重登録を防ぎました）');
+      return;
+    }
+    const total = Math.round(Number(d.purchasePrice)) || 0;
+    if (!String(d.productName || '').trim() || !/^\d{4}-\d{2}-\d{2}$/.test(d.purchaseDate || '') || !(total > 0)) { alert('❌ 下書きの内容（商品名・日付・金額）が足りません'); return; }
+    const nowIso = new Date().toISOString(), ts = Date.now();
+    const ph = Array.isArray(d.photos) ? d.photos.filter(p => p && p.thumbDataUrl).slice(0, 1) : [];
+    const cat = draftCat[pr.id] != null ? draftCat[pr.id] : (d.category || '');
+    const item = { ...d, id: `${ts}_online_${Math.floor(Math.random() * 1000)}`, userId: currentUser, category: cat,
+      photos: ph.map((p, i) => ({ id: `photo_${ts}_${i}`, thumbId: `thumb_${ts}_${i}`, source: p.source || 'yahoo_listing', thumbDataUrl: p.thumbDataUrl, ...(p.medDataUrl ? { medDataUrl: p.medDataUrl } : {}) })),
+      status: 'unlisted', createdAt: nowIso, updatedAt: nowIso };
+    setProposalBusy(true);
+    try {
+      setData({ ...data, inventory: [...(data.inventory || []), item],
+        claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [item.id] })) });
+      toast('✅ 登録しました');
+    } finally { setTimeout(() => setProposalBusy(false), 600); }
+  };
+  const rejectPurchaseDraft = (pr) => {
+    if (proposalBusy) return;
+    if (!confirm('この仕入れは登録しません。よろしいですか？')) return;
+    setData({ ...data, claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'rejected', { rejectReason: '登録しない' })) });
+    toast('登録しないにしました');
   };
   const startStorePurchase = (e) => {
     setPendingStorePurchase({ id: e.id, store: e.store || '', date: e.date || '', amount: Number(e.amount) || 0, method: e.method || '' });
@@ -8883,6 +8918,42 @@ const InventoryTab = () => {
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
               {propTabs}
               {isHeldTab && <div style={{fontSize:12,color:'#64748b',padding:'0 2px'}}>あとで確認するために置いておく場所です。消えずに残ります。</div>}
+              {proposalsDraftOpen.map(pr => {
+                const d = pr.draft || {};
+                const ph = Array.isArray(d.photos) ? d.photos[0] : null;
+                const tot = Math.round(Number(d.purchasePrice)) || 0;
+                const cat = draftCat[pr.id] != null ? draftCat[pr.id] : (d.category || '');
+                const dupItem = findAuctionDup(d.yahooAuctionId);
+                return (
+                  <div key={pr.id} className="card" style={{padding:12,border:'1.5px solid #f59e0b'}}>
+                    <div style={{fontSize:11,fontWeight:800,color:'#b45309',marginBottom:6}}>📩 メールで見つけたヤフオク仕入れ（まだ未登録）</div>
+                    <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                      <ItemThumbnail thumbDataUrl={ph?.thumbDataUrl} size={72} fallback="📦" />
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:14,fontWeight:700,color:'#111',wordBreak:'break-all'}}>{d.productName}</div>
+                        <div style={{fontSize:12,color:'#475569',marginTop:2,wordBreak:'break-all'}}>🛒 {d.purchaseStore}　{d.purchaseDate}</div>
+                        <div style={{fontSize:11,color:'#6b7280',marginTop:2}}>{d.paymentMethod}{d.yahooAuctionId ? `　ID ${d.yahooAuctionId}` : ''}</div>
+                      </div>
+                    </div>
+                    <div style={{marginTop:8,padding:'8px 10px',background:'#f8fafc',borderRadius:8,fontSize:13,color:'#334155'}}>
+                      商品代 {yen(d.itemPriceTaxIn)} ＋ 送料 {yen(d.shippingTaxIn)}{Number(d.couponTaxIn) ? ` − クーポン ${yen(d.couponTaxIn)}` : ''}
+                      <div style={{fontWeight:800,fontSize:16,color:'#0f172a',marginTop:2}}>合計 {yen(tot)}</div>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
+                      <span style={{fontSize:12,color:'#475569',fontWeight:700}}>カテゴリ</span>
+                      <select value={cat} onChange={e => setDraftCat({ ...draftCat, [pr.id]: e.target.value })} style={{padding:'6px 8px',border:'1px solid #cbd5e1',borderRadius:8,fontSize:16}}>
+                        {['', 'バッグ','衣類','小物','シューズ','毛皮','その他'].concat(cat && !['バッグ','衣類','小物','シューズ','毛皮','その他'].includes(cat) ? [cat] : []).map(c => <option key={c} value={c}>{c || '（未設定）'}</option>)}
+                      </select>
+                    </div>
+                    {pr.note && <div style={{fontSize:12,color:'#64748b',marginTop:6,wordBreak:'break-all'}}>{pr.note}</div>}
+                    {dupItem && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ このIDはすでに在庫にあります（「登録する」を押すと二重登録せず完了にします）</div>}
+                    <div style={{display:'flex',gap:8,marginTop:10}}>
+                      <button style={btn('#16a34a','white',proposalBusy)} disabled={proposalBusy} onClick={() => registerPurchaseDraft(pr)}>✅ 登録する</button>
+                      <button style={btn('#e5e7eb','#475569',proposalBusy)} disabled={proposalBusy} onClick={() => rejectPurchaseDraft(pr)}>登録しない</button>
+                    </div>
+                  </div>
+                );
+              })}
               {proposalsStoreOpen.map(pr => {
                 const sum = proposalSum(pr), pay = Math.round(Number(pr.payment?.amount) || 0);
                 const ok = sum === pay;
