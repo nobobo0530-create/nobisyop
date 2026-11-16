@@ -4,13 +4,13 @@ iPhone PWA。古着販売（ラクマ/ヤフオク/メルカリ）の在庫・�
 
 ## ユーザー
 日本語。非エンジニア。
-危険操作（金銭/秘密情報/破壊的）以外は確認なしで進めて良い。
+危険操作（金銭/秘密情報/破壊的）以外は確認なしで進めて良い。確認なしでよい手順の一覧は ~/.claude/CLAUDE.md、直す手順は ~/.claude/skills/nobushop-app-change/SKILL.md。
 
 ## 構成
 - React (UMD・Babel browser) + 素のCSS
 - Vercel自動デプロイ
 - データ: localStorage（メイン）+ Supabase（クラウド同期）
-- ローカル開発: `python3 -m http.server 3333 --directory public`
+- ローカル開発: `python3 -m http.server 3333 --directory public`。ローカルで開いても本番のデータ（Supabase）に読み書きする。見た目の確認だけにして、保存系のボタンは押さない（2026-09-25 にテスト値が本番19件に入った）
 
 ## ファイル
 - `public/index.html` - シェル + Babel browser読み込み
@@ -38,12 +38,12 @@ index.html は app.js の SHA-256 と app.compiled.js 先頭の刻印を照合�
 
 ### クラウド取得の方針（Supabase過負荷対策）
 - `/api/data` GET は常に軽量（写真base64なし・hasThumb/hasMed フラグのみ）。ツールも ?light なしで軽量
-- 写真base64は `?photoIds=商品id,...`（最大20件）で必要な商品だけ。全件は `?full=1`（通常使わない・30MB）
+- 写真base64は `?photoIds=商品id,...`（最大20件）で必要な商品だけ。`?full=1`（全件・30MB）は使わない。例外は、写真の復元をユーザーが頼んだ時だけ（2026年10月に、読み込みすぎでアプリが3回止まった）
 - DBに `light` 列があればそれを読む（SQLは ~/Documents/nobushop_mail/perf_1007.md）。無ければ従来方式
 
 ## 重要な制約
 - 写真データ復旧不可: 一度cloudから消えるとiPhone Photosからしか戻せない
-- Supabase同期失敗時はlocalStorageが正
+- 端末とクラウドは、行ごとに新しい方（updatedAt）が勝つ。スクリプトから直す時は updatedAt を今の時刻にする。消す時は settings._deletedIds に登録する（クラウドから消すだけでは端末から復活する）
 - Babel-compiled JSはlocalStorageキャッシュされるためバージョン管理慎重に
 
 ## 既知の注意点
