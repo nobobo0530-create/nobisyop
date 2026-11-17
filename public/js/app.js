@@ -7266,6 +7266,7 @@ const InventoryTab = () => {
     .sort((a, b) => String(b.sale?.date || '').localeCompare(String(a.sale?.date || '')) || ({'高':0,'中':1}[a.confidence] ?? 2) - ({'高':0,'中':1}[b.confidence] ?? 2) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   const [proposalBusy, setProposalBusy] = React.useState(false);
   const [altOpen, setAltOpen] = React.useState({});     // 「ほかの候補」を開いている提案 {提案id: true}
+  const [restIn, setRestIn] = React.useState({});   // 確認待ちカードの「残りの中身」をその場で入力した値 { '<提案id>:<行>': {name, brand, category} }
   const [propEdit, setPropEdit] = React.useState(null);   // 「修正して登録」中の提案 {id, items:[{name,brand,category,price}]}
   // ★ 自己修復：実際には登録済みなのに 'open' のまま残った提案を、状態から判断して承認済みにして保存し直す
   //   （保存の取りこぼし・同時書き込みで更新が消えても、画面を開けば自然に直る）
@@ -7619,7 +7620,7 @@ const InventoryTab = () => {
     const pr = override ? { ...pr0, items: replaceItems ? override : (pr0.items || []).map((it, i) => ({ ...it, ...(override[i] || {}) })) } : pr0;
     const prob = proposalProblem(pr);
     if (prob) { alert('❌ ' + prob); return; }
-    const missing = (pr.items || []).filter(it => !(it.photo && it.photo.thumbDataUrl)).length;
+    const missing = (pr.items || []).filter(it => !(it.photo && it.photo.thumbDataUrl) && !it.noPhoto && !isRestRow(it)).length;   // 中身未入力に残す行・その場で入力した行は、もともと写真なし
     if (missing > 0 && !confirm(`写真が読み込めていない商品が${missing}点あります（通信待ちかも）。写真なしで登録しますか？`)) return;
     const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
     setProposalBusy(true);
@@ -9115,10 +9116,24 @@ const InventoryTab = () => {
                               : <span style={{fontSize:22,opacity:0.5}}>📷</span>}
                           </div>
                           <div style={{flex:1,minWidth:0}}>
-                            {isRestRow(it) ? (<React.Fragment>
-                              <div style={{fontSize:13,fontWeight:700,color:'#9a3412'}}>✏️ あとで入力（中身未入力のまま残します）</div>
-                              <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>残り {yen(it.allocatedPrice)}</b>　登録後に在庫の「✏️ 中身未入力」から入力できます</div>
-                            </React.Fragment>) : (<React.Fragment>
+                            {isRestRow(it) ? (() => {
+                              // 残りの中身：ここでそのまま入力できる。空のまま登録すれば「中身未入力」に残る
+                              const k = pr.id + ':' + i, v = restIn[k] || {};
+                              const setV = (f, val) => setRestIn({ ...restIn, [k]: { ...v, [f]: val } });
+                              const filled = !!String(v.name || '').trim();
+                              const inp = {width:'100%',boxSizing:'border-box',padding:'8px 10px',border:'1.5px solid #fdba74',borderRadius:8,fontSize:16,marginTop:4,background:'#fff'};
+                              return (<React.Fragment>
+                                <div style={{fontSize:13,fontWeight:700,color:'#9a3412'}}>✏️ 残り {yen(it.allocatedPrice)} の中身</div>
+                                <input style={inp} placeholder="商品名をここに入力" value={v.name || ''} onChange={e => setV('name', e.target.value)} />
+                                <div style={{display:'flex',gap:6}}>
+                                  <input style={{...inp,flex:1,minWidth:0}} placeholder="ブランド" value={v.brand || ''} onChange={e => setV('brand', e.target.value)} />
+                                  <select style={{...inp,flex:1,minWidth:0}} value={v.category || ''} onChange={e => setV('category', e.target.value)}>
+                                    {['', 'バッグ','衣類','小物','シューズ','毛皮','その他'].map(c => <option key={c} value={c}>{c || 'カテゴリ'}</option>)}
+                                  </select>
+                                </div>
+                                <div style={{fontSize:11,color: filled ? '#166534' : '#64748b',marginTop:4}}>{filled ? `「この内容で登録」で、この商品も ${yen(it.allocatedPrice)} で登録します` : '空のまま登録すると「✏️ 中身未入力」に残り、あとで入力できます。2点以上ある時は「修正して登録」へ'}</div>
+                              </React.Fragment>);
+                            })() : (<React.Fragment>
                             <div style={{fontSize:13,fontWeight:700,wordBreak:'break-all'}}>{it.name}{it.nameUncertain && <span style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginLeft:4}}>（名前は仮）</span>}</div>
                             {it.brand && <div style={{fontSize:11,color:'#64748b'}}>{it.brand}</div>}
                             <div style={{fontSize:12,color:'#475569',marginTop:2}}>値札 {yen(it.tagPrice)}　<b style={{color:'#0f172a'}}>仕入れ値 {yen(it.allocatedPrice)}</b></div>
@@ -9182,7 +9197,12 @@ const InventoryTab = () => {
                     {pr.note && <div style={{fontSize:12,color:'#64748b',marginTop:6,wordBreak:'break-all'}}>{pr.note}</div>}
                     {prob && <div style={{fontSize:12,color:'#b45309',fontWeight:700,marginTop:6}}>⚠️ {prob}</div>}
                     <div style={{display:'flex',gap:8,marginTop:10}}>
-                      <button style={btn('#16a34a','white',!!prob || proposalBusy)} disabled={!!prob || proposalBusy} onClick={() => approveProposal(pr)}>✅ この内容で登録</button>
+                      <button style={btn('#16a34a','white',!!prob || proposalBusy)} disabled={!!prob || proposalBusy} onClick={() => {
+                        // 「残りの中身」をカード上で入力していたら、その内容で登録する（空なら中身未入力に残す）
+                        const ov = (pr.items || []).map((it, i) => { const v = restIn[pr.id + ':' + i]; const nm = v ? String(v.name || '').trim() : '';
+                          return (isRestRow(it) && nm) ? { name: nm, brand: String(v.brand || '').trim(), category: v.category || '', nameUncertain: false, noPhoto: true } : {}; });
+                        approveProposal(pr, ov.some(o => o.name) ? ov : undefined);
+                      }}>✅ この内容で登録</button>
                     </div>
                     <div style={{display:'flex',gap:8,marginTop:8}}>
                       <button style={btn('#e0e7ff','#3730a3',false)} onClick={() => startPropEdit(pr)}>✏️ 修正して登録</button>
