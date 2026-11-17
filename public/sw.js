@@ -1,4 +1,4 @@
-// SalesLog Service Worker v20260703  ── オフライン完全対応版
+// SalesLog Service Worker v20261117  ── オフライン完全対応版（/api/ は素通し）
 var CACHE = 'nobushop-20260703';
 
 // アプリの動作に必須なリソース（インストール時に必ずキャッシュ）
@@ -41,6 +41,15 @@ self.addEventListener('activate', function(e) {
         keys.filter(function(k) { return k !== CACHE; })
             .map(function(k) { return caches.delete(k); })
       );
+    }).then(function() {
+      // ★ 以前のSWが溜め込んだ /api/… の古い応答を消す（数MBの空きも戻る）
+      return caches.open(CACHE).then(function(c) {
+        return c.keys().then(function(reqs) {
+          return Promise.all(reqs.filter(function(r) {
+            try { return new URL(r.url).pathname.indexOf('/api/') === 0; } catch (_e) { return false; }
+          }).map(function(r) { return c.delete(r); }));
+        });
+      }).catch(function() {});
     }).then(function() { return self.clients.claim(); })
   );
 });
@@ -48,6 +57,11 @@ self.addEventListener('activate', function(e) {
 self.addEventListener('fetch', function(e) {
   if (e.request.method !== 'GET') return;
   var url = e.request.url;
+
+  // ★ クラウドとの通信（/api/…）はSWを通さない。必ず毎回サーバーから取る。
+  //   以前は下の「その他：キャッシュ優先」に入ってしまい、一度受け取った在庫・売上・確認待ちの一覧を
+  //   使い回していた（2026-11-17：登録済みの候補が「更新」後に戻って見えた／iPhoneに新しい登録が届かない原因）
+  try { if (new URL(url).pathname.indexOf('/api/') === 0) return; } catch (_e) {}
 
   // Google OAuth / Anthropic / remove.bg API はSW通さない
   if (url.includes('accounts.google.com')) return;
