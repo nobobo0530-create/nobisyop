@@ -7595,13 +7595,15 @@ const InventoryTab = () => {
     if ((Number(ph.purchasePrice) || 0) !== sum) return `もとの仮登録の仕入れ値 ¥${(Number(ph.purchasePrice) || 0).toLocaleString()} と合計 ¥${sum.toLocaleString()} が一致しません`;
     return null;
   };
+  // 「中身未入力のまま残す行」か（商品名が「店舗仕入れ（中身未入力）」「中身未入力」で始まる行。分かった物だけ登録して、残りはあとで入力する）
+  const isRestRow = (it) => /^(店舗仕入れ（)?中身未入力/.test(String((it && it.name) || '').trim());
   const proposalSplitItems = (pr) => (pr.items || []).map((it, i) => {
     const th = it.photo && it.photo.thumbDataUrl;
     return {
       productName: String(it.name || '').trim(),
       purchasePrice: String(Math.round(Number(it.allocatedPrice)) || 0),
       photos: th ? [{ id: `pp_${pr.id}_${i}`, thumbId: `pp_${pr.id}_${i}`, thumbDataUrl: th, medDataUrl: it.photo.medDataUrl || null }] : [],
-      extra: { brand: it.brand || '', category: it.category || '', needsDetail: !String(it.name || '').trim(), priceUnconfirmed: false },
+      extra: { brand: it.brand || '', category: it.category || '', needsDetail: !String(it.name || '').trim() || isRestRow(it), priceUnconfirmed: false },
     };
   });
   const proposalCommon = (pr, ph) => ({
@@ -7622,12 +7624,48 @@ const InventoryTab = () => {
     const ph = (data.inventory || []).find(i => i.id === pr.targetItemId);
     setProposalBusy(true);
     try {
+      const restRows = (pr.items || []).filter(isRestRow);
+      if (restRows.length > 0 && restRows.length < (pr.items || []).length) {
+        // 分かった物だけ登録し、残りは「中身未入力」の仮在庫に残す（仮在庫の金額を同額だけ減らす。合計は1円もずれない）
+        const restAmt = restRows.reduce((a, it) => a + (Math.round(Number(it.allocatedPrice)) || 0), 0);
+        const nowIso = new Date().toISOString(), ts = Date.now();
+        const common = proposalCommon(pr, ph);
+        const divisor = data.settings?.priceSplitDivisor || 100;
+        const sis = proposalSplitItems(pr);
+        const newItems = [];
+        (pr.items || []).forEach((it, i) => {
+          if (isRestRow(it)) return;
+          const si = sis[i], price = Math.round(Number(it.allocatedPrice)) || 0;
+          newItems.push({
+            id: `${ts + newItems.length}_store_${Math.floor(Math.random() * 1000)}`, userId: ph.userId || currentUser,
+            productName: si.productName, brand: si.extra.brand, category: si.extra.category || '', color: '', gender: ph.gender || 'メンズ', condition: 'A', notes: '',
+            ...common, purchaseTypeSource: 'manual', purchaseStoreType: 'normal',
+            purchasePrice: price, itemPriceTaxIn: price, shippingTaxIn: 0,
+            purchaseCost: { totalTaxIn: price, totalTaxEx: Math.round(price / 1.1), itemPriceTaxIn: price, itemTaxRate: 10,
+              itemPriceTaxEx: Math.round(price / 1.1), shippingTaxIn: 0, shippingTaxEx: 0, shippingTaxRate: 10 },
+            priceUnconfirmed: false, listDate: '', listPrice: 0, photos: si.photos,
+            mgmtNo: common.purchaseDate ? generateMgmtNo(common.purchaseDate, '', price, divisor) : null,
+            status: 'unlisted', needsDetail: false,
+            ...(ph.storePendingId ? { storePendingId: ph.storePendingId } : {}),
+            createdAt: new Date(ts + newItems.length).toISOString(), updatedAt: nowIso,
+          });
+        });
+        const ex = Math.round(restAmt / 1.1);
+        const phUpd = { ...ph, purchasePrice: restAmt, itemPriceTaxIn: restAmt,
+          purchaseCost: { ...(ph.purchaseCost || {}), totalTaxIn: restAmt, totalTaxEx: ex, itemPriceTaxIn: restAmt, itemPriceTaxEx: ex },
+          mgmtNo: ph.purchaseDate ? generateMgmtNo(ph.purchaseDate, '', restAmt, divisor) : ph.mgmtNo, updatedAt: nowIso };
+        setData({ ...data, inventory: (data.inventory || []).map(i => i.id === ph.id ? phUpd : i).concat(newItems),
+          claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: newItems.map(i => i.id), restItemId: ph.id, restAmount: restAmt, ...(override ? { edited: true } : {}) })) });
+        setPropEdit(null);
+        toast(`✅ ${newItems.length}点を登録しました。残り ¥${restAmt.toLocaleString()} は「✏️ 中身未入力」に残しました`);
+        return;
+      }
       if ((pr.items || []).length === 1) {
         const si = proposalSplitItems(pr)[0];
         const nowIso = new Date().toISOString();
         const common = proposalCommon(pr, ph);
         const upd = { ...ph, ...common, productName: si.productName, brand: si.extra.brand, category: si.extra.category || ph.category,
-          photos: si.photos.length ? si.photos : (ph.photos || []), needsDetail: false, priceUnconfirmed: false, updatedAt: nowIso };
+          photos: si.photos.length ? si.photos : (ph.photos || []), needsDetail: !!si.extra.needsDetail, priceUnconfirmed: false, updatedAt: nowIso };
         const inventory = (data.inventory || []).map(i => i.id === ph.id ? upd : i);
         setData({ ...data, inventory,
           claudeProposals: proposalsAll.map(x => x.id !== pr.id ? x : markProposalDone(x, 'approved', { resultItemIds: [ph.id], ...(override ? { edited: true } : {}) })) });
@@ -8997,6 +9035,7 @@ const InventoryTab = () => {
                       // 入れ替え・追加・外す：候補(pool)と商品の間で写真をやりとりする
                       const pool = propEdit.pool || [];
                       const diff = pay - eSum;
+                      const restRowName = `店舗仕入れ（中身未入力）${pr.payment?.store || ''} ${pr.payment?.date ? `${Number(pr.payment.date.slice(5, 7))}/${Number(pr.payment.date.slice(8, 10))}` : ''}`.trim();
                       const toItem = (a) => ({ name: String(a.name || ''), brand: String(a.brand || ''), category: '', price: String(Math.round(Number(a.tagPrice)) || 0), photo: { thumbDataUrl: a.photoThumb }, tagPrice: Number(a.tagPrice) || 0 });
                       const toPool = (x) => (x.photo && x.photo.thumbDataUrl) ? [{ photoThumb: x.photo.thumbDataUrl, tagPrice: Number(x.tagPrice) || Math.round(Number(x.price)) || 0, name: x.name, brand: x.brand, takenAt: '' }] : [];
                       const swapItem = (idx, ai) => setPropEdit({ ...propEdit, pick: null, items: eItems.map((x, n) => n === idx ? toItem(pool[ai]) : x), pool: [...pool.filter((_, n) => n !== ai), ...toPool(eItems[idx])] });
@@ -9034,6 +9073,7 @@ const InventoryTab = () => {
                                 <button style={miniBtn('#fee2e2','#991b1b')} disabled={eItems.length <= 1} onClick={() => removeItem(i)}>− 外す</button>
                               </div>
                               {propEdit.pick && propEdit.pick.kind === 'swap' && propEdit.pick.idx === i && picker((ai) => swapItem(i, ai), `商品${i + 1}を入れ替える写真を選んでください`)}
+                              {isRestRow(x) && <div style={{fontSize:12,fontWeight:700,color:'#9a3412',marginTop:6}}>✏️ この行は「中身未入力」のまま残ります。今わかる時は、商品名を書き換えると普通の商品として登録されます</div>}
                               <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6}}>商品名<input style={fld} value={x.name} onChange={e => setE(i, 'name', e.target.value)} /></label>
                               <label style={{fontSize:11,color:'#64748b',display:'block',marginTop:6}}>ブランド<input style={fld} value={x.brand} onChange={e => setE(i, 'brand', e.target.value)} /></label>
                               <div style={{display:'flex',gap:8}}>
@@ -9053,6 +9093,7 @@ const InventoryTab = () => {
                           ))}
                           <div>
                             <button style={miniBtn('#e0e7ff','#3730a3')} onClick={() => setPropEdit({ ...propEdit, pick: { kind: 'add' } })}>＋ 追加</button>
+                            {diff > 0 && !eItems.some(isRestRow) && <button style={{...miniBtn('#ffedd5','#9a3412'),marginLeft:6}} onClick={() => setPropEdit({ ...propEdit, pick: null, items: [...eItems, { name: restRowName, brand: '', category: '', price: String(diff), photo: null, tagPrice: 0 }] })}>✏️ 残り {yen(diff)} はあとで入力</button>}
                             {propEdit.pick && propEdit.pick.kind === 'add' && picker((ai) => addItem(ai), '追加する写真を選んでください')}
                           </div>
                           <div style={{fontSize:13,fontWeight:800,color: eSum === pay ? '#166534' : '#b45309'}}>合計 {yen(eSum)} ＝ 支払い {yen(pay)} {eSum === pay ? '✓' : `⚠️ ${diff > 0 ? `あと ${yen(diff)}` : `${yen(-diff)} 多い`}`}</div>
@@ -9074,9 +9115,14 @@ const InventoryTab = () => {
                               : <span style={{fontSize:22,opacity:0.5}}>📷</span>}
                           </div>
                           <div style={{flex:1,minWidth:0}}>
+                            {isRestRow(it) ? (<React.Fragment>
+                              <div style={{fontSize:13,fontWeight:700,color:'#9a3412'}}>✏️ あとで入力（中身未入力のまま残します）</div>
+                              <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>残り {yen(it.allocatedPrice)}</b>　登録後に在庫の「✏️ 中身未入力」から入力できます</div>
+                            </React.Fragment>) : (<React.Fragment>
                             <div style={{fontSize:13,fontWeight:700,wordBreak:'break-all'}}>{it.name}{it.nameUncertain && <span style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginLeft:4}}>（名前は仮）</span>}</div>
                             {it.brand && <div style={{fontSize:11,color:'#64748b'}}>{it.brand}</div>}
                             <div style={{fontSize:12,color:'#475569',marginTop:2}}>値札 {yen(it.tagPrice)}　<b style={{color:'#0f172a'}}>仕入れ値 {yen(it.allocatedPrice)}</b></div>
+                            </React.Fragment>)}
                           </div>
                         </div>
                       ))}
