@@ -7259,6 +7259,7 @@ const InventoryTab = () => {
   const proposalsShown = propTab === 'held' ? proposalsHeld : proposalsOpen;
   const proposalsStoreOpen = proposalsShown.filter(pr => pr.type !== 'saleLink' && pr.type !== 'bundleSale' && pr.type !== 'purchaseDraft');
   const proposalsDraftOpen = proposalsShown.filter(pr => pr.type === 'purchaseDraft' && pr.draft && typeof pr.draft === 'object');
+  const [propKindPicked, setPropKindPicked] = React.useState(null);   // 仕入れ／売上の切り替え（選ぶまでは null＝自動）
   const [draftCat, setDraftCat] = React.useState({});   // 登録前に直したカテゴリ {提案id: カテゴリ}
   // まとめ売りも同じ一覧に入れて売上日の新しい順に並べる（別欄だと一番下までスクロールが必要だった 2026-10-31）
   const proposalsLinkOpen = proposalsShown.filter(pr => pr.type === 'saleLink' || pr.type === 'bundleSale')
@@ -8904,6 +8905,17 @@ const InventoryTab = () => {
               <button style={tabBtn('held','', isHeldTab)} onClick={() => setPropTab('held')}>⏸ 保留 ({proposalsHeld.length})</button>
             </div>
           );
+          const purchaseCnt = proposalsDraftOpen.length + proposalsStoreOpen.length;
+          const saleCnt = proposalsLinkOpen.length;
+          const kind = propKindPicked || (purchaseCnt > 0 ? 'purchase' : 'sale');
+          const kindBtn = (key, label, on) => ({flex:1,minHeight:44,padding:'8px 10px',border:'none',borderRadius:10,fontWeight:800,fontSize:14,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent',
+            background: on ? '#166534' : '#f1f5f9', color: on ? 'white' : '#475569', outline: on ? 'none' : '1px solid #cbd5e1'});
+          const kindTabs = (
+            <div style={{display:'flex',gap:8}}>
+              <button style={kindBtn('purchase','', kind === 'purchase')} onClick={() => setPropKindPicked('purchase')}>🛒 仕入れ ({purchaseCnt})</button>
+              <button style={kindBtn('sale','', kind === 'sale')} onClick={() => setPropKindPicked('sale')}>💴 売上 ({saleCnt})</button>
+            </div>
+          );
           if (proposalsShown.length === 0) return (
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
               {propTabs}
@@ -8917,8 +8929,14 @@ const InventoryTab = () => {
           return (
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
               {propTabs}
+              {kindTabs}
               {isHeldTab && <div style={{fontSize:12,color:'#64748b',padding:'0 2px'}}>あとで確認するために置いておく場所です。消えずに残ります。</div>}
-              {proposalsDraftOpen.map(pr => {
+              {(kind === 'purchase' ? purchaseCnt : saleCnt) === 0 && (
+                <div className="card" style={{padding:24,textAlign:'center',color:'#999'}}>
+                  {kind === 'purchase' ? (isHeldTab ? '保留中の仕入れはありません' : '仕入れの確認待ちはありません') : (isHeldTab ? '保留中の売上はありません' : '売上の確認待ちはありません')}
+                </div>
+              )}
+              {kind === 'purchase' && proposalsDraftOpen.map(pr => {
                 const d = pr.draft || {};
                 const ph = Array.isArray(d.photos) ? d.photos[0] : null;
                 const tot = Math.round(Number(d.purchasePrice)) || 0;
@@ -8954,7 +8972,7 @@ const InventoryTab = () => {
                   </div>
                 );
               })}
-              {proposalsStoreOpen.map(pr => {
+              {kind === 'purchase' && proposalsStoreOpen.map(pr => {
                 const sum = proposalSum(pr), pay = Math.round(Number(pr.payment?.amount) || 0);
                 const ok = sum === pay;
                 const prob = proposalProblem(pr);
@@ -9132,12 +9150,12 @@ const InventoryTab = () => {
                   </div>
                 );
               })}
-              {proposalsLinkOpen.length > 0 && (
+              {kind === 'sale' && proposalsLinkOpen.length > 0 && (
                 <div style={{fontSize:13,fontWeight:800,color:'#1d4ed8',margin:'8px 2px 0',padding:'6px 10px',background:'#dbeafe',borderRadius:8}}>
                   🔗 売上の紐付け（{proposalsLinkOpen.length}件）
                 </div>
               )}
-              {proposalsLinkOpen.map(pr => {
+              {kind === 'sale' && proposalsLinkOpen.map(pr => {
                 if (pr.type === 'bundleSale') return (
                   <BundleSaleCard key={pr.id} pr={pr} data={data} yen={yen} cs={confStyle(pr.confidence)} btn={btn} busy={proposalBusy} isHeldTab={isHeldTab} toast={toast}
                     onApprove={(picks) => approveBundleSale(pr, picks)} onReject={() => rejectSaleLink(pr)} onHold={(h) => holdProposal(pr, h)} />
