@@ -16,7 +16,10 @@
 決まり（2026-11-19）
   - すでにサイズ（表記サイズ・採寸のどれか）が入っている在庫と、売却済みは触らない。
   - 裄丈・胸回り（一周の長さ）は項目が無いので入れない。半分にして身幅にしない。
-  - エルミは採寸が画像にしか無い。タイトルの「○cm丈」を総丈、「○号」を表記サイズに入れる。
+  - エルミは採寸が写真にある：商品ページの最後の写真が手書きの採寸表（①着丈 ②袖丈 ③肩幅 ④身幅 ⑤裄丈 ⑥裾幅）。
+    `lines` の出力に「採寸表の写真」と出る画像を Read で見て、着丈→length・袖丈→sleeve・肩幅→shoulder・身幅→chest に入れる。
+    タイトルの「○cm丈」は着丈（総丈ではない）。「○号」は表記サイズ。検算：タイトルの丈＝①着丈、胸回り÷2＝④身幅。
+    字が薄くて読み切れない数字は入れずに、報告に書く。
   - まとめ売り（○点セット）は入れない。ページに記載が無い物も入れない。
   - クラウドの全件読み込みは lines で1回（10分使い回し）、set --apply で1回。書いた後は verify_cloud.py --wait 300。
 """
@@ -66,6 +69,15 @@ def page_lines(aid):
     txt = re.sub(r'<[^>]+>', ' ', txt)
     lines = [re.sub(r'[ \t　]+', ' ', x).strip() for x in re.split(r'[\n\r]+', txt)]
     keep = [x for x in lines if x and len(x) < 220 and not x.startswith('[') and re.search(WORDS, x) and not re.search(NOISE, x)]
+    if 'エルミ' in json.dumps(it.get('seller') or {}, ensure_ascii=False) and it.get('img'):
+        # エルミは最後の写真が手書きの採寸表。取っておいて、場所を行の先頭に出す
+        f2 = PAGES + aid + '_sheet.jpg'
+        try:
+            if not os.path.exists(f2):
+                urllib.request.urlretrieve(it['img'][-1]['image'], f2)
+            keep.insert(0, '採寸表の写真（Read で見る）: ' + f2)
+        except Exception as e:
+            keep.insert(0, '採寸表の写真を取れず: %s' % e)
     return it.get('title') or '', keep
 
 
