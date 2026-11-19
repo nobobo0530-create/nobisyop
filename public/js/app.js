@@ -1927,6 +1927,16 @@ const generateMgmtNo = (purchaseDate, listDate, purchasePrice, divisor = 100) =>
   return `${pd}-${ld}-${a}-${b}`;
 };
 
+// 出品日・仕入れ日・仕入れ値が編集画面の外で変わった時の管理番号（編集画面と同じ決まりで作り直す。2026-11-19 ユーザー指定：出品日を管理番号に反映）。
+// 作り直すのは自動で付いた番号（今の値から作った番号か、出品日なしの 0000 の番号）だけ。手で付けた番号・番号なし・売却済みはそのまま返す
+const mgmtNoAfterChange = (before, after, divisor = 100) => {
+  const tot = (x) => Number(x && x.purchasePrice) || 0;
+  if (!before || !before.mgmtNo || before.status === 'sold' || !before.purchaseDate || tot(before) <= 0 || !after.purchaseDate || tot(after) <= 0) return before ? before.mgmtNo : undefined;
+  const wasAuto = before.mgmtNo === generateMgmtNo(before.purchaseDate, before.listDate || '', tot(before), divisor)
+    || before.mgmtNo === generateMgmtNo(before.purchaseDate, '', tot(before), divisor);
+  return wasAuto ? generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor) : before.mgmtNo;
+};
+
 // 受取金額(netAmount)が分かる売上は「受取 − 仕入れ値」が正確な利益（ヤフオクの送料差額も含まれる）。無ければ null
 const saleRev = (s) => (Number(s && s.salePrice) || 0) + Math.max(0, Number(s && s.buyerShipReceived) || 0);
 const netProfitOf = (sale, pp) => {
@@ -8196,16 +8206,8 @@ const InventoryTab = () => {
     const updated = data.inventory.map(i => {
       if (i.id !== selected.id) return i;
       merged = { ...i, ...patch };
-      // 出品日・仕入れ日・仕入れ値をここで直した時は、管理番号も編集画面と同じ決まりで作り直す（2026-11-19：出品日を入れても 0000 のままだった）。
-      // 作り直すのは自動で付いた番号だけ。手で付けた番号と売却済みは触らない。出品中で 0000 の番号は、出品文に書いてある番号とずれるので触らない
-      if (i.status !== 'sold' && ['listDate', 'purchaseDate', 'purchasePrice'].some(k => k in patch)) {
-        const div = data.settings?.priceSplitDivisor || 100;
-        const tot = (x) => Number(x.purchasePrice) || 0;
-        const wasAuto = !i.mgmtNo || (i.purchaseDate && tot(i) > 0 && (
-          i.mgmtNo === generateMgmtNo(i.purchaseDate, i.listDate || '', tot(i), div)
-          || (i.status === 'unlisted' && i.mgmtNo === generateMgmtNo(i.purchaseDate, '', tot(i), div))));
-        if (wasAuto && merged.purchaseDate && tot(merged) > 0) merged.mgmtNo = generateMgmtNo(merged.purchaseDate, merged.listDate || '', tot(merged), div);
-      }
+      // 出品日・仕入れ日・仕入れ値をここで直した時は、管理番号も作り直す（2026-11-19：出品日を入れても 0000 のままだった）
+      if (['listDate', 'purchaseDate', 'purchasePrice'].some(k => k in patch)) merged.mgmtNo = mgmtNoAfterChange(i, merged, data.settings?.priceSplitDivisor || 100);
       return merged;
     });
     if (!merged) return;
@@ -8654,8 +8656,9 @@ const InventoryTab = () => {
     const prevMap = {};
     const updated = cur.inventory.map(i => {
       if (!idSet.has(i.id) || i.status !== 'unlisted') return i;
-      prevMap[i.id] = { status: i.status, listDate: i.listDate, platform: i.platform, soldAt: i.soldAt };
+      prevMap[i.id] = { status: i.status, listDate: i.listDate, platform: i.platform, soldAt: i.soldAt, mgmtNo: i.mgmtNo };
       const n = { ...i, status: 'listed', soldAt: undefined, listDate: listDate || i.listDate || today() };
+      n.mgmtNo = mgmtNoAfterChange(i, n, cur.settings?.priceSplitDivisor || 100);
       if (platform) n.platform = platform;
       return n;
     });
@@ -8667,7 +8670,7 @@ const InventoryTab = () => {
       setData({ ...c2, inventory: c2.inventory.map(i => {
         const p = prevMap[i.id];
         if (!p || i.status !== 'listed') return i;
-        const r = { ...i, status: p.status, listDate: p.listDate, soldAt: p.soldAt };
+        const r = { ...i, status: p.status, listDate: p.listDate, soldAt: p.soldAt, mgmtNo: p.mgmtNo };
         if (p.platform === undefined) delete r.platform; else r.platform = p.platform;
         return r;
       }) });
