@@ -6398,11 +6398,12 @@ const ItemThumbnail = ({ thumbId, thumbDataUrl, size = 70, fallback = '📦' }) 
 
 // ============================================================
 // 採寸モデル（登録/編集画面と入荷タブの採寸シートで共通）
-// item.measure = { type:'洋服'|'毛皮類'|'バッグ'|'小物類', totalLength,length,chest,shoulder,sleeve, h,w,d,strapMin,strapMax,handle }（数字文字列。空は未入力）
+// item.measure = { type:'洋服'|'毛皮類'|'バッグ'|'小物類', totalLength,length,chest,shoulder,sleeve,yuki, h,w,d,strapMin,strapMax,handle }（数字文字列。空は未入力）
+// yuki=裄丈：出品者が肩幅・袖丈の代わりに裄丈だけ測っている毛皮があるため（2026-11-19）。旧項目 sizeM1〜4 には入れない
 // 旧項目 sizeM1〜4 も書き続ける：洋服/毛皮=着丈/脇下身幅/肩幅/袖丈、バッグ/小物=タテ/ヨコ/マチ/ショルダー(最長優先)
 // ============================================================
 const MEASURE_TYPES = ['バッグ', '小物類', '洋服', '毛皮類'];
-const MEASURE_CLOTH_FIELDS = [['totalLength', '総丈'], ['length', '着丈'], ['chest', '脇下身幅'], ['shoulder', '肩幅'], ['sleeve', '袖丈']];
+const MEASURE_CLOTH_FIELDS = [['totalLength', '総丈'], ['length', '着丈'], ['chest', '脇下身幅'], ['shoulder', '肩幅'], ['sleeve', '袖丈'], ['yuki', '裄丈']];
 const MEASURE_BAG_FIELDS = [['h', 'タテ'], ['w', 'ヨコ'], ['d', 'マチ']];
 const measureIsCloth = (t) => t === '洋服' || t === '毛皮類';
 const measureTypeFromCategory = (c) => c === '毛皮' ? '毛皮類' : c === 'バッグ' ? 'バッグ' : c === '小物' ? '小物類' : '洋服';

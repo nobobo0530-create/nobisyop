@@ -11,11 +11,12 @@
      python3 ~/nobushop-pwa/tools/yahoo_size.py set sizes.json [--apply]
 
 項目（アプリの採寸シートと同じ）
-  洋服・毛皮：totalLength 総丈 / length 着丈 / chest 脇下身幅 / shoulder 肩幅 / sleeve 袖丈
+  洋服・毛皮：totalLength 総丈 / length 着丈 / chest 脇下身幅 / shoulder 肩幅 / sleeve 袖丈 / yuki 裄丈
   バッグ・小物：h タテ / w ヨコ / d マチ / handle 持ち手 / strapMin〜strapMax ショルダー
 決まり（2026-11-19）
   - すでにサイズ（表記サイズ・採寸のどれか）が入っている在庫と、売却済みは触らない。
-  - 裄丈・胸回り（一周の長さ）は項目が無いので入れない。半分にして身幅にしない。
+  - 裄丈は yuki に入れる（出品者が肩幅・袖丈の代わりに裄丈だけ測っている時。2026-11-19 ユーザー指定）。
+  - 胸回り（一周の長さ）は項目が無いので入れない。半分にして身幅にしない。
   - エルミは採寸が写真にある：商品ページの最後の写真が手書きの採寸表（①着丈 ②袖丈 ③肩幅 ④身幅 ⑤裄丈 ⑥裾幅）。
     `lines` の出力に「採寸表の写真」と出る画像を Read で見て、着丈→length・袖丈→sleeve・肩幅→shoulder・身幅→chest に入れる。
     タイトルの「○cm丈」は着丈（総丈ではない）。「○号」は表記サイズ。検算：タイトルの丈＝①着丈、胸回り÷2＝④身幅。
@@ -37,7 +38,7 @@ import cloud_get  # noqa: E402
 
 UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15'
 PAGES = os.path.expanduser('~/Documents/nobushop_mail/yahoo_pages/')
-CLOTH = ('totalLength', 'length', 'chest', 'shoulder', 'sleeve')
+CLOTH = ('totalLength', 'length', 'chest', 'shoulder', 'sleeve', 'yuki')
 BAG = ('h', 'w', 'd', 'handle', 'strapMin', 'strapMax')
 WORDS = r'cm|ｃｍ|㎝|センチ|丈|身幅|肩幅|袖|胸|サイズ|ｻｲｽﾞ|号|タテ|ヨコ|マチ|縦|横|高さ|幅|持ち手|ハンドル|ショルダー|ストラップ|W\s*[:：]?\s*約?\d|H\s*[:：]?\s*約?\d|D\s*[:：]?\s*約?\d'
 NOISE = r'同梱|返品|発送|着払|トルソー|管理番号|古物|サイズ感|誤差|地域|^\d+サイズ$|事業所|領収書|配送'
