@@ -8196,11 +8196,21 @@ const InventoryTab = () => {
     const updated = data.inventory.map(i => {
       if (i.id !== selected.id) return i;
       merged = { ...i, ...patch };
+      // 出品日・仕入れ日・仕入れ値をここで直した時は、管理番号も編集画面と同じ決まりで作り直す（2026-11-19：出品日を入れても 0000 のままだった）。
+      // 作り直すのは自動で付いた番号だけ。手で付けた番号と売却済みは触らない。出品中で 0000 の番号は、出品文に書いてある番号とずれるので触らない
+      if (i.status !== 'sold' && ['listDate', 'purchaseDate', 'purchasePrice'].some(k => k in patch)) {
+        const div = data.settings?.priceSplitDivisor || 100;
+        const tot = (x) => Number(x.purchasePrice) || 0;
+        const wasAuto = !i.mgmtNo || (i.purchaseDate && tot(i) > 0 && (
+          i.mgmtNo === generateMgmtNo(i.purchaseDate, i.listDate || '', tot(i), div)
+          || (i.status === 'unlisted' && i.mgmtNo === generateMgmtNo(i.purchaseDate, '', tot(i), div))));
+        if (wasAuto && merged.purchaseDate && tot(merged) > 0) merged.mgmtNo = generateMgmtNo(merged.purchaseDate, merged.listDate || '', tot(merged), div);
+      }
       return merged;
     });
     if (!merged) return;
     setData({ ...data, inventory: updated });
-    setSelected(prev => (prev && prev.id === merged.id) ? { ...prev, ...patch } : prev);
+    setSelected(prev => (prev && prev.id === merged.id) ? { ...prev, ...patch, mgmtNo: merged.mgmtNo } : prev);
     toast('✅ 保存しました');
   };
   // 仕入れ値の内訳（送料・クーポン等）があるか。ある場合はタップ編集せず通常の編集フォームへ
