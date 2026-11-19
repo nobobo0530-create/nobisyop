@@ -48,6 +48,15 @@ def page_info(aid):
     h = h.decode('utf8', 'ignore')
     t = og(h, 'title')
     t = t.replace(' - Yahoo!オークション', '').strip() if t else None
+    # 紹介用の題名（上の t）は長いと末尾が「...」で切れる。品名にはページの題名の全文を使う（2026-11-19 ユーザー指定：コピーしてヤフオクで探すため）
+    try:
+        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S)
+        ft = json.loads(m.group(1))['props']['pageProps']['initialState']['item']['detail']['item'].get('title') if m else None
+        ft = re.sub(r'[ \u3000]+', ' ', ft or '').strip()
+        if ft:
+            t = ft
+    except Exception:
+        pass
     img = og(h, 'image')
     b = fetch(img) if img else None
     uri = thumb(b) if b and len(b) >= 500 else None

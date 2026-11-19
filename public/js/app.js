@@ -6485,6 +6485,9 @@ const MeasureForm = ({ value, onChange, big }) => {
 // ============================================================
 const isItemArrived = (i) => !!i.arrivedAt || (i.status && i.status !== 'unlisted');
 const isOnlinePurchase = (i) => i.purchaseType !== 'store' && (i.purchaseType === 'online' || i.purchaseStoreType === 'yahoo' || !!i.yahooAuctionId);
+// ヤフオク仕入れの商品ページ。番号の欄が空の古い在庫は、品名・メモに書かれた番号から拾う（確認待ちの「ヤフオクで見る」と同じ決まり）
+const yahooAidOf = (it) => String((it && it.yahooAuctionId) || '').trim() || ((String((it && it.productName) || '') + ' ' + String((it && it.notes) || '')).match(/\b[a-z]\d{9,10}\b/i) || [''])[0];
+const yahooItemUrl = (it) => { const a = yahooAidOf(it); return a ? `https://page.auctions.yahoo.co.jp/jp/auction/${a}` : ''; };
 // 店名の照合用：全角半角・かな・空白・「ヤフオク！ショップ」「ヤフーショップ」などの揺れを無視
 const normShop = (s) => searchFold(s)
   .replace(/(やふおく|やふー|yahoo)!?(しょっぷ|shop)?/g, '')
@@ -6556,7 +6559,12 @@ const MeasureSheet = ({ item, boxItems, position, onClose, onSave }) => {
         </div>
         <div style={{fontSize:12,fontWeight:800,color:'#4338ca',textAlign:'center'}}>{item.purchaseStore || '仕入れ先未設定'}</div>
         <div style={{fontSize:15,fontWeight:800,textAlign:'center',margin:'2px 0 2px'}}>{item.bundleLabel ? item.bundleLabel + ' ' : ''}{item.productName || '(名称なし)'}</div>
-        <div style={{fontSize:11,color:'#6b7280',textAlign:'center',marginBottom:12}}>{item.mgmtNo || ''}{boxItems.length > 1 ? `　この箱 ${position + 1}/${boxItems.length}` : ''}</div>
+        <div style={{fontSize:11,color:'#6b7280',textAlign:'center',marginBottom: yahooItemUrl(item) ? 6 : 12}}>{item.mgmtNo || ''}{boxItems.length > 1 ? `　この箱 ${position + 1}/${boxItems.length}` : ''}</div>
+        {yahooItemUrl(item) && (
+          <div style={{textAlign:'center',marginBottom:12}}>
+            <a href={yahooItemUrl(item)} target="_blank" rel="noopener noreferrer" style={{display:'inline-flex',alignItems:'center',minHeight:40,padding:'2px 16px',borderRadius:99,border:'1.5px solid #fca5a5',background:'white',color:'#b91c1c',fontSize:13,fontWeight:700,textDecoration:'none'}}>🔗 ヤフオクで見る</a>
+          </div>
+        )}
         <div style={{fontSize:11,color:'#999',marginBottom:4}}>表記サイズ（タグ）</div>
         <input className="input-field" value={tag} onChange={e => setTag(e.target.value)} placeholder="例: M / L / 38" style={{marginBottom:10,minHeight:48,fontSize:18}}/>
         <div style={{marginBottom:14}}><MeasureForm value={meas} onChange={setMeas} big/></div>
@@ -9322,7 +9330,7 @@ const InventoryTab = () => {
                           </div>
                           {(() => {
                             const pill = {display:'inline-flex',alignItems:'center',minHeight:28,padding:'2px 10px',borderRadius:99,border:'1px solid #cbd5e1',background:'white',color:'#334155',fontSize:11,fontWeight:700,textDecoration:'none',cursor:'pointer',WebkitTapHighlightColor:'transparent'};
-                            const aid = String(it.yahooAuctionId || '').trim() || ((String(it.productName || '') + ' ' + String(it.notes || '')).match(/\b[a-z]\d{9,10}\b/i) || [''])[0];
+                            const aid = yahooAidOf(it);
                             return (
                               <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginTop:6}}>
                                 {it.purchaseStore && <span style={{fontSize:11,color:'#475569'}}>🛒 {it.purchaseStore}</span>}
@@ -10598,6 +10606,21 @@ const InventoryTab = () => {
                       <button style={{...cb,border:'1.5px solid #64748b',background:'#f8fafc',color:'#334155'}}
                         onClick={() => startSplitFromDetail(selected)}>✂️ 分割登録</button>
                     )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 品名の全文＋タイトルコピー＋仕入れたヤフオクのページへ（2026-11-19：品物と仕入れを見比べる時に1タッチで開く） */}
+            {(selected.productName || yahooItemUrl(selected)) && (() => {
+              const yurl = yahooItemUrl(selected);
+              const pill = {flex:1,display:'inline-flex',alignItems:'center',justifyContent:'center',minHeight:44,padding:'4px 10px',borderRadius:10,border:'1.5px solid #cbd5e1',background:'white',color:'#334155',fontSize:13,fontWeight:700,textDecoration:'none',cursor:'pointer',boxSizing:'border-box',WebkitTapHighlightColor:'transparent'};
+              return (
+                <div style={{marginBottom:14}}>
+                  {selected.productName && <div style={{fontSize:14,fontWeight:700,color:'#111',lineHeight:1.45,wordBreak:'break-all',userSelect:'text',WebkitUserSelect:'text'}}>{selected.productName}</div>}
+                  <div style={{display:'flex',gap:8,marginTop:8}}>
+                    {selected.productName && <button style={pill} onClick={() => copyToClipboard(selected.productName).then(ok => toast(ok ? '📋 タイトルをコピー' : 'コピー失敗'))}>📋 タイトルをコピー</button>}
+                    {yurl && <a style={{...pill,borderColor:'#fca5a5',color:'#b91c1c'}} href={yurl} target="_blank" rel="noopener noreferrer">🔗 ヤフオクで見る</a>}
                   </div>
                 </div>
               );
