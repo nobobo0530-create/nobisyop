@@ -6984,11 +6984,20 @@ const PhotoSlide = ({ photoRef }) => {
   // ★ 初期表示: medDataUrl(700px)→thumbDataUrl(300px)→null の優先順で表示
   const [url, setUrl] = React.useState(photoRef?.medDataUrl || photoRef?.thumbDataUrl || null);
   React.useEffect(() => {
-    if (!photoRef?.id) return;
-    let objectUrl = null;
+    if (!photoRef?.id && !photoRef?.thumbId) return;
+    let objectUrl = null, dead = false;
+    // 端末に保存してある小さい写真（一覧に出ているのと同じ物）。ヤフオク仕入れなど、元の写真が端末に無い在庫はこれで出す（2026-11-19）
+    const useThumb = async () => {
+      if (!photoRef.thumbId) return;
+      try {
+        const tb = await getPhoto(photoRef.thumbId);
+        if (tb && !dead) { objectUrl = blobToURL(tb); setUrl(objectUrl); }
+      } catch(e) { /* ignore */ }
+    };
     (async () => {
       try {
-        const blob = await getPhoto(photoRef.id);
+        const blob = photoRef.id ? await getPhoto(photoRef.id) : null;
+        if (dead) return;
         if (blob) {
           objectUrl = blobToURL(blob);
           setUrl(objectUrl);
@@ -6998,16 +7007,20 @@ const PhotoSlide = ({ photoRef }) => {
         } else if (photoRef.thumbDataUrl) {
           // さらになければサムネイルで代替
           setUrl(photoRef.thumbDataUrl);
+        } else {
+          await useThumb();
         }
       } catch(e) {
         if (photoRef.medDataUrl) setUrl(photoRef.medDataUrl);
         else if (photoRef.thumbDataUrl) setUrl(photoRef.thumbDataUrl);
+        else await useThumb();
       }
     })();
     return () => {
+      dead = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [photoRef?.id]);
+  }, [photoRef?.id, photoRef?.thumbId]);
 
   const [zoom, setZoom] = React.useState(false);
   if (!url) return null;
