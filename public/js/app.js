@@ -1654,6 +1654,18 @@ const applySplitRegistration = (data, orig, splitItems, common, ts) => {
   if (built.error) return { error: built.error };
   const bundleGroupId = `bundle_${ts}`;
   const nowIso = new Date().toISOString();
+  // 管理番号：子は1点ずつ、分割後の金額で作る（2026-11-21 ユーザー指定。前は先頭の子だけが分割前の合計の番号を引き継ぎ、残りは番号なしだった）
+  //   元の番号が手で付けた物（自動の形でない）の時だけ、先頭の子がそのまま引き継ぐ
+  const mgDiv = data.settings?.priceSplitDivisor || 100;
+  const origTotal = Number(orig.purchasePrice) || 0;
+  const origNoIsAuto = !orig.mgmtNo || (!!orig.purchaseDate && origTotal > 0
+    && [orig.listDate || '', ''].some(ld => orig.mgmtNo === generateMgmtNo(orig.purchaseDate, ld, origTotal, mgDiv)));
+  const childMgmtNo = (c, idx) => {
+    if (idx === 0 && !origNoIsAuto) return orig.mgmtNo;
+    const pd = (common && common.purchaseDate) || c.purchaseDate || '';
+    const p = Number(c.purchasePrice) || 0;
+    return pd && p > 0 ? generateMgmtNo(pd, '', p, mgDiv) : null;
+  };
   const newItems = built.children.map((c, idx) => {
     const si = splitItems[idx] || {};
     return {
@@ -1664,7 +1676,7 @@ const applySplitRegistration = (data, orig, splitItems, common, ts) => {
       photos: Array.isArray(si.photos) ? si.photos : (idx === 0 ? (orig.photos || []) : []),
       // 1点だけの分割は新しいまとめグループを作らない（元がグループ所属ならそのまま維持）
       ...(splitItems.length > 1 ? { bundleGroup: bundleGroupId, bundleType: 'set', bundleLabel: `商品${String.fromCharCode(65 + idx)}` } : {}),
-      mgmtNo: idx === 0 ? orig.mgmtNo : null,
+      mgmtNo: childMgmtNo(c, idx),
       status: 'unlisted',
       listDate: '',
       createdAt: new Date(ts + idx).toISOString(),
@@ -1949,11 +1961,19 @@ const generateMgmtNo = (purchaseDate, listDate, purchasePrice, divisor = 100) =>
 };
 
 // 出品日・仕入れ日・仕入れ値が編集画面の外で変わった時の管理番号（編集画面と同じ決まりで作り直す。2026-11-19 ユーザー指定：出品日を管理番号に反映）。
-// 作り直すのは自動で付いた番号（今の値から作った番号か、出品日なしの 0000 の番号）だけ。手で付けた番号・番号なし・売却済みはそのまま返す
+// 作り直すのは自動で付いた番号（今の値から作った番号か、出品日なしの 0000 の番号）だけ。手で付けた番号・売却済みはそのまま返す
+// 番号が無い物は、仕入れ日と仕入れ値があれば新しく作る（2026-11-21：分割した商品に出品日を入れても番号ができなかった）
 const mgmtNoAfterChange = (before, after, divisor = 100) => {
   const tot = (x) => Number(x && x.purchasePrice) || 0;
-  if (!before || !before.mgmtNo || before.status === 'sold' || !before.purchaseDate || tot(before) <= 0 || !after.purchaseDate || tot(after) <= 0) return before ? before.mgmtNo : undefined;
-  const wasAuto = before.mgmtNo === generateMgmtNo(before.purchaseDate, before.listDate || '', tot(before), divisor)
+  if (!before || before.status === 'sold' || !after.purchaseDate || tot(after) <= 0) return before ? before.mgmtNo : undefined;
+  if (!before.mgmtNo) return generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor);
+  if (!before.purchaseDate || tot(before) <= 0) return before.mgmtNo;
+  // 分割した先頭の子に残っている「分割前の合計」の番号も、自動の番号として作り直す（2026-11-21：金額は分割後の額にする）
+  const so = before.splitOrigin;
+  const soTot = Number(so && so.purchasePrice) || 0;
+  const wasOriginAuto = !!so && soTot > 0 && [so.purchaseDate, before.purchaseDate].filter(Boolean)
+    .some(pd => before.mgmtNo === generateMgmtNo(pd, '', soTot, divisor));
+  const wasAuto = wasOriginAuto || before.mgmtNo === generateMgmtNo(before.purchaseDate, before.listDate || '', tot(before), divisor)
     || before.mgmtNo === generateMgmtNo(before.purchaseDate, '', tot(before), divisor);
   return wasAuto ? generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor) : before.mgmtNo;
 };
@@ -4535,7 +4555,8 @@ const PurchaseTab = () => {
             aiTypeDetection: aiTypeDetection || null,
             listPrice: Number(form.listPrice) || 0,
             photos: idx === 0 ? photoRefs : [],
-            mgmtNo: idx === 0 ? mgmtNo : null,
+            // 管理番号は1点ずつ、その商品の金額で作る（2026-11-21。前は先頭だけが合計の番号で、残りは番号なしだった）
+            mgmtNo: form.purchaseDate && bPrice > 0 ? generateMgmtNo(form.purchaseDate, '', bPrice, divisor) : (idx === 0 ? mgmtNo : null),
             status: 'unlisted',
             bundleGroup: bundleGroupId,
             bundleLabel: bi.label,
@@ -10996,7 +11017,24 @@ const InventoryTab = () => {
                       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginTop:8}}>
                         {mk(sizeText, 'サイズ', '⚠️ サイズ・採寸がありません')}
                         {mk(titleText, 'タイトル', '⚠️ タイトルがありません')}
-                        {mk(mgmtText, '管理番号', '⚠️ 管理番号がありません')}
+                        {(() => {
+                          // 番号が無くても、仕入れ日と仕入れ値があれば押した時に作って保存し、コピーする（2026-11-21）
+                          const canMake = !mgmtText && selected.status !== 'sold' && !!selected.purchaseDate && Number(selected.purchasePrice) > 0;
+                          if (!canMake) return mk(mgmtText, '管理番号', '⚠️ 管理番号がありません（仕入れ日と仕入れ値を入れると作れます）');
+                          return (
+                            <button
+                              onClick={() => {
+                                const no = generateMgmtNo(selected.purchaseDate, selected.listDate || '', Number(selected.purchasePrice), data.settings?.priceSplitDivisor || 100);
+                                saveInlineField({ mgmtNo: no });
+                                copyToClipboard(no).then(ok => toast(ok ? `📋 管理番号を作ってコピーしました\n${no}` : `管理番号を作りました\n${no}`));
+                              }}
+                              style={{padding:'10px 4px',borderRadius:10,border:'1.5px solid #5eead4',background:'#f0fdfa',
+                                fontSize:12,fontWeight:700,cursor:'pointer',color:'#115e59',whiteSpace:'nowrap',
+                                WebkitTapHighlightColor:'transparent'}}>
+                              ✨ 管理番号を作る
+                            </button>
+                          );
+                        })()}
                       </div>
                     );
                   })()}
