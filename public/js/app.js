@@ -1664,7 +1664,10 @@ const applySplitRegistration = (data, orig, splitItems, common, ts) => {
     if (idx === 0 && !origNoIsAuto) return orig.mgmtNo;
     const pd = (common && common.purchaseDate) || c.purchaseDate || '';
     const p = Number(c.purchasePrice) || 0;
-    return pd && p > 0 ? generateMgmtNo(pd, '', p, mgDiv) : null;
+    if (!pd || p <= 0) return null;
+    // 同じ金額の兄弟がいる時だけ、末尾に「商品B」の B を付ける（番号が同じになるのを防ぐ）
+    const clash = built.children.some((o, k) => k !== idx && (Number(o.purchasePrice) || 0) === p);
+    return generateMgmtNo(pd, '', p, mgDiv) + (clash && idx < 26 ? '-' + String.fromCharCode(65 + idx) : '');
   };
   const newItems = built.children.map((c, idx) => {
     const si = splitItems[idx] || {};
@@ -1960,22 +1963,57 @@ const generateMgmtNo = (purchaseDate, listDate, purchasePrice, divisor = 100) =>
   return `${pd}-${ld}-${a}-${b}`;
 };
 
+// ★ 管理番号の末尾の文字（2026-11-21 ユーザー了承）
+//   まとめを分けた兄弟（同じ分割元。分割でなければ同じまとめ買い）の中に、仕入れ日と仕入れ値が同じ物がほかにあると番号が同じになる。
+//   その時だけ末尾に「-B」のような文字を付けて区別する。文字は「商品B」の B。名前に文字が無い時は兄弟の作成順（A,B,C…）
+const mgmtNoParts = (no) => {
+  const m = /^(.*\d)-([A-Z])$/.exec(String(no || ''));
+  return m ? { base: m[1], suf: m[2] } : { base: String(no || ''), suf: '' };
+};
+const mgmtSiblingSuffix = (item, inventory) => {
+  if (!item) return '';
+  const oid = item.splitOrigin && item.splitOrigin.id;
+  const bg = item.bundleGroup;
+  if (!oid && !bg) return '';
+  const sibs = (inventory || []).filter(i => i && (oid ? (i.splitOrigin && i.splitOrigin.id === oid) : (!i.splitOrigin && i.bundleGroup === bg)));
+  const price = Number(item.purchasePrice) || 0;
+  const clash = sibs.some(i => i.id !== item.id && (i.purchaseDate || '') === (item.purchaseDate || '') && (Number(i.purchasePrice) || 0) === price);
+  if (!clash) return '';
+  const m = /^(?:商品)?([A-Z])$/.exec(String(item.bundleLabel || ''));
+  if (m) return m[1];
+  const ord = [...sibs.filter(i => i.id !== item.id), item].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')) || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  const k = ord.findIndex(i => i.id === item.id);
+  return k >= 0 && k < 26 ? String.fromCharCode(65 + k) : '';
+};
+// 仕入れ日・出品日・仕入れ値から番号を作り、兄弟とかぶる時は文字を付ける
+const mgmtNoFor = (item, inventory, divisor = 100) => {
+  const p = Number(item && item.purchasePrice) || 0;
+  if (!item || !item.purchaseDate || p <= 0) return null;
+  const suf = mgmtSiblingSuffix(item, inventory);
+  return generateMgmtNo(item.purchaseDate, item.listDate || '', p, divisor) + (suf ? '-' + suf : '');
+};
+
 // 出品日・仕入れ日・仕入れ値が編集画面の外で変わった時の管理番号（編集画面と同じ決まりで作り直す。2026-11-19 ユーザー指定：出品日を管理番号に反映）。
 // 作り直すのは自動で付いた番号（今の値から作った番号か、出品日なしの 0000 の番号）だけ。手で付けた番号・売却済みはそのまま返す
 // 番号が無い物は、仕入れ日と仕入れ値があれば新しく作る（2026-11-21：分割した商品に出品日を入れても番号ができなかった）
-const mgmtNoAfterChange = (before, after, divisor = 100) => {
+// inventory を渡すと、兄弟と同じ番号になる時に末尾の文字を付ける。番号の本体が変わらない時は、今の番号をそのまま返す（出品ページに書いた番号を後から変えない）
+const mgmtNoAfterChange = (before, after, divisor = 100, inventory = null) => {
   const tot = (x) => Number(x && x.purchasePrice) || 0;
   if (!before || before.status === 'sold' || !after.purchaseDate || tot(after) <= 0) return before ? before.mgmtNo : undefined;
-  if (!before.mgmtNo) return generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor);
+  const cur = mgmtNoParts(before.mgmtNo);
+  const withSuffix = (no) => { const suf = (inventory ? mgmtSiblingSuffix(after, inventory) : '') || cur.suf; return no + (suf ? '-' + suf : ''); };
+  if (!before.mgmtNo) return withSuffix(generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor));
   if (!before.purchaseDate || tot(before) <= 0) return before.mgmtNo;
   // 分割した先頭の子に残っている「分割前の合計」の番号も、自動の番号として作り直す（2026-11-21：金額は分割後の額にする）
   const so = before.splitOrigin;
   const soTot = Number(so && so.purchasePrice) || 0;
   const wasOriginAuto = !!so && soTot > 0 && [so.purchaseDate, before.purchaseDate].filter(Boolean)
-    .some(pd => before.mgmtNo === generateMgmtNo(pd, '', soTot, divisor));
-  const wasAuto = wasOriginAuto || before.mgmtNo === generateMgmtNo(before.purchaseDate, before.listDate || '', tot(before), divisor)
-    || before.mgmtNo === generateMgmtNo(before.purchaseDate, '', tot(before), divisor);
-  return wasAuto ? generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor) : before.mgmtNo;
+    .some(pd => cur.base === generateMgmtNo(pd, '', soTot, divisor));
+  const wasAuto = wasOriginAuto || cur.base === generateMgmtNo(before.purchaseDate, before.listDate || '', tot(before), divisor)
+    || cur.base === generateMgmtNo(before.purchaseDate, '', tot(before), divisor);
+  if (!wasAuto) return before.mgmtNo;
+  const next = generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor);
+  return next === cur.base ? before.mgmtNo : withSuffix(next);
 };
 
 // 受取金額(netAmount)が分かる売上は「受取 − 仕入れ値」が正確な利益（ヤフオクの送料差額も含まれる）。無ければ null
@@ -4556,7 +4594,11 @@ const PurchaseTab = () => {
             listPrice: Number(form.listPrice) || 0,
             photos: idx === 0 ? photoRefs : [],
             // 管理番号は1点ずつ、その商品の金額で作る（2026-11-21。前は先頭だけが合計の番号で、残りは番号なしだった）
-            mgmtNo: form.purchaseDate && bPrice > 0 ? generateMgmtNo(form.purchaseDate, '', bPrice, divisor) : (idx === 0 ? mgmtNo : null),
+            //   同じ金額の商品がある時は、末尾に商品の文字（A,B…）を付けて区別する
+            mgmtNo: form.purchaseDate && bPrice > 0
+              ? generateMgmtNo(form.purchaseDate, '', bPrice, divisor)
+                + (/^[A-Z]$/.test(String(bi.label || '')) && newBundleItems.some(o => o !== bi && (Number(o.purchasePrice) || 0) === bPrice) ? '-' + bi.label : '')
+              : (idx === 0 ? mgmtNo : null),
             status: 'unlisted',
             bundleGroup: bundleGroupId,
             bundleLabel: bi.label,
@@ -8257,7 +8299,7 @@ const InventoryTab = () => {
       if (i.id !== selected.id) return i;
       merged = { ...i, ...patch };
       // 出品日・仕入れ日・仕入れ値をここで直した時は、管理番号も作り直す（2026-11-19：出品日を入れても 0000 のままだった）
-      if (['listDate', 'purchaseDate', 'purchasePrice'].some(k => k in patch)) merged.mgmtNo = mgmtNoAfterChange(i, merged, data.settings?.priceSplitDivisor || 100);
+      if (['listDate', 'purchaseDate', 'purchasePrice'].some(k => k in patch)) merged.mgmtNo = mgmtNoAfterChange(i, merged, data.settings?.priceSplitDivisor || 100, data.inventory);
       return merged;
     });
     if (!merged) return;
@@ -8708,7 +8750,7 @@ const InventoryTab = () => {
       if (!idSet.has(i.id) || i.status !== 'unlisted') return i;
       prevMap[i.id] = { status: i.status, listDate: i.listDate, platform: i.platform, soldAt: i.soldAt, mgmtNo: i.mgmtNo };
       const n = { ...i, status: 'listed', soldAt: undefined, listDate: listDate || i.listDate || today() };
-      n.mgmtNo = mgmtNoAfterChange(i, n, cur.settings?.priceSplitDivisor || 100);
+      n.mgmtNo = mgmtNoAfterChange(i, n, cur.settings?.priceSplitDivisor || 100, cur.inventory);
       if (platform) n.platform = platform;
       return n;
     });
@@ -11024,7 +11066,8 @@ const InventoryTab = () => {
                           return (
                             <button
                               onClick={() => {
-                                const no = generateMgmtNo(selected.purchaseDate, selected.listDate || '', Number(selected.purchasePrice), data.settings?.priceSplitDivisor || 100);
+                                const no = mgmtNoFor(selected, data.inventory, data.settings?.priceSplitDivisor || 100);
+                                if (!no) return;
                                 saveInlineField({ mgmtNo: no });
                                 copyToClipboard(no).then(ok => toast(ok ? `📋 管理番号を作ってコピーしました\n${no}` : `管理番号を作りました\n${no}`));
                               }}
