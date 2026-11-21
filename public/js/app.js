@@ -1508,6 +1508,27 @@ const SplitBadge = ({ it }) => {
     : it.bundleType === 'individual' ? `🧺 同じ注文で買った1点${lab}` : `📦 セット購入の1点${lab}`;
   return <span style={{background:'#ede9fe',color:'#5b21b6',borderRadius:99,padding:'0 6px',fontWeight:800}}>{text}</span>;
 };
+// ★ 分割で作った商品の「分割前」（題名と写真）。表示専用で、データには何も足さない（2026-11-21）
+//   写真は 分割前データが覚えている写真 → まとめ買いの表紙（分割元の写真の時だけ。小さい写真がクラウドにある）の順で探す
+const splitOriginOf = (it, settings) => {
+  const o = it && it.splitOrigin;
+  if (!o) return null;
+  const ref = (o.photos || []).find(p => p && (p.id || p.thumbId)) || null;
+  const cover = it.bundleGroup ? ((settings && settings.bundleCovers) || {})[it.bundleGroup] : null;
+  const coverIsOrigin = !!cover && (cover.source === 'splitOrigin'
+    || (!!ref && ((ref.id && cover.photoId === ref.id) || (ref.thumbId && cover.thumbId === ref.thumbId))));
+  const photo = ref ? { id: ref.id, thumbId: ref.thumbId, thumbDataUrl: (coverIsOrigin && cover.thumbDataUrl) || ref.thumbDataUrl || null }
+    : (coverIsOrigin && (cover.photoId || cover.thumbId || cover.thumbDataUrl) ? { id: cover.photoId, thumbId: cover.thumbId, thumbDataUrl: cover.thumbDataUrl || null } : null);
+  const name = String(o.productName || '').trim();
+  return { o, name, photo, placeholder: name.startsWith('店舗仕入れ（中身未入力）') };
+};
+const isSamePhotoRef = (a, b) => !!a && !!b && ((!!a.id && a.id === b.id) || (!!a.thumbId && a.thumbId === b.thumbId));
+// 一覧用：「✂️ 元：分割前の題名」を1行で（店舗仕入れの仮登録を分けた物は、題名が仮の名前なので出さない）
+const SplitOriginLine = ({ it, style }) => {
+  const name = it && it.splitOrigin ? String(it.splitOrigin.productName || '').trim() : '';
+  if (!name || name.startsWith('店舗仕入れ（中身未入力）')) return null;
+  return <div style={{fontSize:10.5,lineHeight:1.4,color:'#0f766e',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',...(style || {})}}>✂️ 元：{name}</div>;
+};
 const placeholderPayment = (m) => {
   const v = String(m || '').trim();
   if (PAYMENT_OPTIONS.includes(v)) return v;
@@ -6990,7 +7011,7 @@ const isPhotoProtected = (data, p) => {
 };
 
 // 詳細モーダル用の写真スライド（フル画像をIndexedDBから取得）
-const PhotoSlide = ({ photoRef }) => {
+const PhotoSlide = ({ photoRef, label }) => {
   // ★ 初期表示: medDataUrl(700px)→thumbDataUrl(300px)→null の優先順で表示
   const [url, setUrl] = React.useState(photoRef?.medDataUrl || photoRef?.thumbDataUrl || null);
   React.useEffect(() => {
@@ -7035,7 +7056,14 @@ const PhotoSlide = ({ photoRef }) => {
   const [zoom, setZoom] = React.useState(false);
   if (!url) return null;
   return (<>
-    <img src={url} alt="" onClick={() => setZoom(true)} style={{height:150,borderRadius:10,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}}/>
+    {label ? (
+      <div style={{position:'relative',flexShrink:0,height:150}}>
+        <img src={url} alt="" onClick={() => setZoom(true)} style={{height:150,borderRadius:10,objectFit:'cover',cursor:'zoom-in',display:'block'}}/>
+        <span style={{position:'absolute',left:4,top:4,background:'rgba(15,118,110,0.92)',color:'white',fontSize:10,fontWeight:800,borderRadius:99,padding:'1px 7px',pointerEvents:'none'}}>{label}</span>
+      </div>
+    ) : (
+      <img src={url} alt="" onClick={() => setZoom(true)} style={{height:150,borderRadius:10,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}}/>
+    )}
     {zoom && (
       <div onClick={(e) => { e.stopPropagation(); setZoom(false); }} style={{position:'fixed',inset:0,zIndex:100000,background:'rgba(0,0,0,0.92)',display:'flex',alignItems:'center',justifyContent:'center'}}>
         <img src={url} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>
@@ -7964,7 +7992,8 @@ const InventoryTab = () => {
       const q = search.trim().toLowerCase();
       return (item.productName||'').toLowerCase().includes(q) ||
              (item.brand||'').toLowerCase().includes(q) ||
-             (item.memo||'').toLowerCase().includes(q);
+             (item.memo||'').toLowerCase().includes(q) ||
+             (item.splitOrigin?.productName||'').toLowerCase().includes(q);   // 分割前の題名でも見つかる（2026-11-21）
     }
     return true;
   }), [data.inventory, filter, storeFilter, search, dupOpenCounts, bundleCounts, focusBundle]);
@@ -8812,7 +8841,7 @@ const InventoryTab = () => {
         options={[['unlisted','未出品'],['listed','出品中'],['sold','売却済'],['all','すべて']].map(([v,l]) => {
           const base = v === 'all' ? data.inventory : data.inventory.filter(i => i.status === v);
           const q = search.trim().toLowerCase();
-          const cnt = q ? base.filter(i => (i.productName||'').toLowerCase().includes(q) || (i.brand||'').toLowerCase().includes(q) || (i.memo||'').toLowerCase().includes(q)).length : base.length;
+          const cnt = q ? base.filter(i => (i.productName||'').toLowerCase().includes(q) || (i.brand||'').toLowerCase().includes(q) || (i.memo||'').toLowerCase().includes(q) || (i.splitOrigin?.productName||'').toLowerCase().includes(q)).length : base.length;
           return { value: v, label: l, count: cnt };
         })} />
 
@@ -9344,6 +9373,7 @@ const InventoryTab = () => {
                               <div style={{fontSize:13,fontWeight:700,color:'#111',wordBreak:'break-all',cursor:'pointer'}} onClick={() => setSelected(it)}>
                                 {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
                               </div>
+                              <SplitOriginLine it={it} />
                               <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
                                 <span>{it.mgmtNo || '管理番号なし'}</span><SplitBadge it={it} />
                                 <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
@@ -10030,6 +10060,7 @@ const InventoryTab = () => {
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontWeight:700,fontSize:13,lineHeight:1.3,color: isSold ? '#555' : '#111',
                         display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName}</div>
+                      <SplitOriginLine it={item} />
                       {filter === 'dupCheck' && item.dupCheck?.reason && (
                         <div style={{fontSize:11,color:'#9ca3af',lineHeight:1.3}}>{item.dupCheck.reason}</div>
                       )}
@@ -10162,6 +10193,7 @@ const InventoryTab = () => {
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
                       <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
+                      <SplitOriginLine it={item} style={{marginTop:-2,marginBottom:4}} />
                       {filter === 'dupCheck' && item.dupCheck?.reason && (
                         <div style={{fontSize:11,color:'#9ca3af',marginBottom:4,lineHeight:1.4}}>{item.dupCheck.reason}</div>
                       )}
@@ -10600,13 +10632,24 @@ const InventoryTab = () => {
               const cb = {width:'100%',padding:'8px 6px',borderRadius:12,fontSize:14,fontWeight:700,cursor:'pointer',
                 minHeight:48,lineHeight:1.25,whiteSpace:'normal',wordBreak:'keep-all',overflowWrap:'anywhere',
                 WebkitTapHighlightColor:'transparent',touchAction:'manipulation',boxSizing:'border-box'};
-              const hasPhoto = selected.photos?.length > 0;
+              // 分割で作った商品は、分割前の写真を2枚目に出す（表示だけ。自分の写真に同じ物があれば、その写真に「分割前」の札をつける）
+              const so = splitOriginOf(selected, data.settings);
+              const own = selected.photos || [];
+              const soPhoto = so && so.photo && !own.some(p => isSamePhotoRef(p, so.photo)) ? so.photo : null;
+              //   元の写真がこの端末に無い時は、まとめ買いの表紙の小さい写真で代わりに出す
+              const slides = own.map((p, i) => {
+                const isOrig = !!(so && so.photo && isSamePhotoRef(p, so.photo));
+                const ref = isOrig && !p.thumbDataUrl && !p.medDataUrl && so.photo.thumbDataUrl ? { ...p, thumbDataUrl: so.photo.thumbDataUrl } : p;
+                return { key: p.id || `own${i}`, ref, label: isOrig ? '✂️ 分割前' : null };
+              });
+              if (soPhoto) slides.splice(Math.min(1, slides.length), 0, { key: 'splitOrigin', ref: soPhoto, label: '✂️ 分割前' });
+              const hasPhoto = slides.length > 0;
               return (
                 <div style={{display:'flex',gap:10,alignItems:'flex-start',marginBottom:16}}>
                   {hasPhoto && (
                     <div style={{flex:'0 0 36%',minWidth:0,display:'flex',gap:8,overflowX:'auto',paddingBottom:4}}>
-                      {selected.photos.map((p, i) => (
-                        <PhotoSlide key={p.id || i} photoRef={p} />
+                      {slides.map(sl => (
+                        <PhotoSlide key={sl.key} photoRef={sl.ref} label={sl.label} />
                       ))}
                     </div>
                   )}
@@ -10648,6 +10691,27 @@ const InventoryTab = () => {
                     {selected.productName && <button style={pill} onClick={() => copyToClipboard(selected.productName).then(ok => toast(ok ? '📋 タイトルをコピー' : 'コピー失敗'))}>📋 タイトルをコピー</button>}
                     {yurl && <a style={{...pill,borderColor:'#fca5a5',color:'#b91c1c'}} href={yurl} target="_blank" rel="noopener noreferrer">🔗 ヤフオクで見る</a>}
                   </div>
+                </div>
+              );
+            })()}
+
+            {/* 分割で作った商品：どれを分けた物か（分割前の題名と写真）。押すと分割前のデータを開く（2026-11-21） */}
+            {selected.splitOrigin && (() => {
+              const so = splitOriginOf(selected, data.settings);
+              const o = so.o;
+              const kids = (data.inventory || []).filter(i => i.splitOrigin && i.splitOrigin.id === o.id).length;
+              const canOpen = !!selected.bundleGroup;
+              return (
+                <div onClick={canOpen ? () => setSplitOriginOpen(selected.bundleGroup) : undefined}
+                  style={{display:'flex',gap:10,alignItems:'center',marginBottom:14,padding:'8px 10px',borderRadius:12,background:'#f0fdfa',border:'1px solid #99f6e4',cursor: canOpen ? 'pointer' : 'default',WebkitTapHighlightColor:'transparent'}}>
+                  {so.photo && <ItemThumbnail thumbId={so.photo.thumbId} thumbDataUrl={so.photo.thumbDataUrl} size={48} fallback="📦" />}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:800,color:'#115e59'}}>
+                      ✂️ 分割前{kids > 1 ? `（${kids}点に分けた` : '（'}{Number(o.purchasePrice) > 0 ? `${kids > 1 ? '・' : ''}元の合計 ¥${formatMoney(Number(o.purchasePrice))}` : ''}）
+                    </div>
+                    <div style={{fontSize:12.5,fontWeight:600,color:'#134e4a',lineHeight:1.4,wordBreak:'break-all',userSelect:'text',WebkitUserSelect:'text'}}>{so.name || '(商品名なし)'}</div>
+                  </div>
+                  {canOpen && <span style={{flexShrink:0,color:'#5eead4',fontSize:18,fontWeight:700}}>›</span>}
                 </div>
               );
             })()}
@@ -12072,6 +12136,7 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = f
                   <div style={on ? {fontSize:13,fontWeight:700,color:'#111',lineHeight:1.45,wordBreak:'break-all'} : {fontSize:13,fontWeight:700,color:'#111',lineHeight:1.35,wordBreak:'break-all',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>
                     {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
                   </div>
+                  <SplitOriginLine it={it} />
                   <div style={{fontSize:12,color:'#475569',marginTop:2}}><b style={{color:'#0f172a'}}>仕入れ {yenS(it.purchasePrice)}</b>{it.purchaseDate ? `　${it.purchaseDate}` : ''}</div>
                   <div style={{fontSize:11,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
                     <span>{it.mgmtNo || '管理番号なし'}</span><SplitBadge it={it} />
@@ -12569,6 +12634,7 @@ const UnlinkedSalesView = ({ data, setData, toast, onEditShipping }) => {
         <div style={{fontSize:12,fontWeight:700,color:'#111',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
           {it.brand && <span style={{color:'#9ca3af',marginRight:4}}>{it.brand}</span>}{it.productName || '商品'}
         </div>
+        <SplitOriginLine it={it} style={{fontSize:10}} />
         <div style={{fontSize:10,color:'#6b7280',marginTop:2,display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
           <span>{it.mgmtNo || '管理番号なし'}</span><SplitBadge it={it} />
           <span>出品 {it.listPrice > 0 ? '¥' + formatMoney(it.listPrice) : '−'}</span>
