@@ -1985,23 +1985,38 @@ const mgmtSiblingSuffix = (item, inventory) => {
   const k = ord.findIndex(i => i.id === item.id);
   return k >= 0 && k < 26 ? String.fromCharCode(65 + k) : '';
 };
-// 仕入れ日・出品日・仕入れ値から番号を作り、兄弟とかぶる時は文字を付ける
+// ほかの在庫とまったく同じ番号になる時は、空いている文字に変える（2026-11-22：別々のまとめを分けた物どうしが、同じ日・同じ金額・同じ文字で同じ番号になった）
+//   文字なし → -B から、-D → -E から順に空きを探す。extra は、同じ操作の中で先に付けた番号
+const mgmtNoDedupe = (no, item, inventory, extra = null) => {
+  if (!no || !inventory) return no;
+  const used = new Set(extra || []);
+  inventory.forEach(i => { if (i && i.mgmtNo && i.id !== (item && item.id)) used.add(i.mgmtNo); });
+  if (!used.has(no)) return no;
+  const { base, suf } = mgmtNoParts(no);
+  const start = suf ? suf.charCodeAt(0) - 64 : 1;
+  for (let k = 0; k < 26; k++) {
+    const cand = base + '-' + String.fromCharCode(65 + ((start + k) % 26));
+    if (!used.has(cand)) return cand;
+  }
+  return no;
+};
+// 仕入れ日・出品日・仕入れ値から番号を作り、兄弟とかぶる時は文字を付ける。ほかの在庫と同じ番号になる時は空いている文字にする
 const mgmtNoFor = (item, inventory, divisor = 100) => {
   const p = Number(item && item.purchasePrice) || 0;
   if (!item || !item.purchaseDate || p <= 0) return null;
   const suf = mgmtSiblingSuffix(item, inventory);
-  return generateMgmtNo(item.purchaseDate, item.listDate || '', p, divisor) + (suf ? '-' + suf : '');
+  return mgmtNoDedupe(generateMgmtNo(item.purchaseDate, item.listDate || '', p, divisor) + (suf ? '-' + suf : ''), item, inventory);
 };
 
 // 出品日・仕入れ日・仕入れ値が編集画面の外で変わった時の管理番号（編集画面と同じ決まりで作り直す。2026-11-19 ユーザー指定：出品日を管理番号に反映）。
 // 作り直すのは自動で付いた番号（今の値から作った番号か、出品日なしの 0000 の番号）だけ。手で付けた番号・売却済みはそのまま返す
 // 番号が無い物は、仕入れ日と仕入れ値があれば新しく作る（2026-11-21：分割した商品に出品日を入れても番号ができなかった）
 // inventory を渡すと、兄弟と同じ番号になる時に末尾の文字を付ける。番号の本体が変わらない時は、今の番号をそのまま返す（出品ページに書いた番号を後から変えない）
-const mgmtNoAfterChange = (before, after, divisor = 100, inventory = null) => {
+const mgmtNoAfterChange = (before, after, divisor = 100, inventory = null, extra = null) => {
   const tot = (x) => Number(x && x.purchasePrice) || 0;
   if (!before || before.status === 'sold' || !after.purchaseDate || tot(after) <= 0) return before ? before.mgmtNo : undefined;
   const cur = mgmtNoParts(before.mgmtNo);
-  const withSuffix = (no) => { const suf = (inventory ? mgmtSiblingSuffix(after, inventory) : '') || cur.suf; return no + (suf ? '-' + suf : ''); };
+  const withSuffix = (no) => { const suf = (inventory ? mgmtSiblingSuffix(after, inventory) : '') || cur.suf; return mgmtNoDedupe(no + (suf ? '-' + suf : ''), after, inventory, extra); };
   if (!before.mgmtNo) return withSuffix(generateMgmtNo(after.purchaseDate, after.listDate || '', tot(after), divisor));
   if (!before.purchaseDate || tot(before) <= 0) return before.mgmtNo;
   // 分割した先頭の子に残っている「分割前の合計」の番号も、自動の番号として作り直す（2026-11-21：金額は分割後の額にする）
@@ -8746,11 +8761,13 @@ const InventoryTab = () => {
     const idSet = new Set(ids);
     const cur = dataRefInv.current;
     const prevMap = {};
+    const usedNos = new Set(); // まとめて出品中にする時、先に付けた番号と同じにならないようにする
     const updated = cur.inventory.map(i => {
       if (!idSet.has(i.id) || i.status !== 'unlisted') return i;
       prevMap[i.id] = { status: i.status, listDate: i.listDate, platform: i.platform, soldAt: i.soldAt, mgmtNo: i.mgmtNo };
       const n = { ...i, status: 'listed', soldAt: undefined, listDate: listDate || i.listDate || today() };
-      n.mgmtNo = mgmtNoAfterChange(i, n, cur.settings?.priceSplitDivisor || 100, cur.inventory);
+      n.mgmtNo = mgmtNoAfterChange(i, n, cur.settings?.priceSplitDivisor || 100, cur.inventory, usedNos);
+      if (n.mgmtNo && n.mgmtNo !== i.mgmtNo) usedNos.add(n.mgmtNo);
       if (platform) n.platform = platform;
       return n;
     });
