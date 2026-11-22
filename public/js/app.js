@@ -1542,6 +1542,24 @@ const placeholderDefaults = (it) => isStorePlaceholder(it) ? {
   purchaseDate: it.purchaseDate || '',
 } : null;
 
+// 分割フォームの行数を n 点に変える（2026-11-22）。入れてある題名・写真は残す。
+//   金額がまだ「均等割りのまま」なら n 点で均等に割り直し、手で直してあれば今の金額を残して、増えた行は空にする
+const SPLIT_MAX = 26;   // 商品A〜Z
+const resizeSplitItems = (prev, n, total) => {
+  const t = Math.round(Number(total) || 0);
+  const eq = (k) => { const b = Math.floor(t / k), r = t - b * k; return Array.from({ length: k }, (_, i) => String(i === k - 1 ? b + r : b)); };
+  const cur = Array.isArray(prev) ? prev : [];
+  const curEq = cur.length ? eq(cur.length) : [];
+  const untouched = !cur.length || cur.every((x, i) => String(x.purchasePrice) === curEq[i]);
+  const prices = untouched ? eq(n) : null;
+  return Array.from({ length: n }, (_, i) => {
+    const base = cur[i] || { productName: '', purchasePrice: '' };
+    return prices ? { ...base, purchasePrice: prices[i] } : base;
+  });
+};
+// 題名がまだ無い在庫の呼び名（分割登録で題名を後から入れる物。データは空のまま、表示だけ）
+const titleOrBlank = (i) => (i && i.productName) || `（題名未入力${i && i.bundleLabel ? '・' + i.bundleLabel : ''}）`;
+
 // 分割登録：元の仕入れ内訳（商品代・送料・クーポン・手数料）を各商品に按分して子データを作る。
 // 各成分の合計が元と1円も違わないことを検証し、ずれる場合は error を返す（保存させない）。
 // 子の purchasePrice = 商品代 + 送料 + 手数料 − クーポン（= 入力された各商品の仕入れ値）
@@ -7914,30 +7932,63 @@ const InventoryTab = () => {
   // 分割登録: 子ごとの写真を更新（userPhotos=ユーザーが明示的に割り当てた印。1つでもあれば全員が自分のphotosだけを使う）
   const setSplitChildPhotos = (idx, fn) => setSplitItems(prev => prev.map((x,i) => i===idx ? { ...x, photos: fn(Array.isArray(x.photos) ? x.photos : []), userPhotos: true } : x));
   // 通常の商品登録(handlePhotoFiles)と同じ形式: IndexedDBに photo_/thumb_ を保存し、thumbDataUrl(300px q60)・medDataUrl(700px q78)をbase64で保持（クラウドバックアップ対象）
+  const makeSplitPhoto = async (file) => {
+    const ts = Date.now();
+    const n = Math.floor(Math.random() * 100000);
+    const photoId = `photo_${ts}_${n}`;
+    const thumbId = `thumb_${ts}_${n}`;
+    const fullBlob  = await compressImage(file, 1200, 0.75);
+    const medBlob   = await compressImage(file, 700, 0.78);
+    const thumbBlob = await compressImage(file, 300, 0.6);
+    await savePhoto(photoId, fullBlob);
+    await savePhoto(thumbId, thumbBlob);
+    const previewUrl = blobToURL(fullBlob);
+    const thumbUrl   = blobToURL(thumbBlob);
+    const thumbDataUrl = `data:image/jpeg;base64,${await blobToBase64(thumbBlob)}`;
+    const medDataUrl = `data:image/jpeg;base64,${await blobToBase64(medBlob)}`;
+    return { id: photoId, thumbId, previewUrl, thumbUrl, thumbDataUrl, medDataUrl };
+  };
   const addSplitPhotoFiles = async (idx, files) => {
     for (const file of files) {
       const cur = (splitItems[idx] && splitItems[idx].photos) || [];
       if (cur.length >= 5) { toast('写真は1商品につき最大5枚までです'); break; }
-      const ts = Date.now();
-      const n = Math.floor(Math.random() * 100000);
-      const photoId = `photo_${ts}_${n}`;
-      const thumbId = `thumb_${ts}_${n}`;
       try {
-        const fullBlob  = await compressImage(file, 1200, 0.75);
-        const medBlob   = await compressImage(file, 700, 0.78);
-        const thumbBlob = await compressImage(file, 300, 0.6);
-        await savePhoto(photoId, fullBlob);
-        await savePhoto(thumbId, thumbBlob);
-        const previewUrl = blobToURL(fullBlob);
-        const thumbUrl   = blobToURL(thumbBlob);
-        const thumbDataUrl = `data:image/jpeg;base64,${await blobToBase64(thumbBlob)}`;
-        const medDataUrl = `data:image/jpeg;base64,${await blobToBase64(medBlob)}`;
-        setSplitChildPhotos(idx, ph => ph.length < 5 ? [...ph, { id: photoId, thumbId, previewUrl, thumbUrl, thumbDataUrl, medDataUrl }] : ph);
+        const photo = await makeSplitPhoto(file);
+        setSplitChildPhotos(idx, ph => ph.length < 5 ? [...ph, photo] : ph);
       } catch (e) {
         console.error('分割登録の写真保存エラー:', e);
         toast(`❌ 写真の保存に失敗しました。もう一度お試しください\n(${e.message})`);
       }
     }
+  };
+  // 写真をまとめて選ぶ：選んだ順に 商品A, B, C… へ1枚ずつ入れる（2026-11-22 ユーザー要望：12点分割で1点ずつ選ぶのが大変）
+  //   枚数が今の点数より多ければ、点数を枚数に合わせて増やす（減らしはしない）。入れてある題名・写真・金額は残す
+  const [splitBulk, setSplitBulk] = React.useState(null);   // 取り込み中 {done,total}
+  const addSplitPhotosBulk = async (files, total) => {
+    if (!files.length || splitBulk) return;
+    const use = files.slice(0, SPLIT_MAX);
+    if (files.length > SPLIT_MAX) toast(`一度に分けられるのは${SPLIT_MAX}点までです。先頭の${SPLIT_MAX}枚だけ入れます`);
+    setSplitItems(prev => prev.length >= use.length ? prev : resizeSplitItems(prev, use.length, total));
+    setSplitCount(c => Math.max(c, use.length));
+    setSplitBulk({ done: 0, total: use.length });
+    let ok = 0;
+    for (let k = 0; k < use.length; k++) {
+      try {
+        const photo = await makeSplitPhoto(use[k]);
+        setSplitItems(prev => prev.map((x, i) => {
+          if (i !== k) return x;
+          const cur = Array.isArray(x.photos) ? x.photos : [];
+          return { ...x, photos: cur.length < 5 ? [...cur, photo] : cur, userPhotos: true };
+        }));
+        ok++;
+      } catch (e) {
+        console.error('分割登録の写真保存エラー:', e);
+      }
+      setSplitBulk({ done: k + 1, total: use.length });
+    }
+    setSplitBulk(null);
+    const last = String.fromCharCode(64 + use.length);
+    toast(ok === use.length ? `📷 ${ok}枚を 商品A〜${last} に1枚ずつ入れました` : `⚠️ ${use.length}枚のうち${ok}枚だけ入りました。入らなかった商品は「＋写真」から入れてください`);
   };
   const [splitCommon, setSplitCommon] = React.useState(null); // 店舗仕入れ仮在庫の分割時のみ: {purchaseType,paymentMethod,purchaseStore,purchaseDate}
   const [bulkMode, setBulkMode] = React.useState(false);
@@ -8299,8 +8350,9 @@ const InventoryTab = () => {
     const base = Math.floor((item.purchasePrice||0) / n);
     const rem  = (item.purchasePrice||0) - base * n;
     setSplitCount(n);
+    // 題名は空で始める（2026-11-22 ユーザー指定：分割前の題名が入っていると、消してから打つ手間になる。分割前の題名は「✂️ 分割前」に残る）
     setSplitItems(Array.from({length:n}, (_,i) => ({
-      productName: `${item.productName||'商品'} [${String.fromCharCode(65+i)}]`,
+      productName: '',
       purchasePrice: String(i===n-1 ? base+rem : base),
     })));
     setSplitCommon(placeholderDefaults(item));
@@ -9747,7 +9799,7 @@ const InventoryTab = () => {
                             <span style={{fontSize:10,fontWeight:800,padding:'2px 7px',borderRadius:99,background:sevColor[0],color:sevColor[1],border:'1px solid '+sevColor[2]}}>重要度 {ac.severity || '-'}</span>
                             <span style={{fontSize:10,color:'#9ca3af'}}>{statusLabel[item.status] || ''}{ac.no ? ` ・ 監査#${ac.no}` : ''}</span>
                           </div>
-                          <div style={{fontWeight:700,fontSize:13,lineHeight:1.35,color:'#111',marginBottom:3,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName}</div>
+                          <div style={{fontWeight:700,fontSize:13,lineHeight:1.35,color:'#111',marginBottom:3,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName || <span style={{color:'#9ca3af',fontWeight:600}}>{titleOrBlank(item)}</span>}</div>
                           <div style={{fontSize:11,color:'#6b7280',lineHeight:1.5}}>
                             {item.mgmtNo ? <div>管理番号 {item.mgmtNo}</div> : null}
                             <div>{item.purchaseStore || '仕入れ先未設定'}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
@@ -10139,7 +10191,7 @@ const InventoryTab = () => {
                     </div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontWeight:700,fontSize:13,lineHeight:1.3,color: isSold ? '#555' : '#111',
-                        display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName}</div>
+                        display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.productName || <span style={{color:'#9ca3af',fontWeight:600}}>{titleOrBlank(item)}</span>}</div>
                       <SplitOriginLine it={item} />
                       {filter === 'dupCheck' && item.dupCheck?.reason && (
                         <div style={{fontSize:11,color:'#9ca3af',lineHeight:1.3}}>{item.dupCheck.reason}</div>
@@ -10272,7 +10324,7 @@ const InventoryTab = () => {
                     </div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:11,color: isSold ? '#9ca3af' : '#bbb',fontWeight:700,letterSpacing:'0.04em',textTransform:'uppercase',marginBottom:2}}>{item.brand}{item.purchaseDate ? `｜${item.purchaseDate.replace(/-/g, '/')}` : ''}</div>
-                      <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName}</div>
+                      <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isSold ? '#555' : '#111',marginBottom:4}}>{item.productName || <span style={{color:'#9ca3af',fontWeight:600}}>{titleOrBlank(item)}</span>}</div>
                       <SplitOriginLine it={item} style={{marginTop:-2,marginBottom:4}} />
                       {filter === 'dupCheck' && item.dupCheck?.reason && (
                         <div style={{fontSize:11,color:'#9ca3af',marginBottom:4,lineHeight:1.4}}>{item.dupCheck.reason}</div>
@@ -10760,6 +10812,26 @@ const InventoryTab = () => {
               );
             })()}
 
+            {/* 題名がまだ無い物（分割登録で後から入れる物）：その場で入れる（2026-11-22） */}
+            {!selected.productName && (detailEditField === 'productName' ? (
+              <div style={{marginBottom:14}}>
+                <textarea autoFocus rows={2} value={detailEditDraft} onChange={e => setDetailEditDraft(e.target.value)} placeholder="題名を入力"
+                  style={{width:'100%',padding:'9px 10px',borderRadius:10,border:'1.5px solid #2563eb',fontSize:16,lineHeight:1.4,boxSizing:'border-box',resize:'vertical'}}/>
+                <div style={{fontSize:11,color: String(detailEditDraft).length > 40 ? '#dc2626' : '#999',textAlign:'right'}}>{String(detailEditDraft).length}字</div>
+                <div style={{display:'flex',gap:8,marginTop:4}}>
+                  <button onClick={() => setDetailEditField(null)}
+                    style={{flex:1,minHeight:44,borderRadius:10,border:'1px solid #d1d5db',background:'white',fontSize:13,fontWeight:600,cursor:'pointer',touchAction:'manipulation'}}>やめる</button>
+                  <button onClick={() => { const v = String(detailEditDraft).replace(/\s+/g, ' ').trim(); setDetailEditField(null); if (v) saveInlineField({ productName: v }); }}
+                    style={{flex:2,minHeight:44,borderRadius:10,border:'none',background:'#2563eb',color:'white',fontSize:13,fontWeight:800,cursor:'pointer',touchAction:'manipulation'}}>題名を保存</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => { setDetailEditDraft(''); setDetailEditField('productName'); }}
+                style={{display:'block',width:'100%',minHeight:44,marginBottom:14,borderRadius:10,border:'1.5px dashed #2563eb',background:'#eff6ff',color:'#1d4ed8',fontSize:13,fontWeight:800,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+                ✏️ 題名を入れる（まだ入っていません）
+              </button>
+            ))}
+
             {/* 品名の全文＋タイトルコピー＋仕入れたヤフオクのページへ（2026-11-19：品物と仕入れを見比べる時に1タッチで開く） */}
             {(selected.productName || yahooItemUrl(selected)) && (() => {
               const yurl = yahooItemUrl(selected);
@@ -11135,31 +11207,49 @@ const InventoryTab = () => {
             {/* ── 分割登録UI ── */}
             {splitMode && selected && selected.status !== 'sold' && (() => {
               const totalPrice = selected.purchasePrice || 0;
-              const initItems = (n) => {
-                const base = Math.floor(totalPrice / n);
-                const rem  = totalPrice - base * n;
-                return Array.from({length: n}, (_, i) => ({
-                  productName: `${selected.productName || '商品'} [${String.fromCharCode(65+i)}]`,
-                  purchasePrice: String(i === n-1 ? base + rem : base),
-                }));
-              };
+              // 点数を変えても、入れてある題名・写真は残す（金額は、手で直していなければ均等に割り直す）
+              const changeCount = (n) => { setSplitCount(n); setSplitItems(prev => resizeSplitItems(prev, n, totalPrice)); };
+              const origTitle = String(selected.productName || '').trim();
               return (
                 <div style={{background:'#f8fafc',border:'1.5px solid #e2e8f0',borderRadius:14,padding:'14px',marginBottom:12}}>
                   <div style={{fontWeight:800,fontSize:14,marginBottom:10,color:'#1e293b'}}>✂️ 分割登録</div>
                   <div style={{fontSize:11,color:'#64748b',marginBottom:10}}>
                     仕入れ値 ¥{(totalPrice).toLocaleString()} を分割して複数アイテムとして登録します。元のアイテムは削除されます（分割前のデータは「まとめ買い」から見られます）。送料は各商品に均等に、クーポンは金額が最も高い1点だけに自動で割り当てられ、合計は必ず元と一致します。
                   </div>
+                  {/* 分割前の題名（見るだけ。分けた後も「✂️ 分割前」から見られる） */}
+                  {origTitle && !isStorePlaceholder(selected) && (
+                    <div style={{fontSize:11,lineHeight:1.45,color:'#0f766e',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:8,padding:'6px 8px',marginBottom:10,wordBreak:'break-all',userSelect:'text',WebkitUserSelect:'text'}}>
+                      <b>✂️ 分割前の題名</b>（分けた後も見られます）<br/>{origTitle}
+                    </div>
+                  )}
                   {/* 分割数選択 */}
-                  {!splitProposalId && <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
+                  {!splitProposalId && <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:10,alignItems:'center'}}>
                     {[2,3,4,5,6,7,8,9,10].map(n => (
-                      <button key={n} onClick={() => { setSplitCount(n); setSplitItems(initItems(n)); }}
+                      <button key={n} onClick={() => changeCount(n)}
                         style={{flex:'0 0 auto',minWidth:44,padding:'7px 10px',borderRadius:99,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,
                           background:splitCount===n?'#1e293b':'#f1f5f9',color:splitCount===n?'white':'#555',
                           WebkitTapHighlightColor:'transparent'}}>
                         {n}件
                       </button>
                     ))}
+                    <select value={splitCount > 10 ? String(splitCount) : ''} onChange={e => { const n = Number(e.target.value); if (n) changeCount(n); }}
+                      style={{flex:'0 0 auto',padding:'7px 10px',borderRadius:99,border:'none',fontSize:13,fontWeight:700,
+                        background:splitCount>10?'#1e293b':'#f1f5f9',color:splitCount>10?'white':'#555'}}>
+                      <option value="">11件〜</option>
+                      {Array.from({length: SPLIT_MAX - 10}, (_, i) => i + 11).map(n => <option key={n} value={n}>{n}件</option>)}
+                    </select>
                   </div>}
+                  {/* 写真をまとめて選ぶ：選んだ順に1点ずつ入る */}
+                  {!splitProposalId && (
+                    <div style={{marginBottom:12}}>
+                      <label style={{display:'block',textAlign:'center',padding:'11px 12px',borderRadius:10,background:splitBulk?'#94a3b8':'#2563eb',color:'white',fontSize:13,fontWeight:800,cursor:splitBulk?'default':'pointer',touchAction:'manipulation'}}>
+                        {splitBulk ? `写真を入れています… ${splitBulk.done}/${splitBulk.total}` : '📷 写真をまとめて選ぶ（1枚＝1点）'}
+                        <input type="file" accept="image/*" multiple disabled={!!splitBulk} style={{display:'none'}} data-split-bulk-input="1"
+                          onChange={async e => { const fs = Array.from(e.target.files || []); e.target.value = ''; if (fs.length) await addSplitPhotosBulk(fs, totalPrice); }}/>
+                      </label>
+                      <div style={{fontSize:10.5,color:'#64748b',marginTop:4,lineHeight:1.45}}>選んだ順に 商品A・B・C… へ1枚ずつ入ります。枚数が多い時は、件数も枚数に合わせて増えます（{SPLIT_MAX}点まで）。</div>
+                    </div>
+                  )}
                   {splitProposalId && <div style={{fontSize:12,fontWeight:700,color:'#075985',marginBottom:10}}>🤖 Claudeの提案を元にしています（写真・ブランド付きで登録されます）</div>}
                   {/* 各アイテム入力 */}
                   {splitItems.map((si, idx) => (
@@ -11220,7 +11310,7 @@ const InventoryTab = () => {
                       })()}
                       <input value={si.productName}
                         onChange={e => setSplitItems(prev => prev.map((x,i) => i===idx ? {...x,productName:e.target.value} : x))}
-                        placeholder="商品名"
+                        placeholder="題名（あとで入れてもOK）"
                         style={{width:'100%',padding:'7px 10px',borderRadius:8,border:'1px solid #d1d5db',fontSize:13,marginBottom:6,boxSizing:'border-box'}}/>
                       <div style={{display:'flex',alignItems:'center',gap:6}}>
                         <span style={{fontSize:12,color:'#555'}}>¥</span>
@@ -11275,7 +11365,8 @@ const InventoryTab = () => {
                       キャンセル
                     </button>
                     <button onClick={() => {
-                      if (splitItems.some(si => !si.productName.trim())) { alert('商品名を入力してください'); return; }
+                      // 題名は空でも登録できる（2026-11-22 ユーザー指定：写真だけ先に入れて、題名は後から1点ずつ入れる）
+                      if (splitBulk) { alert('写真を入れている途中です。終わるまで少し待ってください'); return; }
                       if (splitItems.some(si => Number(si.purchasePrice) <= 0)) { alert('仕入れ値を入力してください'); return; }
                       const ts = Date.now();
                       // 写真を1枚でも割り当てた場合は、全員が自分のphotosだけを使う（未指定の子は写真なし）
@@ -14383,7 +14474,7 @@ const SalesTab = () => {
                                 border:'1px solid #e5e7eb',fontSize:12,background:'white',color:'#333',display: row.matchedItem ? 'none' : 'block'}}>
                               <option value="">在庫から選択...</option>
                               {data.inventory.map(i => (
-                                <option key={i.id} value={i.id}>{i.brand} {i.productName}</option>
+                                <option key={i.id} value={i.id}>{i.brand} {titleOrBlank(i)}</option>
                               ))}
                             </select>
                           </div>
@@ -14454,7 +14545,7 @@ const SalesTab = () => {
                                       style={{width:'100%',padding:'5px 7px',borderRadius:7,border:'1px solid #e2e8f0',fontSize:11,background:'white',color:'#333',marginBottom:4}}>
                                       <option value="">在庫から選択...</option>
                                       {data.inventory.filter(i => i.status !== 'sold').map(i => (
-                                        <option key={i.id} value={i.id}>{i.brand} {i.productName}</option>
+                                        <option key={i.id} value={i.id}>{i.brand} {titleOrBlank(i)}</option>
                                       ))}
                                     </select>
                                     <div style={{display:'flex',alignItems:'center',gap:4}}>
@@ -14765,7 +14856,7 @@ const SalesTab = () => {
                         style={{width:'100%',padding:'7px 8px',borderRadius:8,border:'1px solid #e2e8f0',fontSize:12,background:'white',color: bi.inventoryId ? '#1a1a1a' : '#9ca3af',marginBottom:6}}>
                         <option value="">在庫から商品を選択...</option>
                         {data.inventory.filter(i => i.status !== 'sold').map(i => (
-                          <option key={i.id} value={i.id}>{i.brand ? `${i.brand} ` : ''}{i.productName}</option>
+                          <option key={i.id} value={i.id}>{i.brand ? `${i.brand} ` : ''}{titleOrBlank(i)}</option>
                         ))}
                       </select>
                       {/* 新規仕入れ登録ボタン */}
@@ -15070,7 +15161,7 @@ const SalesTab = () => {
                 <option value="">商品を選択...</option>
                 {data.inventory.map(i => {
                   const statusLabels = { unlisted:'未出品', listed:'出品中', sold:'売却済' };
-                  return <option key={i.id} value={i.id}>{i.brand} {i.productName}（{statusLabels[i.status]||i.status}）</option>;
+                  return <option key={i.id} value={i.id}>{i.brand} {titleOrBlank(i)}（{statusLabels[i.status]||i.status}）</option>;
                 })}
               </select>
             </div>
