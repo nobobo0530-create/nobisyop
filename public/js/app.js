@@ -437,6 +437,26 @@ const copyToClipboard = async (text) => {
   return ok;
 };
 
+// メルカリで自分の出品を探すための言葉（2026-11-25）。
+// 出品の説明文に入れている管理番号（仕入れ日6桁-出品日-金額）のうち「仕入れ日 金額」だけを使う。
+// アプリ側の出品日が 0000 のままでも当たる（実測：お店の中の検索で1件だけ出る）。管理番号が無い物は仕入れ日と仕入れ値から作る。
+const MERCARI_SELLER_ID = '349187028';
+const mercariSearchKey = (item) => {
+  const m = String((item && item.mgmtNo) || '').trim();
+  if (m) {
+    const parts = m.split('-');
+    return (parts.length >= 4 && /^\d{6}$/.test(parts[0])) ? parts[0] + ' ' + parts.slice(2).join('-') : m;
+  }
+  const d = String((item && item.purchaseDate) || '').replace(/-/g, '');
+  const p = Math.round(Number(item && item.purchasePrice) || 0);
+  if (d.length !== 8 || p <= 0) return '';
+  return d.slice(2) + ' ' + Math.floor(p / 100) + '-' + String(p % 100).padStart(2, '0');
+};
+const mercariSearchUrl = (item) => {
+  const k = mercariSearchKey(item);
+  return k ? 'https://jp.mercari.com/search?seller_id=' + MERCARI_SELLER_ID + '&keyword=' + encodeURIComponent(k) : '';
+};
+
 // ============================================================
 // ストレージ
 // ============================================================
@@ -10267,6 +10287,11 @@ const InventoryTab = () => {
                         {alert && !isSold && (
                           <span style={{fontSize:9.5,fontWeight:700,color:'#6b7280'}}>{alert.days}日</span>
                         )}
+                        {/* メルカリ検索用の番号をコピー（2026-11-25）。一覧から1タッチで。開かずに貼り付けて探せる */}
+                        {!bulkMode && !isSold && mercariSearchKey(item) && (
+                          <span onClick={e => { e.stopPropagation(); const k = mercariSearchKey(item); copyToClipboard(k).then(ok => toast(ok ? `📋 コピーしました\n${k}` : 'コピー失敗')); }}
+                            style={{fontSize:10.5,fontWeight:700,padding:'2px 8px',borderRadius:99,background:'#fff1f2',color:'#be123c',border:'1px solid #fecdd3',cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>📋 メルカリ用</span>
+                        )}
                       </div>
                       <div style={{display:'flex',alignItems:'baseline',gap:6,lineHeight:'17px'}}>
                         {isSold ? (
@@ -10879,6 +10904,13 @@ const InventoryTab = () => {
                     {selected.productName && <button style={pill} onClick={() => copyToClipboard(selected.productName).then(ok => toast(ok ? '📋 タイトルをコピー' : 'コピー失敗'))}>📋 タイトルをコピー</button>}
                     {yurl && <a style={{...pill,borderColor:'#fca5a5',color:'#b91c1c'}} href={yurl} target="_blank" rel="noopener noreferrer">🔗 ヤフオクで見る</a>}
                   </div>
+                  {/* メルカリで自分の出品を探す（2026-11-25）：検索用の番号をコピー／お店の中だけを検索して開く */}
+                  {mercariSearchKey(selected) && (
+                    <div style={{display:'flex',gap:8,marginTop:8}}>
+                      <button style={pill} onClick={() => copyToClipboard(mercariSearchKey(selected)).then(ok => toast(ok ? `📋 メルカリ検索用をコピー\n${mercariSearchKey(selected)}` : 'コピー失敗'))}>📋 メルカリ検索用をコピー</button>
+                      <a style={{...pill,borderColor:'#fca5a5',color:'#b91c1c'}} href={mercariSearchUrl(selected)} target="_blank" rel="noopener noreferrer">🔎 メルカリで探す</a>
+                    </div>
+                  )}
                 </div>
               );
             })()}
