@@ -7919,6 +7919,7 @@ const InventoryTab = () => {
   const ROW_STEP = 60;
   const [rowLimit, setRowLimit] = React.useState(() => (pendingInventoryScrollY !== null && pendingInventoryScrollY > 0) ? 1e9 : ROW_STEP);
   const [storeFilter, setStoreFilter] = React.useState(''); // 仕入れ先で絞り込み
+  const [catFilter, setCatFilter] = React.useState('');     // カテゴリで絞り込み（毛皮・バッグなど。2026-11-25）
   const [selected, setSelected] = React.useState(null);
   const [detailEditField, setDetailEditField] = React.useState(null);  // 商品詳細のタップ編集中の項目（'purchasePrice'|'listPrice'）
   const [detailEditDraft, setDetailEditDraft] = React.useState('');
@@ -8075,6 +8076,15 @@ const InventoryTab = () => {
 
   // 表示・フィルター用に正規化した仕入れ先を返す（データ未修正でも正規名で扱う）
   const normalizedStore = (item) => normalizeStoreName(item.purchaseStore) || '';
+  // カテゴリ（文字のことも配列のこともある）を、空でない文字の配列にそろえる
+  const catsOf = (item) => (Array.isArray(item.category) ? item.category : [item.category]).map(c => String(c||'').trim()).filter(Boolean);
+  // 管理番号順の並べ替え用：管理番号（仕入れ日6桁-出品日-金額）。無い物は仕入れ日から6桁を作る。どちらも無い物は最後
+  const mgmtSortKey = (item) => {
+    const m = String(item.mgmtNo||'').trim();
+    if (m) return m;
+    const d = String(item.purchaseDate||'').replace(/-/g,'');
+    return d.length === 8 ? d.slice(2) : '￿';
+  };
 
   // ★ 重複候補: 外部スクリプトが付けた dupCheck が未解決のものを「open」とする
   // 片方が削除されて1点だけ残った「孤立」グループは候補から外す（グループ内の未解決メンバーが2点以上のときだけ open）
@@ -8117,6 +8127,7 @@ const InventoryTab = () => {
     else if (filter === 'needsDetail') { if (!item.needsDetail) return false; }
     else if (filter !== 'all' && filter !== 'priceUnconfirmed' && !isBundleFilter(filter) && item.status !== filter) return false;
     if (storeFilter && normalizedStore(item) !== storeFilter) return false;
+    if (catFilter && !catsOf(item).includes(catFilter)) return false;
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       return (item.productName||'').toLowerCase().includes(q) ||
@@ -8125,7 +8136,14 @@ const InventoryTab = () => {
              (item.splitOrigin?.productName||'').toLowerCase().includes(q);   // 分割前の題名でも見つかる（2026-11-21）
     }
     return true;
-  }), [data.inventory, filter, storeFilter, search, dupOpenCounts, bundleCounts, focusBundle]);
+  }), [data.inventory, filter, storeFilter, catFilter, search, dupOpenCounts, bundleCounts, focusBundle]);
+
+  // カテゴリのドロップダウン用（多い順）
+  const catOptions = React.useMemo(() => {
+    const m = {};
+    (data.inventory||[]).forEach(i => catsOf(i).forEach(c => { m[c] = (m[c]||0) + 1; }));
+    return Object.keys(m).sort((a,b) => m[b] - m[a]);
+  }, [data.inventory]);
 
   // 仕入れ先サマリー（storeFilter選択時に表示）※正規化名で照合
   const storeFilteredAll = storeFilter
@@ -8159,6 +8177,12 @@ const InventoryTab = () => {
     }
     if (sort === 'new')    return (b.purchaseDate||'') > (a.purchaseDate||'') ? 1 : -1;
     if (sort === 'old')    return (a.purchaseDate||'') > (b.purchaseDate||'') ? 1 : -1;
+    if (sort === 'mgmt') {
+      const ka = mgmtSortKey(a), kb = mgmtSortKey(b);
+      if (ka !== kb) return ka < kb ? -1 : 1;
+      const da = a.purchaseDate || '', db = b.purchaseDate || '';
+      return da < db ? -1 : da > db ? 1 : 0;
+    }
     if (sort === 'profit') {
       const fees = data.settings?.platformFees || CONFIG.PLATFORM_FEES;
       const getFeeRate = (item) => fees[item.platform] ?? fees['メルカリ'] ?? 0.10;
@@ -8174,7 +8198,7 @@ const InventoryTab = () => {
   React.useEffect(() => {
     if (_rowLimitInit.current) { _rowLimitInit.current = false; return; }
     setRowLimit(ROW_STEP);
-  }, [filter, search, storeFilter, sort, groupBundles]);
+  }, [filter, search, storeFilter, catFilter, sort, groupBundles]);
 
   React.useEffect(() => { if (focusBundle && filter !== 'bundleAll') setFocusBundle(null); }, [filter]);
 
@@ -8914,7 +8938,8 @@ const InventoryTab = () => {
   if (filter === 'coupon') activeChips.push({ key:'f', label:'🎟️ クーポン', clear: () => setFilter('unlisted') });
   if (isBundleFilter(filter)) activeChips.push({ key:'f', label: focusBundle ? '📦 このまとめだけ' : filter === 'bundleAll' ? '📦 まとめ買い 全部' : filter === 'bundleIndividual' ? '📦 同梱' : filter === 'bundleSet' ? '🎁 まとめ仕入れ購入' : '❓ 未分類', clear: () => setFilter('unlisted') });
   if (storeFilter) activeChips.push({ key:'st', label:'仕入れ先: ' + storeFilter, clear: () => setStoreFilter('') });
-  if (sort !== 'new') activeChips.push({ key:'so', label:'並び: ' + (sort === 'old' ? '古い順' : '利益が高い順'), clear: () => setSort('new') });
+  if (catFilter) activeChips.push({ key:'ct', label:'カテゴリ: ' + catFilter, clear: () => setCatFilter('') });
+  if (sort !== 'new') activeChips.push({ key:'so', label:'並び: ' + (sort === 'old' ? '古い順' : sort === 'mgmt' ? '管理番号が古い順' : '利益が高い順'), clear: () => setSort('new') });
   if (isBundleFilter(filter) && !groupBundles) activeChips.push({ key:'gb', label:'まとめ表示OFF', clear: () => { setGroupBundles(true); try { localStorage.setItem('nobushop_group_bundles', '1'); } catch (e) {} } });
   if (!compact) activeChips.push({ key:'cp', label:'標準表示', clear: () => setCompact(true) });
 
@@ -10632,11 +10657,22 @@ const InventoryTab = () => {
               </select>
             </>)}
 
+            {catOptions.length > 0 && (<>
+              <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>カテゴリ</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:16}}>
+                {[['','すべて'], ...catOptions.map(c => [c, c])].map(([v,l]) => (
+                  <button key={v || '_all'} onClick={() => setCatFilter(v)}
+                    style={{flex:'1 1 22%',minHeight:44,borderRadius:10,cursor:'pointer',fontSize:13,fontWeight:700,touchAction:'manipulation',
+                      border: catFilter===v ? '2px solid #4338ca' : '1.5px solid #e5e7eb',background: catFilter===v ? '#eef2ff' : '#fff',color: catFilter===v ? '#3730a3' : '#444'}}>{l}</button>
+                ))}
+              </div>
+            </>)}
+
             <div style={{fontSize:12,fontWeight:700,color:'#666',marginBottom:6}}>並び替え</div>
-            <div style={{display:'flex',gap:8,marginBottom:16}}>
-              {[['old','古い順'],['new','新しい順'],['profit','利益が高い順']].map(([v,l]) => (
+            <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:16}}>
+              {[['old','古い順'],['new','新しい順'],['mgmt','管理番号が古い順'],['profit','利益が高い順']].map(([v,l]) => (
                 <button key={v} onClick={() => setSort(v)}
-                  style={{flex:1,minHeight:44,borderRadius:10,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,touchAction:'manipulation',
+                  style={{flex:'1 1 45%',minHeight:44,borderRadius:10,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,touchAction:'manipulation',
                     background: sort===v ? '#1e293b' : '#f3f4f6',color: sort===v ? 'white' : '#666'}}>{l}</button>
               ))}
             </div>
