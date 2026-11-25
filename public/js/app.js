@@ -8989,6 +8989,8 @@ const InventoryTab = () => {
             boxShadow:'0 8px 40px rgba(0,0,0,0.22)',overflow:'hidden',backdropFilter:'blur(20px)',WebkitBackdropFilter:'blur(20px)'}}>
             {[
               ['⚙️', '絞り込み・表示', () => setFilterSheetOpen(true)],
+              // メルカリで実際に販売中の一覧（別ページ。タイトルのコピーとタイトル検索。作り直しは tools/make_mercari_page.py。2026-11-25）
+              ['🛍️', 'メルカリ販売中の一覧', () => { const w = window.open('/mercari.html', '_blank'); if (!w) location.href = '/mercari.html'; }],
               ['📱', 'まとめて出品中にする', () => { setFilter('unlisted'); setCheckedIds(new Set()); setBulkKind('list'); setBulkMode(true); setListSheetDate(today()); }],
               ['🗑', 'まとめて削除', () => { setBulkKind('delete'); setBulkMode(true); }],
             ].map(([ic, lb, fn], idx) => (
