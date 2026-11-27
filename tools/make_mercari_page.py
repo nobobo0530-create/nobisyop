@@ -15,13 +15,17 @@ FUR = re.compile(r'ファー|毛皮|ミンク|フォックス|ラビット|ウ�
 NOT_FUR = re.compile(r'バッグ|チャーム|財布|ポーチ|リュック')  # ファー付きのバッグ・小物は毛皮に入れない
 
 d = json.load(open(SRC))
+# ラクマに出ていない出品の一覧（あれば「ラクマに無い物だけ」のしぼり込みに使う。作り方は Claude に「メルカリのみ・ラクマのみを調べて」と頼む）
+ONLY_SRC = os.path.join(os.path.dirname(SRC), 'mercari_only.json')
+only = json.load(open(ONLY_SRC)) if os.path.exists(ONLY_SRC) else {}
+ONLY = set(only.get('ids') or [])
 items = []
 for mid, v in d['items'].items():
     t = re.sub(r'\s+', ' ', v.get('title') or '').strip()
     m = (v.get('mgmt') or '').strip()
-    items.append({'i': mid, 't': t, 'p': int(v.get('price') or 0), 'm': m, 'f': 1 if (FUR.search(t) and not NOT_FUR.search(t)) else 0})
+    items.append({'i': mid, 't': t, 'p': int(v.get('price') or 0), 'm': m, 'f': 1 if (FUR.search(t) and not NOT_FUR.search(t)) else 0, 'o': 1 if mid in ONLY else 0})
 items.sort(key=lambda x: (x['m'] or '￿', x['t']))
-data = json.dumps({'at': d.get('scannedAt') or '', 'items': items}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
+data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
 
 HTML = r'''<!doctype html>
 <html lang="ja">
@@ -59,6 +63,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
 @media (prefers-color-scheme:dark){.btn.go{border-color:#7f1d1d;color:#fca5a5}}
 #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:rgba(17,17,17,.9);color:#fff;padding:10px 16px;border-radius:99px;font-size:14px;max-width:86vw;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #toast.on{opacity:1}
+.tag{display:inline-block;font-size:11px;font-weight:700;color:#b45309;background:#fef3c7;border-radius:6px;padding:1px 6px}
 .empty{color:var(--sub);text-align:center;padding:40px 0;font-size:14px}
 </style>
 </head>
@@ -71,6 +76,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     <button class="chip" data-f="other">毛皮以外</button>
     <button class="chip" data-f="all">すべて</button>
   </div>
+  <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button></div>
   <input id="q" type="search" placeholder="タイトル・管理番号でしぼる" autocomplete="off">
 </header>
 <main id="list"></main>
@@ -79,7 +85,9 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
 <script>
 (function(){
   var D = JSON.parse(document.getElementById('data').textContent);
-  var mode = 'fur', q = '';
+  var mode = 'fur', q = '', only = false;
+  var onlyBtn = document.getElementById('only'), onlyN = D.items.filter(function(x){ return x.o; }).length;
+  if (onlyN) { document.getElementById('onlyRow').style.display = ''; onlyBtn.addEventListener('click', function(){ only = !only; onlyBtn.className = 'chip' + (only ? ' on' : ''); render(); window.scrollTo(0, 0); }); }
   var list = document.getElementById('list'), toastEl = document.getElementById('toast'), tm;
   document.getElementById('note').textContent = D.at + ' 時点 ／ 管理番号が古い順（仕入れ月ごと）';
   function toast(s){ toastEl.textContent = s; toastEl.className = 'on'; clearTimeout(tm); tm = setTimeout(function(){ toastEl.className = ''; }, 1800); }
@@ -95,6 +103,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     var rows = D.items.filter(function(x){
       if (mode === 'fur' && !x.f) return false;
       if (mode === 'other' && x.f) return false;
+      if (only && !x.o) return false;
       if (kw && (x.t + ' ' + x.m).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
@@ -112,7 +121,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
         var img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = 'https://static.mercdn.net/thumb/item/webp/' + x.i + '_1.jpg'; a.appendChild(img); card.appendChild(a);
         var body = el('div', 'body');
         body.appendChild(el('div', 't', x.t));
-        var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); body.appendChild(meta);
+        var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); if (x.o) meta.appendChild(el('span', 'tag', 'ラクマに無い')); body.appendChild(meta);
         var btns = el('div', 'btns');
         var b1 = el('button', 'btn', '📋 タイトルコピー'); b1.addEventListener('click', function(){ copy(x.t).then(function(ok){ toast(ok ? '📋 コピーしました' : 'コピーできませんでした'); }); });
         var b2 = el('a', 'btn go', '🔎 メルカリ検索'); b2.href = 'https://jp.mercari.com/search?keyword=' + encodeURIComponent(x.t); b2.target = '_blank'; b2.rel = 'noopener noreferrer';
