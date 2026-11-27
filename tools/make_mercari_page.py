@@ -19,13 +19,24 @@ d = json.load(open(SRC))
 ONLY_SRC = os.path.join(os.path.dirname(SRC), 'mercari_only.json')
 only = json.load(open(ONLY_SRC)) if os.path.exists(ONLY_SRC) else {}
 ONLY = set(only.get('ids') or [])
+# メルカリに出ていないラクマ出品（写真・題名はラクマの出品スナップショットから）
+RSNAP = os.path.expanduser('~/Documents/nobushop_mail/rakuma_snap/items.json')
+rsnap = json.load(open(RSNAP)) if (only.get('rakumaOnly') and os.path.exists(RSNAP)) else {}
+ritems = []
+for h in only.get('rakumaOnly') or []:
+    v = rsnap.get(h)
+    if not v: continue
+    t = re.sub(r'\s+', ' ', v.get('title') or '').strip()
+    isfur = bool(FUR.search(t) and not NOT_FUR.search(t)) and 'FOXEY' not in t
+    ritems.append({'h': h, 't': t, 'p': int(v.get('price') or 0), 'm': (v.get('mgmtNo') or '').strip(), 'f': 1 if isfur else 0, 'u': v.get('imageUrl') or ''})
+ritems.sort(key=lambda x: (x['m'] if re.match(r'^2[4-9](0[1-9]|1[0-2])\d{2}', x['m']) else '\uffff', x['t']))
 items = []
 for mid, v in d['items'].items():
     t = re.sub(r'\s+', ' ', v.get('title') or '').strip()
     m = (v.get('mgmt') or '').strip()
     items.append({'i': mid, 't': t, 'p': int(v.get('price') or 0), 'm': m, 'f': 1 if (FUR.search(t) and not NOT_FUR.search(t)) else 0, 'o': 1 if mid in ONLY else 0})
 items.sort(key=lambda x: (x['m'] or '￿', x['t']))
-data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
+data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items, 'r': ritems}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
 
 HTML = r'''<!doctype html>
 <html lang="ja">
@@ -69,14 +80,14 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
 </head>
 <body>
 <header>
-  <div class="top"><h1>メルカリ販売中 <span id="cnt" style="font-size:14px;color:var(--sub);font-weight:600"></span></h1><a class="back" href="/">← アプリへ</a></div>
+  <div class="top"><h1><span id="ttl">メルカリ販売中</span> <span id="cnt" style="font-size:14px;color:var(--sub);font-weight:600"></span></h1><a class="back" href="/">← アプリへ</a></div>
   <div class="note" id="note"></div>
   <div class="chips">
     <button class="chip on" data-f="fur">毛皮</button>
     <button class="chip" data-f="other">毛皮以外</button>
     <button class="chip" data-f="all">すべて</button>
   </div>
-  <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button></div>
+  <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button><button class="chip" id="ronly" style="display:none">ラクマだけの物</button></div>
   <input id="q" type="search" placeholder="タイトル・管理番号でしぼる" autocomplete="off">
 </header>
 <main id="list"></main>
@@ -87,7 +98,12 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   var D = JSON.parse(document.getElementById('data').textContent);
   var mode = 'fur', q = '', only = false;
   var onlyBtn = document.getElementById('only'), onlyN = D.items.filter(function(x){ return x.o; }).length;
-  if (onlyN) { document.getElementById('onlyRow').style.display = ''; onlyBtn.addEventListener('click', function(){ only = !only; onlyBtn.className = 'chip' + (only ? ' on' : ''); render(); window.scrollTo(0, 0); }); }
+  var rak = false, rBtn = document.getElementById('ronly'), RL = D.r || [];
+  function sync(){ onlyBtn.className = 'chip' + (only && !rak ? ' on' : ''); rBtn.className = 'chip' + (rak ? ' on' : ''); document.getElementById('ttl').textContent = rak ? 'ラクマだけの物' : 'メルカリ販売中'; render(); window.scrollTo(0, 0); }
+  if (onlyN || RL.length) document.getElementById('onlyRow').style.display = '';
+  if (!onlyN) onlyBtn.style.display = 'none';
+  onlyBtn.addEventListener('click', function(){ only = rak ? true : !only; rak = false; sync(); });
+  if (RL.length) { rBtn.style.display = ''; rBtn.addEventListener('click', function(){ rak = !rak; sync(); }); }
   var list = document.getElementById('list'), toastEl = document.getElementById('toast'), tm;
   document.getElementById('note').textContent = D.at + ' 時点 ／ 管理番号が古い順（仕入れ月ごと）';
   function toast(s){ toastEl.textContent = s; toastEl.className = 'on'; clearTimeout(tm); tm = setTimeout(function(){ toastEl.className = ''; }, 1800); }
@@ -96,14 +112,14 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     if (navigator.clipboard && navigator.clipboard.writeText) { return navigator.clipboard.writeText(text).then(function(){ return true; }, function(){ return fb(); }); }
     return Promise.resolve(fb());
   }
-  function month(m){ return /^\d{6}/.test(m) ? '20' + m.slice(0,2) + '年' + Number(m.slice(2,4)) + '月の仕入れ' : '管理番号なし'; }
+  function month(m){ var y = Number(m.slice(0,2)), mo = Number(m.slice(2,4)); if (/^\d{6}/.test(m) && y >= 24 && y <= (new Date().getFullYear() % 100) && mo >= 1 && mo <= 12) return '20' + m.slice(0,2) + '年' + mo + '月の仕入れ'; return m ? 'そのほかの管理番号' : '管理番号なし'; }
   function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function render(){
     var kw = q.trim().toLowerCase();
-    var rows = D.items.filter(function(x){
+    var rows = (rak ? RL : D.items).filter(function(x){
       if (mode === 'fur' && !x.f) return false;
       if (mode === 'other' && x.f) return false;
-      if (only && !x.o) return false;
+      if (!rak && only && !x.o) return false;
       if (kw && (x.t + ' ' + x.m).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
@@ -117,14 +133,14 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
       var h = el('h2'); h.appendChild(el('span', null, g.name)); h.appendChild(el('span', null, g.rows.length + '点')); frag.appendChild(h);
       g.rows.forEach(function(x){
         var card = el('div', 'card');
-        var a = el('a', 'ph'); a.href = 'https://jp.mercari.com/item/' + x.i; a.target = '_blank'; a.rel = 'noopener noreferrer';
-        var img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = 'https://static.mercdn.net/thumb/item/webp/' + x.i + '_1.jpg'; a.appendChild(img); card.appendChild(a);
+        var a = el('a', 'ph'); a.href = rak ? 'https://item.fril.jp/' + x.h : 'https://jp.mercari.com/item/' + x.i; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        var img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = rak ? x.u : 'https://static.mercdn.net/thumb/item/webp/' + x.i + '_1.jpg'; a.appendChild(img); card.appendChild(a);
         var body = el('div', 'body');
         body.appendChild(el('div', 't', x.t));
-        var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); if (x.o) meta.appendChild(el('span', 'tag', 'ラクマに無い')); body.appendChild(meta);
+        var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); if (rak) meta.appendChild(el('span', 'tag', 'メルカリに無い')); else if (x.o) meta.appendChild(el('span', 'tag', 'ラクマに無い')); body.appendChild(meta);
         var btns = el('div', 'btns');
         var b1 = el('button', 'btn', '📋 タイトルコピー'); b1.addEventListener('click', function(){ copy(x.t).then(function(ok){ toast(ok ? '📋 コピーしました' : 'コピーできませんでした'); }); });
-        var b2 = el('a', 'btn go', '🔎 メルカリ検索'); b2.href = 'https://jp.mercari.com/search?keyword=' + encodeURIComponent(x.t); b2.target = '_blank'; b2.rel = 'noopener noreferrer';
+        var b2 = el('a', 'btn go', rak ? '🔎 ラクマで開く' : '🔎 メルカリ検索'); b2.href = rak ? 'https://item.fril.jp/' + x.h : 'https://jp.mercari.com/search?keyword=' + encodeURIComponent(x.t); b2.target = '_blank'; b2.rel = 'noopener noreferrer';
         btns.appendChild(b1); btns.appendChild(b2); body.appendChild(btns);
         card.appendChild(body); frag.appendChild(card);
       });
