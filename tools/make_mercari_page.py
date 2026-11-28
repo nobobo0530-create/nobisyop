@@ -52,7 +52,10 @@ for mid, v in d['items'].items():
         if hist.get('base') and fs > hist['base']:
             it['n'] = str(int(fs[5:7])) + '/' + str(int(fs[8:10]))   # 例 '11/28'（この日の版から毛皮タブに出た）
     items.append(it)
-items.sort(key=lambda x: (x['m'] or '￿', x['t']))
+def mkey(m):
+    if re.match(r'^2[4-9]\d{3}$', m): return m[:2] + '0' + m[2:]   # 26705 → 260705（月の 0 が抜けた番号。表示は変えず、並びだけ日付の位置にする）
+    return m or '￿'
+items.sort(key=lambda x: (mkey(x['m']), x['t']))
 if hist_changed:
     json.dump(hist, open(HIST_SRC, 'w'), ensure_ascii=False)
 BASE = hist.get('base') or ''
@@ -114,8 +117,8 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   </div>
   <div class="chips" id="sortRow" style="display:none">
     <button class="chip sort" data-s="mgmt">管理番号が古い順</button>
+    <button class="chip sort" data-s="month">月ごとに区切る</button>
     <button class="chip sort" data-s="old">出品が古い順</button>
-    <button class="chip sort" data-s="new">出品が新しい順</button>
   </div>
   <div class="chips" id="newRow" style="display:none"><button class="chip" id="newOnly"></button></div>
   <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button><button class="chip" id="ronly" style="display:none">ラクマだけの物</button></div>
@@ -143,7 +146,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   onlyBtn.addEventListener('click', function(){ only = rak ? true : !only; rak = false; sync(); });
   if (RL.length) { rBtn.style.display = ''; rBtn.addEventListener('click', function(){ rak = !rak; sync(); }); }
   var list = document.getElementById('list'), toastEl = document.getElementById('toast'), tm;
-  function noteText(){ document.getElementById('note').textContent = D.at + ' 時点 ／ ' + (rak || sortMode === 'mgmt' ? '管理番号が古い順（仕入れ月ごと）' : sortMode === 'old' ? '出品が古い順（メルカリの並びから）' : '出品が新しい順（メルカリの並びから）') + ' ／ 毛皮＝カテゴリが毛皮・ファーコート'; }
+  function noteText(){ document.getElementById('note').textContent = D.at + ' 時点 ／ ' + (rak || sortMode === 'month' ? '管理番号が古い順（仕入れ月ごとに区切り）' : sortMode === 'mgmt' ? '管理番号が古い順（1番から通し）' : '出品が古い順（メルカリの並びから）') + ' ／ 毛皮＝カテゴリが毛皮・ファーコート'; }
   noteText();
   function toast(s){ toastEl.textContent = s; toastEl.className = 'on'; clearTimeout(tm); tm = setTimeout(function(){ toastEl.className = ''; }, 1800); }
   function copy(text){
@@ -151,7 +154,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     if (navigator.clipboard && navigator.clipboard.writeText) { return navigator.clipboard.writeText(text).then(function(){ return true; }, function(){ return fb(); }); }
     return Promise.resolve(fb());
   }
-  function month(m){ var y = Number(m.slice(0,2)), mo = Number(m.slice(2,4)); if (/^\d{6}/.test(m) && y >= 24 && y <= (new Date().getFullYear() % 100) && mo >= 1 && mo <= 12) return '20' + m.slice(0,2) + '年' + mo + '月の仕入れ'; return m ? 'そのほかの管理番号' : '管理番号なし'; }
+  function month(m){ if (/^2[4-9]\d{3}$/.test(m)) m = m.slice(0,2) + '0' + m.slice(2); var y = Number(m.slice(0,2)), mo = Number(m.slice(2,4)); if (/^\d{6}/.test(m) && y >= 24 && y <= (new Date().getFullYear() % 100) && mo >= 1 && mo <= 12) return '20' + m.slice(0,2) + '年' + mo + '月の仕入れ'; return m ? 'そのほかの管理番号' : '管理番号なし'; }
   function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function render(){
     var kw = q.trim().toLowerCase();
@@ -163,14 +166,15 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
       if (kw && (x.t + ' ' + x.m).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
-    var byOrd = !rak && D.ord && sortMode !== 'mgmt';
-    if (byOrd) rows = rows.slice().sort(function(a, b){ return sortMode === 'old' ? b.k - a.k : a.k - b.k; });
+    var byOrd = !rak && D.ord && sortMode === 'old';
+    var flat = !rak && (byOrd || sortMode === 'mgmt');   // 見出しで区切らず、1番から通しで並べる（2026-11-28：月ごとの区切りは管理番号の通しの順として見づらい、とのユーザーの指摘）
+    if (byOrd) rows = rows.slice().sort(function(a, b){ return b.k - a.k; });
     noteText();
     document.getElementById('cnt').textContent = rows.length + '点';
     list.textContent = '';
     if (!rows.length) { list.appendChild(el('div', 'empty', '当てはまる出品がありません')); return; }
     var groups = [], cur = null;
-    if (byOrd) groups.push({ name: '', rows: rows });
+    if (flat) groups.push({ name: '', rows: rows });
     else rows.forEach(function(x){ var g = month(x.m); if (!cur || cur.name !== g) { cur = { name: g, rows: [] }; groups.push(cur); } cur.rows.push(x); });
     var seq = 0;
     var frag = document.createDocumentFragment();
@@ -182,7 +186,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
         var img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = rak ? x.u : 'https://static.mercdn.net/thumb/item/webp/' + x.i + '_1.jpg'; a.appendChild(img); card.appendChild(a);
         var body = el('div', 'body');
         if (!rak && x.n) body.appendChild(el('div', 'new', '✅ 追加（' + x.n + ' の一覧から）'));
-        var tt = el('div', 't'); if (byOrd) { seq++; tt.appendChild(el('span', 'no', seq + '.')); } tt.appendChild(document.createTextNode(x.t)); body.appendChild(tt);
+        var tt = el('div', 't'); if (flat) { seq++; tt.appendChild(el('span', 'no', seq + '.')); } tt.appendChild(document.createTextNode(x.t)); body.appendChild(tt);
         var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); if (rak) meta.appendChild(el('span', 'tag', 'メルカリに無い')); else if (x.o) meta.appendChild(el('span', 'tag', 'ラクマに無い')); body.appendChild(meta);
         var btns = el('div', 'btns');
         var b1 = el('button', 'btn', '📋 タイトルコピー'); b1.addEventListener('click', function(){ copy(x.t).then(function(ok){ toast(ok ? '📋 コピーしました' : 'コピーできませんでした'); }); });
