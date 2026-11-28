@@ -52,10 +52,9 @@ for mid, v in d['items'].items():
         if hist.get('base') and fs > hist['base']:
             it['n'] = str(int(fs[5:7])) + '/' + str(int(fs[8:10]))   # 例 '11/28'（この日の版から毛皮タブに出た）
     items.append(it)
-def mkey(m):
-    if re.match(r'^2[4-9]\d{3}$', m): return m[:2] + '0' + m[2:]   # 26705 → 260705（月の 0 が抜けた番号。表示は変えず、並びだけ日付の位置にする）
-    return m or '￿'
-items.sort(key=lambda x: (mkey(x['m']), x['t']))
+# 並びは前の版（2026-11-25）と同じ：管理番号の文字の順。日付の形（6桁）でない番号（26705・ya・yo15 など）と管理番号なしは、うしろにまとまる
+#   2026-11-28 ユーザー：「前回は管理番号なしのところに 26705 とかも入ってた。そこだけまとめて欲しい」→ 日付の位置へ混ぜない
+items.sort(key=lambda x: (x['m'] or '￿', x['t']))
 if hist_changed:
     json.dump(hist, open(HIST_SRC, 'w'), ensure_ascii=False)
 BASE = hist.get('base') or ''
@@ -154,7 +153,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     if (navigator.clipboard && navigator.clipboard.writeText) { return navigator.clipboard.writeText(text).then(function(){ return true; }, function(){ return fb(); }); }
     return Promise.resolve(fb());
   }
-  function month(m){ if (/^2[4-9]\d{3}$/.test(m)) m = m.slice(0,2) + '0' + m.slice(2); var y = Number(m.slice(0,2)), mo = Number(m.slice(2,4)); if (/^\d{6}/.test(m) && y >= 24 && y <= (new Date().getFullYear() % 100) && mo >= 1 && mo <= 12) return '20' + m.slice(0,2) + '年' + mo + '月の仕入れ'; return m ? 'そのほかの管理番号' : '管理番号なし'; }
+  function month(m){ var y = Number(m.slice(0,2)), mo = Number(m.slice(2,4)); if (/^\d{6}/.test(m) && y >= 24 && y <= (new Date().getFullYear() % 100) && mo >= 1 && mo <= 12) return '20' + m.slice(0,2) + '年' + mo + '月の仕入れ'; return m ? 'そのほかの管理番号' : '管理番号なし'; }
   function el(tag, cls, text){ var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
   function render(){
     var kw = q.trim().toLowerCase();
@@ -174,7 +173,11 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     list.textContent = '';
     if (!rows.length) { list.appendChild(el('div', 'empty', '当てはまる出品がありません')); return; }
     var groups = [], cur = null;
-    if (flat) groups.push({ name: '', rows: rows });
+    if (byOrd) groups.push({ name: '', rows: rows });
+    else if (flat) {
+      // 日付の形の番号は見出しなしで通し。うしろの「そのほかの管理番号」「管理番号なし」だけ見出しを付けてまとめる（前の版と同じまとまり）
+      rows.forEach(function(x){ var g = month(x.m); var name = /の仕入れ$/.test(g) ? '' : g; if (!cur || cur.name !== name) { cur = { name: name, rows: [] }; groups.push(cur); } cur.rows.push(x); });
+    }
     else rows.forEach(function(x){ var g = month(x.m); if (!cur || cur.name !== g) { cur = { name: g, rows: [] }; groups.push(cur); } cur.rows.push(x); });
     var seq = 0;
     var frag = document.createDocumentFragment();
