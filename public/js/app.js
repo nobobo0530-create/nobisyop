@@ -8038,6 +8038,7 @@ const InventoryTab = () => {
   const [inlineDraft, setInlineDraft] = React.useState({ price:'', ship:'', store:'', sale:'' });
   const [bundleShipOpen, setBundleShipOpen] = React.useState(null);   // 編集中の bundleGroup
   const [splitOriginOpen, setSplitOriginOpen] = React.useState(null); // 「分割前のデータ」を表示中の bundleGroup
+  const [bundleReprice, setBundleReprice] = React.useState(null);     // 商品詳細で「合計はそのまま、1点ずつの金額を変える」入力中 { bg, draft:{id:金額の文字}, touched:[触った順のid] }
   const [coverPickerOpen, setCoverPickerOpen] = React.useState(null); // 「表紙の写真を変更」を表示中の bundleGroup
   const [bundleShipTotalIn, setBundleShipTotalIn] = React.useState(''); // 同梱送料の合計入力
   const [bundleShipDraft, setBundleShipDraft] = React.useState({});     // { [itemId]: '文字列' }
@@ -8221,6 +8222,8 @@ const InventoryTab = () => {
   }, [filter, search, storeFilter, catFilter, sort, groupBundles]);
 
   React.useEffect(() => { if (focusBundle && filter !== 'bundleAll') setFocusBundle(null); }, [filter]);
+  // 別の商品を開いた・詳細を閉じた時は、分け直しの入力を捨てる
+  React.useEffect(() => { setBundleReprice(null); }, [selected?.id]);
 
   const statusLabel = { unlisted: '未出品', listed: '出品中', sold: '売却済' };
   const statusClass = { unlisted: 'tag-unlisted', listed: 'tag-active', sold: 'tag-sold' };
@@ -8604,6 +8607,99 @@ const InventoryTab = () => {
     setBundleSetTotalIn('');
     setBundleTypeDraft('');
     toast(`✅ ${members.length}点の内訳を更新しました`);
+  };
+
+  // ── まとめ・分割した商品：合計を変えずに、1点ずつの仕入れ値を分け直す ──
+  //   2026-11-28 ユーザー指定：「分割した商品は、あとから値段変えれるようにしたい。分割前の金額が崩れないように」
+  const openBundleReprice = (bg) => {
+    const draft = {};
+    bundleShipMembers(bg).forEach(i => { draft[i.id] = String(Number(i.purchasePrice) || 0); });
+    setBundleReprice({ bg, draft, touched: [] });
+  };
+  // 1点の金額を打つと、まだ触っていない物に差額を振り分けて合計を保つ（2点の時は、いつも相手の1点が自動で変わる）
+  const changeBundleReprice = (id, raw) => {
+    setBundleReprice(prev => {
+      if (!prev) return prev;
+      const members = bundleShipMembers(prev.bg);
+      const total = members.reduce((s, m) => s + (Number(m.purchasePrice) || 0), 0);
+      const touched = members.length === 2 ? [id] : [...prev.touched.filter(t => t !== id), id];
+      const draft = { ...prev.draft, [id]: String(raw).replace(/[^\d]/g, '') };
+      const free = members.filter(m => !touched.includes(m.id));
+      if (free.length > 0) {
+        const rest = total - members.filter(m => touched.includes(m.id)).reduce((s, m) => s + (Number(draft[m.id]) || 0), 0);
+        if (rest >= 0) {
+          const alloc = allocLargestRemainder(rest, free.map(m => Number(m.purchasePrice) || 0));
+          free.forEach((m, k) => { draft[m.id] = String(alloc[k]); });
+        } else {
+          free.forEach(m => { draft[m.id] = '0'; });
+        }
+      }
+      return { ...prev, draft, touched };
+    });
+  };
+  const saveBundleReprice = () => {
+    const st = bundleReprice;
+    if (!st) return;
+    const members = bundleShipMembers(st.bg);
+    const oldOf = m => Number(m.purchasePrice) || 0;
+    const newOf = m => Math.max(0, Number(st.draft[m.id]) || 0);
+    const total = members.reduce((s, m) => s + oldOf(m), 0);
+    const sum = members.reduce((s, m) => s + newOf(m), 0);
+    if (sum !== total) { toast(`❌ 合計が ¥${total.toLocaleString()} になるようにしてください`); return; }
+    if (members.every(m => newOf(m) === oldOf(m))) { setBundleReprice(null); return; }
+    const div = data.settings?.priceSplitDivisor || 100;
+    const deltaById = {};
+    // 1) 金額と内訳。内訳（商品代＋送料＋手数料−クーポン＝仕入れ値）が合っている物は、送料などを保ったまま商品代を合わせる
+    const priced = (data.inventory || []).map(i => {
+      if (i.bundleGroup !== st.bg) return i;
+      const np = newOf(i);
+      if (np === oldOf(i)) return i;
+      deltaById[i.id] = np - oldOf(i);
+      const pc = i.purchaseCost || {};
+      const sh = Number(pc.shippingTaxIn ?? i.shippingTaxIn) || 0;
+      const fe = Number(pc.optionalFeeTaxIn ?? i.optionalFeeTaxIn) || 0;
+      const cp = Number(pc.couponTaxIn ?? i.couponTaxIn) || 0;
+      const it = Number(pc.itemPriceTaxIn ?? i.itemPriceTaxIn) || 0;
+      const consistent = it + sh + fe - cp === oldOf(i);
+      let brk = null;
+      if (consistent) {
+        if (np - sh - fe + cp >= 0) brk = { itemPriceTaxIn: np - sh - fe + cp };
+        else if (np - fe + cp >= 0) brk = { itemPriceTaxIn: 0, shippingTaxIn: np - fe + cp }; // 新しい金額が送料より小さい時は、送料の方を減らす
+      }
+      const rate = pc.itemTaxRate != null ? Number(pc.itemTaxRate) : 10;
+      const ex = brk && 'itemPriceTaxEx' in pc ? { itemPriceTaxEx: rate === 0 ? brk.itemPriceTaxIn : Math.round(brk.itemPriceTaxIn / (1 + rate / 100)) } : {};
+      return {
+        ...i,
+        purchasePrice: np,
+        ...(brk || {}),
+        priceUnconfirmed: np > 0 ? false : i.priceUnconfirmed,
+        purchaseCost: { ...pc, ...(brk || {}), ...ex, totalTaxIn: np, totalTaxEx: np },
+      };
+    });
+    // 2) 管理番号。出品日が入っている物・売却済みは、出品ページに書いた番号と合わなくなるので変えない（2026-11-22 ユーザーの指摘）
+    const before = new Map((data.inventory || []).map(i => [i.id, i]));
+    const usedNos = new Set();
+    const updated = priced.map(i => {
+      if (!(i.id in deltaById)) return i;
+      const b = before.get(i.id);
+      if (!b || b.listDate || b.status === 'sold') return i;
+      const no = mgmtNoAfterChange(b, i, div, priced, usedNos);
+      if (no && no !== b.mgmtNo) usedNos.add(no);
+      return no === i.mgmtNo ? i : { ...i, mgmtNo: no };
+    });
+    setData({
+      ...data,
+      inventory: updated,
+      // 売却済みの物は、売上に控えてある仕入れ値と利益も同じ差額だけ動かす（内訳の編集と同じ決まり）
+      sales: (data.sales || []).map(s => {
+        const d = deltaById[s.inventoryId];
+        if (!d) return s;
+        return { ...s, purchasePrice: (Number(s.purchasePrice) || 0) + d, profit: (Number(s.profit) || 0) - d };
+      }),
+    });
+    setSelected(prev => { const n = prev && updated.find(i => i.id === prev.id); return n ? { ...prev, ...n } : prev; });
+    setBundleReprice(null);
+    toast(`✅ 金額を分け直しました（合計 ¥${total.toLocaleString()} のまま）`);
   };
 
   // まとめ確定の入力を1行ぶんにまとめる（商品代が入っている行だけが対象）
@@ -11081,6 +11177,61 @@ const InventoryTab = () => {
                       <span style={{fontSize:17,fontWeight:800,color:'#3730a3'}}>¥{formatMoney(total)}</span>
                     </div>
                   </div>
+                  {bundleReprice && bundleReprice.bg === selected.bundleGroup ? (() => {
+                    /* 合計はそのまま、1点ずつの金額を変える */
+                    const rp = bundleReprice;
+                    const valOf = m => Math.max(0, Number(rp.draft[m.id]) || 0);
+                    const sum = mates.reduce((s, m) => s + valOf(m), 0);
+                    const diff = total - sum;
+                    const changed = mates.some(m => valOf(m) !== (Number(m.purchasePrice) || 0));
+                    const blank = mates.some(m => String(rp.draft[m.id] ?? '') === ''); // 打っている途中の空欄を ¥0 として保存しない
+                    const canSave = diff === 0 && changed && !blank;
+                    return (
+                      <div>
+                        <div style={{fontSize:11,color:'#4338ca',lineHeight:1.5,marginBottom:8}}>
+                          1点の金額を変えると、残りの物に自動で振り分けます。合計 ¥{formatMoney(total)} は変わりません。
+                        </div>
+                        {mates.map(m => (
+                          <div key={m.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',borderRadius:8,marginBottom:4,
+                            background: m.id === selected.id ? '#c7d2fe' : '#fff'}}>
+                            <span style={{fontSize:12,color:'#1e1b4b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,minWidth:0,
+                              fontWeight: m.id === selected.id ? 700 : 500}}>
+                              {m.bundleLabel ? `${m.bundleLabel}：` : ''}{m.productName || '(名称未設定)'}
+                              {m.status === 'sold' && <span style={{fontSize:10,color:'#b45309',marginLeft:4}}>売却済み</span>}
+                            </span>
+                            <span style={{fontSize:13,color:'#4338ca',fontWeight:700,flexShrink:0}}>¥</span>
+                            <input type="text" inputMode="numeric" value={rp.draft[m.id] ?? ''}
+                              onChange={e => changeBundleReprice(m.id, e.target.value)}
+                              onFocus={e => { try { e.target.select(); } catch(_e) {} }}
+                              style={{width:104,flexShrink:0,boxSizing:'border-box',fontSize:16,fontWeight:700,textAlign:'right',
+                                padding:'8px 8px',minHeight:40,border:'1.5px solid #a5b4fc',borderRadius:8,color:'#1e1b4b',background:'#fff'}}/>
+                          </div>
+                        ))}
+                        <div style={{fontSize:12,fontWeight:700,margin:'8px 2px',color: diff === 0 ? '#16a34a' : '#dc2626'}}>
+                          {diff === 0 ? `✓ 合計 ¥${formatMoney(total)} のまま`
+                            : diff > 0 ? `あと ¥${formatMoney(diff)} 足りません（合計 ¥${formatMoney(total)} にしてください）`
+                            : `¥${formatMoney(-diff)} 多いです（合計 ¥${formatMoney(total)} にしてください）`}
+                        </div>
+                        {mates.some(m => m.listDate && m.status !== 'sold') && (
+                          <div style={{fontSize:10,color:'#6b7280',lineHeight:1.5,marginBottom:8}}>
+                            出品日が入っている物は、出品ページと合わなくならないよう管理番号を変えません。
+                          </div>
+                        )}
+                        <div style={{display:'flex',gap:8}}>
+                          <button onClick={() => setBundleReprice(null)}
+                            style={{flex:1,minHeight:44,border:'1px solid #c7d2fe',background:'#fff',color:'#4338ca',borderRadius:10,fontSize:13,fontWeight:700,cursor:'pointer'}}>
+                            やめる
+                          </button>
+                          <button onClick={saveBundleReprice} disabled={!canSave}
+                            style={{flex:2,minHeight:44,border:'none',background: canSave ? '#4f46e5' : '#c7d2fe',color:'#fff',borderRadius:10,fontSize:13,fontWeight:800,
+                              cursor: canSave ? 'pointer' : 'default'}}>
+                            この金額で保存
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })() : (
+                    <React.Fragment>
                   {mates.map(m => (
                     <div key={m.id}
                       onClick={() => { if (m.id !== selected.id) setSelected(m); }}
@@ -11106,6 +11257,13 @@ const InventoryTab = () => {
                       </div>
                     </div>
                   ))}
+                      <button onClick={() => openBundleReprice(selected.bundleGroup)}
+                        style={{width:'100%',minHeight:44,marginTop:4,border:'1px dashed #a5b4fc',background:'#fff',color:'#4338ca',
+                          borderRadius:10,fontSize:12,fontWeight:700,cursor:'pointer',touchAction:'manipulation'}}>
+                        ✏️ 1点ずつの金額を変える（合計はそのまま）
+                      </button>
+                    </React.Fragment>
+                  )}
                 </div>
               );
             })()}
