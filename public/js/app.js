@@ -9122,8 +9122,19 @@ const InventoryTab = () => {
           return { value: v, label: l, count: cnt };
         })} />
 
+      {/* 並び順の切り替え（2026-11-28 ユーザー依頼：古い順でも見たい。ふだんは新しい順）。押すたびに 新しい順 ⇄ 古い順 */}
+      {filter !== 'dupCheck' && filter !== 'auditCheck' && (
+        <div style={{display:'flex',justifyContent:'flex-end',padding:'0 16px 8px',background:'var(--bg)'}}>
+          <button onClick={() => setSort(sort === 'new' ? 'old' : 'new')}
+            style={{minHeight:36,padding:'0 12px',borderRadius:99,border:'1px solid #e5e7eb',background: sort === 'new' ? '#fff' : '#1e293b',color: sort === 'new' ? '#444' : '#fff',
+              fontSize:13,fontWeight:600,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            ⇅ {sort === 'new' ? '新しい順' : sort === 'old' ? '古い順' : sort === 'mgmt' ? '管理番号が古い順' : '利益が高い順'}
+          </button>
+        </div>
+      )}
+
       {/* いま効いている絞り込みだけを1行のチップで表示（無ければ出さない） */}
-      {(activeChips.some(ch => ch.key !== 'cp') || taskDef) && (
+      {(activeChips.some(ch => ch.key !== 'cp' && ch.key !== 'so') || taskDef) && (   /* 並び順は上の切り替えボタンに出しているので、ここには出さない */
         <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'0 16px 10px',background:'var(--bg)'}}>
           {taskDef && (
             <button onClick={clearTask}
@@ -9131,7 +9142,7 @@ const InventoryTab = () => {
               {taskDef.icon} {taskDef.label} {taskDef.cnt}件　✕
             </button>
           )}
-          {activeChips.filter(ch => ch.key !== 'cp').map(ch => (
+          {activeChips.filter(ch => ch.key !== 'cp' && ch.key !== 'so').map(ch => (
             <button key={ch.key} onClick={ch.clear}
               style={{minHeight:36,padding:'0 12px',borderRadius:99,border:'none',background:'rgba(232,64,64,0.1)',color:'var(--color-primary)',
                 fontSize:13,fontWeight:600,cursor:'pointer',touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
