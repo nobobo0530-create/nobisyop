@@ -12562,7 +12562,7 @@ const InventoryLinkPicker = ({ data, sale, info = {}, busy = false, pickOnly = f
                     <span style={{background: it.status === 'listed' ? '#dcfce7' : '#f3f4f6', color: it.status === 'listed' ? '#166534' : '#555', borderRadius:99, padding:'0 6px', fontWeight:700}}>{it.status === 'listed' ? '出品中' : it.status === 'unlisted' ? '未出品' : it.status === 'sold' ? '売却済み' : it.status || ''}</span>
                     {it.purchaseStore && <span>🛒 {it.purchaseStore}</span>}
                     {/* ヤフオク仕入れは商品ページを開いて確かめられる（2026-11-28 ユーザー依頼。リンクを出すだけで、読み込みは増えない） */}
-                    {/^[a-z]\d{9,10}$/i.test(yahooAidOf(it)) && (   /* 先頭の英字が抜けた古い番号（数字だけ）はページが開けないので出さない */
+                    {/^[a-z]?\d{9,10}$/i.test(yahooAidOf(it)) && (   /* ヤフオクの番号は「英字1つ＋数字」か「数字だけ」（数字だけの番号でもページは開ける。2026-11-28 に確認） */
                       <a href={yahooItemUrl(it)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
                         style={{display:'inline-flex',alignItems:'center',minHeight:30,padding:'0 12px',borderRadius:99,border:'1px solid #bfdbfe',background:'#fff',
                           color:'#1d4ed8',fontWeight:800,fontSize:12,textDecoration:'none',touchAction:'manipulation'}}>ヤフオクで見る ↗</a>
