@@ -336,7 +336,25 @@
   (function() {
     var fixTimer = null;
 
+    // ★ 文字を打っている間は動かさない（2026-11-28：ひらがなを打ったあと変換候補が出ないことが多い、とのユーザー報告）
+    //    変換候補の帯が出入りするとキーボードの高さが変わり、そのたびに下の「1pxスクロール」が走って、変換中の文字が確定されてしまう。
+    //    この修正はキーボードが閉じた後のためのものなので、入力欄にカーソルがある間・変換中は何もしない
+    var composing = false;
+    document.addEventListener('compositionstart', function() { composing = true; }, true);
+    document.addEventListener('compositionend', function() { composing = false; }, true);
+    function typingNow() {
+      if (composing) return true;
+      var a = document.activeElement;
+      if (!a) return false;
+      if (a.tagName === 'TEXTAREA' || a.isContentEditable) return true;
+      if (a.tagName !== 'INPUT') return false;
+      var t = (a.getAttribute('type') || 'text').toLowerCase();
+      return ['checkbox','radio','button','submit','file','range','color','date','month','time','datetime-local'].indexOf(t) < 0;
+    }
+    window.__nobuTypingNow = typingNow;
+
     function fixIOSTouchTargets() {
+      if (typingNow()) return;
       // 重要: scrollTo(same, same) はiOSがスキップするため、1px動かして元に戻す
       var sx = window.scrollX || 0;
       var sy = window.scrollY || 0;

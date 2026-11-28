@@ -1,4 +1,4 @@
-/*APP_SRC_SHA256:68b0c22ce9f6f0eb1769d683b4225a4843c9558d106ea5841e85cf02467e1080*/
+/*APP_SRC_SHA256:bddcb8e4f9fa3dd092edc7058156103c125b8aacbe00469bfb6787616747335d*/
 // ============================================================
 // CONFIG - 変更しやすい設定値を集約
 // ============================================================
@@ -756,9 +756,11 @@ const newRegDraftTimerRef=React.useRef(null);// 新規登録下書き保存デ�
 // ② キーボード閉じ検出 → window.scrollTo(0,scrollY) 強制リフロー（複数タイミング）
 // ③ input/textarea の blur 毎に強制リフロー（ブランド入力後の不具合も捕捉）
 const[kbOffset,setKbOffset]=React.useState(0);React.useEffect(()=>{// ── ① + ② visualViewport ──────────────────────────────
-const vv=window.visualViewport;let prevKbH=0;const reflow=()=>{try{window.scrollTo(0,window.scrollY);}catch(_){}};const onVVChange=()=>{const kbH=vv?Math.max(0,window.innerHeight-vv.height-vv.offsetTop):0;// キーボードが閉じた瞬間（100px超 → 50px以下に急減）を検知
+const vv=window.visualViewport;let prevKbH=0;// 文字を打っている間（別の入力欄へ移った直後・変換中）は動かさない（2026-11-28：変換候補が出なくなる対策。判定は index.html）
+const reflow=()=>{try{if(window.__nobuTypingNow&&window.__nobuTypingNow())return;window.scrollTo(0,window.scrollY);}catch(_){}};const onVVChange=()=>{const kbH=vv?Math.max(0,window.innerHeight-vv.height-vv.offsetTop):0;// キーボードが閉じた瞬間（100px超 → 50px以下に急減）を検知
 if(prevKbH>100&&kbH<50){// iOSタッチ座標マップを強制リセット（0ms / 100ms / 300ms の3段発火）
-reflow();setTimeout(reflow,100);setTimeout(reflow,300);}prevKbH=kbH;setKbOffset(kbH>50?kbH:0);};if(vv){vv.addEventListener('resize',onVVChange);vv.addEventListener('scroll',onVVChange);onVVChange();}// ── ③ input/textarea blur → 強制リフロー ────────────────
+reflow();setTimeout(reflow,100);setTimeout(reflow,300);}prevKbH=kbH;// 使うのは「キーボードが出ているか」だけ。高さそのものを入れると、変換候補の帯が出入りするたびに画面全体を描き直してしまう
+setKbOffset(kbH>50?1:0);};if(vv){vv.addEventListener('resize',onVVChange);vv.addEventListener('scroll',onVVChange);onVVChange();}// ── ③ input/textarea blur → 強制リフロー ────────────────
 // ブランド・商品名など任意の入力フィールドを閉じた後も確実に座標を修正する
 const onFocusOut=e=>{const tag=e.target?.tagName;if(tag!=='INPUT'&&tag!=='TEXTAREA')return;reflow();setTimeout(reflow,50);setTimeout(reflow,150);setTimeout(reflow,350);};document.addEventListener('focusout',onFocusOut,{passive:true,capture:true});return()=>{if(vv){vv.removeEventListener('resize',onVVChange);vv.removeEventListener('scroll',onVVChange);}document.removeEventListener('focusout',onFocusOut,{capture:true});};},[]);// ★ 店舗仕入れ未入力から来た場合: 店舗払いで仕入れ先・日付・金額・決済方法を入れた状態で入力画面を開く
 React.useEffect(()=>{const sp=storePendingRef.current;if(!sp||editingItem)return;const master=data.settings?.storeMaster||getInitialData().settings.storeMaster;const stores=master.normalStores||[];const nm=sp.store||'';const chain=stores.find(c=>nm===c||nm.startsWith(c+' '));if(chain){setStoreCustomText(null);setStoreChain(chain);setBranchInput(nm===chain?'':nm.slice(chain.length+1));}else if(nm){setStoreCustomText(nm);setStoreChain('__custom__');}setPurchaseType('store');setForm(prev=>({...prev,purchaseDate:sp.date||prev.purchaseDate,purchaseStore:nm,itemPriceTaxIn:sp.amount?String(sp.amount):'',paymentMethod:sp.method||prev.paymentMethod}));setStep(3);return()=>{setPendingStorePurchase(null);};},[]);// 起動時に下書きチェック
@@ -1746,7 +1748,7 @@ syncToSupabase({},full);},[]);// ★★★ iOS Safari タッチ不能バグ 全�
 // input/textarea blur 時に window.scrollTo(0,scrollY) 強制リフロー
 // → ブランド・商品名など全フィールドのキーボード閉じ後に座標をリセット
 // PurchaseTab内でも同様に行っているが、App全体でも保険として実行
-React.useEffect(()=>{const reflow=()=>{try{window.scrollTo(0,window.scrollY);}catch(_){}};const onFocusOut=e=>{const tag=e.target?.tagName;if(tag!=='INPUT'&&tag!=='TEXTAREA')return;reflow();setTimeout(reflow,80);setTimeout(reflow,200);setTimeout(reflow,400);};document.addEventListener('focusout',onFocusOut,{passive:true,capture:true});return()=>document.removeEventListener('focusout',onFocusOut,{capture:true});},[]);// ── アプリ終了・バックグラウンド移行時に同期保存（データ消失防止）──
+React.useEffect(()=>{const reflow=()=>{try{if(window.__nobuTypingNow&&window.__nobuTypingNow())return;window.scrollTo(0,window.scrollY);}catch(_){}};const onFocusOut=e=>{const tag=e.target?.tagName;if(tag!=='INPUT'&&tag!=='TEXTAREA')return;reflow();setTimeout(reflow,80);setTimeout(reflow,200);setTimeout(reflow,400);};document.addEventListener('focusout',onFocusOut,{passive:true,capture:true});return()=>document.removeEventListener('focusout',onFocusOut,{capture:true});},[]);// ── アプリ終了・バックグラウンド移行時に同期保存（データ消失防止）──
 React.useEffect(()=>{const forceSave=()=>{// ★ バックグラウンド移行時のみ保存（前面復帰時は不要＆大量データでブロックを避ける）
 if(!document.hidden)return;try{// ★ thumbDataUrl（base64画像）を除外して保存（iOS Safariの5MB上限＋同期書き込みフリーズ防止）
 if(!_saveDirty)return;// 保存済み（Worker の保存も完了）なら何もしない＝重い圧縮をしない

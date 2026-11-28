@@ -3414,7 +3414,8 @@ const PurchaseTab = () => {
     // ── ① + ② visualViewport ──────────────────────────────
     const vv = window.visualViewport;
     let prevKbH = 0;
-    const reflow = () => { try { window.scrollTo(0, window.scrollY); } catch(_) {} };
+    // 文字を打っている間（別の入力欄へ移った直後・変換中）は動かさない（2026-11-28：変換候補が出なくなる対策。判定は index.html）
+    const reflow = () => { try { if (window.__nobuTypingNow && window.__nobuTypingNow()) return; window.scrollTo(0, window.scrollY); } catch(_) {} };
 
     const onVVChange = () => {
       const kbH = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
@@ -3426,7 +3427,8 @@ const PurchaseTab = () => {
         setTimeout(reflow, 300);
       }
       prevKbH = kbH;
-      setKbOffset(kbH > 50 ? kbH : 0);
+      // 使うのは「キーボードが出ているか」だけ。高さそのものを入れると、変換候補の帯が出入りするたびに画面全体を描き直してしまう
+      setKbOffset(kbH > 50 ? 1 : 0);
     };
 
     if (vv) {
@@ -21980,7 +21982,7 @@ const App = () => {
   // → ブランド・商品名など全フィールドのキーボード閉じ後に座標をリセット
   // PurchaseTab内でも同様に行っているが、App全体でも保険として実行
   React.useEffect(() => {
-    const reflow = () => { try { window.scrollTo(0, window.scrollY); } catch(_) {} };
+    const reflow = () => { try { if (window.__nobuTypingNow && window.__nobuTypingNow()) return; window.scrollTo(0, window.scrollY); } catch(_) {} };
     const onFocusOut = (e) => {
       const tag = e.target?.tagName;
       if (tag !== 'INPUT' && tag !== 'TEXTAREA') return;
