@@ -6743,7 +6743,7 @@ const arrivalDateLabel = (ymd) => {
 };
 
 // 箱1つ分の行（折りたたみ＋展開）。props が変わらなければ再描画しない
-const ArrivalBoxRow = React.memo(({ b, open, selMode, selected, onToggle, onSelect, onArrive, onSheet }) => {
+const ArrivalBoxRow = React.memo(({ b, open, selMode, selected, onToggle, onSelect, onArrive, onQuick, onSheet }) => {
   const pend = b.members.filter(i => !isItemArrived(i));
   const ids = b.members.map(i => i.id);
   const first = b.members[0];
@@ -6770,8 +6770,22 @@ const ArrivalBoxRow = React.memo(({ b, open, selMode, selected, onToggle, onSele
           {b.company && <div style={{fontSize:11,color:'#6b7280',lineHeight:'15px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{b.company}</div>}
           <div style={{fontSize:12,color:'#6b7280',lineHeight:'17px',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{b.members.length}点 · {mdDate} · ¥{b.total.toLocaleString()}</div>
         </div>
-        <span style={{flexShrink:0,minWidth:36,textAlign:'center',padding:'3px 8px',borderRadius:99,fontSize:12,fontWeight:800,
-          background: b.done ? '#dcfce7' : '#eef2ff',color: b.done ? '#15803d' : '#4338ca'}}>{b.done ? '✓' : b.arrived + '/' + b.members.length}</span>
+        {/* 届いたらここを押す（2026-11-28 ユーザー依頼：届いたらチェック、を分かりやすく）。箱を開かなくても、この1回で「届いた」になる */}
+        {b.done ? (
+          <span style={{flexShrink:0,textAlign:'center',padding:'5px 10px',borderRadius:99,fontSize:12,fontWeight:800,background:'#dcfce7',color:'#15803d',whiteSpace:'nowrap'}}>✓ 届いた</span>
+        ) : selMode ? (
+          <span style={{flexShrink:0,minWidth:36,textAlign:'center',padding:'3px 8px',borderRadius:99,fontSize:12,fontWeight:800,background:'#eef2ff',color:'#4338ca'}}>{b.arrived + '/' + b.members.length}</span>
+        ) : (
+          <button onClick={e => { e.stopPropagation(); onQuick(b); }} aria-label="届いたにする"
+            style={{flexShrink:0,minHeight:48,padding:'4px 10px',borderRadius:12,border:'2px solid #4338ca',background:'#fff',cursor:'pointer',
+              display:'flex',alignItems:'center',gap:7,touchAction:'manipulation',WebkitTapHighlightColor:'transparent'}}>
+            <span style={{width:22,height:22,borderRadius:6,border:'2px solid #4338ca',background:'#fff',flexShrink:0}}/>
+            <span style={{textAlign:'left',lineHeight:'15px'}}>
+              <span style={{display:'block',fontSize:13,fontWeight:800,color:'#4338ca',whiteSpace:'nowrap'}}>{pend.length > 1 ? '全部届いた' : '届いた'}</span>
+              {b.members.length > 1 && <span style={{display:'block',fontSize:10,fontWeight:700,color:'#6b7280',whiteSpace:'nowrap'}}>{b.arrived}/{b.members.length}点 済み</span>}
+            </span>
+          </button>
+        )}
         {!selMode && (
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
             style={{flexShrink:0,transform: expanded ? 'rotate(90deg)' : 'none',transition:'transform 0.15s'}}><path d="M4 1.5L8.5 6L4 10.5"/></svg>
@@ -6805,8 +6819,11 @@ const ArrivalBoxRow = React.memo(({ b, open, selMode, selected, onToggle, onSele
                       {i.mgmtNo ? i.mgmtNo + '　' : ''}¥{(Number(i.purchasePrice) || 0).toLocaleString()}{auto ? (i.status === 'sold' ? '　売却済' : '　出品中') : i.arrivedAt ? '　届いた' : ''}
                     </span>
                   </span>
-                  <span style={{width:32,height:32,borderRadius:9,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:800,
-                    border: ok ? 'none' : '2px solid #9ca3af',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
+                  <span style={{flexShrink:0,width:58,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
+                    <span style={{width:34,height:34,borderRadius:9,display:'flex',alignItems:'center',justifyContent:'center',fontSize:21,fontWeight:800,
+                      border: ok ? 'none' : '2.5px solid #4338ca',background: ok ? '#16a34a' : '#fff',color:'#fff'}}>{ok ? '✓' : ''}</span>
+                    <span style={{fontSize:10,fontWeight:800,lineHeight:'12px',color: ok ? '#15803d' : '#4338ca',whiteSpace:'nowrap'}}>{ok ? '届いた' : '届いたら✓'}</span>
+                  </span>
                 </button>
               </div>
             );
@@ -6883,6 +6900,13 @@ const ArrivalTab = () => {
       return i.arrivedAt ? { ...i, arrivedAt: null } : i;
     }) });
   }, [setData]);
+  // 箱の行の「届いた」ボタン：まだの物を全部「届いた」にする。押し間違えてもすぐ戻せるよう、元に戻すを出す
+  const quickArrive = React.useCallback((b) => {
+    const ids = b.members.filter(i => !isItemArrived(i)).map(i => i.id);
+    if (!ids.length) return;
+    setItemsArrived(ids, true);
+    toast(`✅ ${b.store || '箱'}（${ids.length}点）を「届いた」にしました`, { duration: 8000, action: { label: '元に戻す', onClick: () => { setItemsArrived(ids, false); toast('↩️ 未着に戻しました'); } } });
+  }, [setItemsArrived, toast]);
   // 選択モード
   const selectable = shown.filter(b => !b.done);
   const exitSel = () => { setSelMode(false); setSel(new Set()); setBeforeDate(''); };
@@ -6945,7 +6969,7 @@ const ArrivalTab = () => {
     }
     const open = expKey === b.key || (singleAuto && autoOff !== b.key);
     rows.push(<ArrivalBoxRow key={b.key} b={b} open={open} selMode={selMode} selected={sel.has(b.key)}
-      onToggle={toggleOpen} onSelect={toggleSel} onArrive={setItemsArrived} onSheet={setSheet} />);
+      onToggle={toggleOpen} onSelect={toggleSel} onArrive={setItemsArrived} onQuick={quickArrive} onSheet={setSheet} />);
   });
   const segOpts = [['pending', '未着', counts.p], ['done', '届いた', counts.d], ['all', 'すべて', counts.a]];
 
@@ -7001,6 +7025,12 @@ const ArrivalTab = () => {
           <div className="card" style={{padding:10,margin:'6px 0 8px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <span style={{fontSize:13,fontWeight:700,color:'#374151'}}>この日より前を全部選択</span>
             <input type="date" value={beforeDate} onChange={e => selectBefore(e.target.value)} className="input-field" style={{flex:1,minWidth:140,minHeight:40}}/>
+          </div>
+        )}
+        {!selMode && seg === 'pending' && shown.length > 0 && (
+          <div style={{display:'flex',alignItems:'center',gap:8,margin:'6px 0 2px',padding:'8px 12px',borderRadius:10,background:'#eef2ff',color:'#3730a3',fontSize:13,fontWeight:700,lineHeight:1.4}}>
+            <span style={{width:18,height:18,borderRadius:5,border:'2px solid #4338ca',background:'#fff',flexShrink:0}}/>
+            <span>荷物が届いたら「届いた」を押す</span>
           </div>
         )}
         {shown.length === 0 ? (
