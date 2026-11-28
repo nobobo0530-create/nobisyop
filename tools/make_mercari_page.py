@@ -34,9 +34,14 @@ items = []
 for mid, v in d['items'].items():
     t = re.sub(r'\s+', ' ', v.get('title') or '').strip()
     m = (v.get('mgmt') or '').strip()
-    items.append({'i': mid, 't': t, 'p': int(v.get('price') or 0), 'm': m, 'f': 1 if (FUR.search(t) and not NOT_FUR.search(t)) else 0, 'o': 1 if mid in ONLY else 0})
+    # 毛皮かどうか：メルカリのカテゴリ「毛皮・ファーコート」で出している物（2026-11-28 ユーザー指定）。カテゴリを読んでいない古いデータだけ、題名の言葉で決める
+    isfur = bool(v['fur']) if 'fur' in v else bool(FUR.search(t) and not NOT_FUR.search(t))
+    it = {'i': mid, 't': t, 'p': int(v.get('price') or 0), 'm': m, 'f': 1 if isfur else 0, 'o': 1 if mid in ONLY else 0}
+    if 'ord' in v: it['k'] = int(v['ord'])   # メルカリの「新しい順」での位置（0がいちばん新しい出品）
+    items.append(it)
 items.sort(key=lambda x: (x['m'] or '￿', x['t']))
-data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items, 'r': ritems}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
+HAS_ORD = all('k' in x for x in items)
+data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items, 'r': ritems, 'ord': 1 if HAS_ORD else 0}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
 
 HTML = r'''<!doctype html>
 <html lang="ja">
@@ -58,6 +63,8 @@ h1{font-size:20px;margin:0}
 .chips{display:flex;gap:8px;margin-bottom:8px}
 .chip{flex:1;min-height:40px;border-radius:10px;border:1.5px solid var(--line);background:var(--chip);color:var(--ink);font-size:14px;font-weight:700}
 .chip.on{background:var(--chipOn);color:var(--chipOnInk);border-color:var(--chipOn)}
+.chip.sort{font-size:12.5px;min-height:36px}
+.no{display:inline-block;min-width:1.6em;margin-right:6px;font-size:12px;font-weight:800;color:var(--sub);font-variant-numeric:tabular-nums}
 #q{width:100%;min-height:42px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);font-size:16px;padding:6px 12px}
 main{padding:8px 16px calc(40px + env(safe-area-inset-bottom));max-width:720px;margin:0 auto}
 h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-content:space-between}
@@ -87,6 +94,11 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     <button class="chip" data-f="other">毛皮以外</button>
     <button class="chip" data-f="all">すべて</button>
   </div>
+  <div class="chips" id="sortRow" style="display:none">
+    <button class="chip sort" data-s="old">出品が古い順</button>
+    <button class="chip sort" data-s="new">出品が新しい順</button>
+    <button class="chip sort" data-s="mgmt">仕入れ月ごと</button>
+  </div>
   <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button><button class="chip" id="ronly" style="display:none">ラクマだけの物</button></div>
   <input id="q" type="search" placeholder="タイトル・管理番号でしぼる" autocomplete="off">
 </header>
@@ -97,6 +109,9 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
 (function(){
   var D = JSON.parse(document.getElementById('data').textContent);
   var mode = 'fur', q = '', only = false;
+  // 並び：出品が古い順（既定）／新しい順／仕入れ月ごと。選んだ並びはこの端末に覚えておく
+  var sortMode = D.ord ? 'old' : 'mgmt';
+  try { var sv = localStorage.getItem('mercari-sort'); if (D.ord && (sv === 'old' || sv === 'new' || sv === 'mgmt')) sortMode = sv; } catch (e) {}
   var onlyBtn = document.getElementById('only'), onlyN = D.items.filter(function(x){ return x.o; }).length;
   var rak = false, rBtn = document.getElementById('ronly'), RL = D.r || [];
   function sync(){ onlyBtn.className = 'chip' + (only && !rak ? ' on' : ''); rBtn.className = 'chip' + (rak ? ' on' : ''); document.getElementById('ttl').textContent = rak ? 'ラクマだけの物' : 'メルカリ販売中'; render(); window.scrollTo(0, 0); }
@@ -105,7 +120,8 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   onlyBtn.addEventListener('click', function(){ only = rak ? true : !only; rak = false; sync(); });
   if (RL.length) { rBtn.style.display = ''; rBtn.addEventListener('click', function(){ rak = !rak; sync(); }); }
   var list = document.getElementById('list'), toastEl = document.getElementById('toast'), tm;
-  document.getElementById('note').textContent = D.at + ' 時点 ／ 管理番号が古い順（仕入れ月ごと）';
+  function noteText(){ document.getElementById('note').textContent = D.at + ' 時点 ／ ' + (rak || sortMode === 'mgmt' ? '管理番号が古い順（仕入れ月ごと）' : sortMode === 'old' ? '出品が古い順（メルカリの並びから）' : '出品が新しい順（メルカリの並びから）') + ' ／ 毛皮＝カテゴリが毛皮・ファーコート'; }
+  noteText();
   function toast(s){ toastEl.textContent = s; toastEl.className = 'on'; clearTimeout(tm); tm = setTimeout(function(){ toastEl.className = ''; }, 1800); }
   function copy(text){
     function fb(){ var ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0;width:1px;height:1px'; document.body.appendChild(ta); ta.focus(); ta.select(); var ok = false; try { ok = document.execCommand('copy'); } catch(e){} document.body.removeChild(ta); return ok; }
@@ -123,20 +139,25 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
       if (kw && (x.t + ' ' + x.m).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
+    var byOrd = !rak && D.ord && sortMode !== 'mgmt';
+    if (byOrd) rows = rows.slice().sort(function(a, b){ return sortMode === 'old' ? b.k - a.k : a.k - b.k; });
+    noteText();
     document.getElementById('cnt').textContent = rows.length + '点';
     list.textContent = '';
     if (!rows.length) { list.appendChild(el('div', 'empty', '当てはまる出品がありません')); return; }
     var groups = [], cur = null;
-    rows.forEach(function(x){ var g = month(x.m); if (!cur || cur.name !== g) { cur = { name: g, rows: [] }; groups.push(cur); } cur.rows.push(x); });
+    if (byOrd) groups.push({ name: '', rows: rows });
+    else rows.forEach(function(x){ var g = month(x.m); if (!cur || cur.name !== g) { cur = { name: g, rows: [] }; groups.push(cur); } cur.rows.push(x); });
+    var seq = 0;
     var frag = document.createDocumentFragment();
     groups.forEach(function(g){
-      var h = el('h2'); h.appendChild(el('span', null, g.name)); h.appendChild(el('span', null, g.rows.length + '点')); frag.appendChild(h);
+      if (g.name) { var h = el('h2'); h.appendChild(el('span', null, g.name)); h.appendChild(el('span', null, g.rows.length + '点')); frag.appendChild(h); }
       g.rows.forEach(function(x){
         var card = el('div', 'card');
         var a = el('a', 'ph'); a.href = rak ? 'https://item.fril.jp/' + x.h : 'https://jp.mercari.com/item/' + x.i; a.target = '_blank'; a.rel = 'noopener noreferrer';
         var img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = rak ? x.u : 'https://static.mercdn.net/thumb/item/webp/' + x.i + '_1.jpg'; a.appendChild(img); card.appendChild(a);
         var body = el('div', 'body');
-        body.appendChild(el('div', 't', x.t));
+        var tt = el('div', 't'); if (byOrd) { seq++; tt.appendChild(el('span', 'no', seq + '.')); } tt.appendChild(document.createTextNode(x.t)); body.appendChild(tt);
         var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); if (rak) meta.appendChild(el('span', 'tag', 'メルカリに無い')); else if (x.o) meta.appendChild(el('span', 'tag', 'ラクマに無い')); body.appendChild(meta);
         var btns = el('div', 'btns');
         var b1 = el('button', 'btn', '📋 タイトルコピー'); b1.addEventListener('click', function(){ copy(x.t).then(function(ok){ toast(ok ? '📋 コピーしました' : 'コピーできませんでした'); }); });
@@ -147,9 +168,13 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     });
     list.appendChild(frag);
   }
-  Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(c){
-    c.addEventListener('click', function(){ mode = c.getAttribute('data-f'); Array.prototype.forEach.call(document.querySelectorAll('.chip'), function(o){ o.className = 'chip' + (o === c ? ' on' : ''); }); render(); window.scrollTo(0, 0); });
+  Array.prototype.forEach.call(document.querySelectorAll('.chip[data-f]'), function(c){
+    c.addEventListener('click', function(){ mode = c.getAttribute('data-f'); Array.prototype.forEach.call(document.querySelectorAll('.chip[data-f]'), function(o){ o.className = 'chip' + (o === c ? ' on' : ''); }); render(); window.scrollTo(0, 0); });
   });
+  var sortBtns = document.querySelectorAll('.chip.sort');
+  function syncSort(){ Array.prototype.forEach.call(sortBtns, function(o){ o.className = 'chip sort' + (o.getAttribute('data-s') === sortMode ? ' on' : ''); }); }
+  if (D.ord) { document.getElementById('sortRow').style.display = ''; syncSort();
+    Array.prototype.forEach.call(sortBtns, function(c){ c.addEventListener('click', function(){ sortMode = c.getAttribute('data-s'); try { localStorage.setItem('mercari-sort', sortMode); } catch (e) {} syncSort(); render(); window.scrollTo(0, 0); }); }); }
   document.getElementById('q').addEventListener('input', function(e){ q = e.target.value; render(); });
   render();
 })();
