@@ -113,9 +113,9 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     <button class="chip" data-f="all">すべて</button>
   </div>
   <div class="chips" id="sortRow" style="display:none">
+    <button class="chip sort" data-s="mgmt">管理番号が古い順</button>
     <button class="chip sort" data-s="old">出品が古い順</button>
     <button class="chip sort" data-s="new">出品が新しい順</button>
-    <button class="chip sort" data-s="mgmt">仕入れ月ごと</button>
   </div>
   <div class="chips" id="newRow" style="display:none"><button class="chip" id="newOnly"></button></div>
   <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button><button class="chip" id="ronly" style="display:none">ラクマだけの物</button></div>
@@ -133,7 +133,8 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   var newOnly = false, newBtn = document.getElementById('newOnly'), newN = D.items.filter(function(x){ return x.n; }).length;
   if (newN) { document.getElementById('newRow').style.display = ''; newBtn.textContent = '✅ ' + D.base + ' より後に追加した物だけ（' + newN + '点）';
     newBtn.addEventListener('click', function(){ newOnly = !newOnly; newBtn.className = 'chip' + (newOnly ? ' on' : ''); render(); window.scrollTo(0, 0); }); }
-  try { var sv = localStorage.getItem('mercari-sort'); if (D.ord && (sv === 'old' || sv === 'new' || sv === 'mgmt')) sortMode = sv; } catch (e) {}
+  // 開くたびに必ず「管理番号が古い順」から始める（2026-11-28：前に選んだ並びを覚えていると、ラックの順と違う並びで開いてしまう）
+  try { localStorage.removeItem('mercari-sort'); } catch (e) {}
   var onlyBtn = document.getElementById('only'), onlyN = D.items.filter(function(x){ return x.o; }).length;
   var rak = false, rBtn = document.getElementById('ronly'), RL = D.r || [];
   function sync(){ onlyBtn.className = 'chip' + (only && !rak ? ' on' : ''); rBtn.className = 'chip' + (rak ? ' on' : ''); document.getElementById('ttl').textContent = rak ? 'ラクマだけの物' : 'メルカリ販売中'; render(); window.scrollTo(0, 0); }
@@ -198,7 +199,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   var sortBtns = document.querySelectorAll('.chip.sort');
   function syncSort(){ Array.prototype.forEach.call(sortBtns, function(o){ o.className = 'chip sort' + (o.getAttribute('data-s') === sortMode ? ' on' : ''); }); }
   if (D.ord) { document.getElementById('sortRow').style.display = ''; syncSort();
-    Array.prototype.forEach.call(sortBtns, function(c){ c.addEventListener('click', function(){ sortMode = c.getAttribute('data-s'); try { localStorage.setItem('mercari-sort', sortMode); } catch (e) {} syncSort(); render(); window.scrollTo(0, 0); }); }); }
+    Array.prototype.forEach.call(sortBtns, function(c){ c.addEventListener('click', function(){ sortMode = c.getAttribute('data-s'); syncSort(); render(); window.scrollTo(0, 0); }); }); }
   document.getElementById('q').addEventListener('input', function(e){ q = e.target.value; render(); });
   render();
 })();
