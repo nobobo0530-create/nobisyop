@@ -30,6 +30,13 @@ for h in only.get('rakumaOnly') or []:
     isfur = bool(FUR.search(t) and not NOT_FUR.search(t)) and 'FOXEY' not in t
     ritems.append({'h': h, 't': t, 'p': int(v.get('price') or 0), 'm': (v.get('mgmtNo') or '').strip(), 'f': 1 if isfur else 0, 'u': v.get('imageUrl') or ''})
 ritems.sort(key=lambda x: (x['m'] if re.match(r'^2[4-9](0[1-9]|1[0-2])\d{2}', x['m']) else '\uffff', x['t']))
+# 毛皮タブに初めて出た日の記録。base（ユーザーがラックを並べた時の版）より後に出た物に、ページで「✅ 追加」を付ける
+#   2026-11-28 ユーザー：「前回から追加したものには分かりやすくチェックマークつけて。前の順番でラックにかけてたから、わかんないとその商品が抜けちゃう」
+#   ラックを並べ直したと聞いたら、base をその日の版の日付に進める
+HIST_SRC = os.path.join(os.path.dirname(SRC), 'mercari_fur_history.json')
+hist = json.load(open(HIST_SRC)) if os.path.exists(HIST_SRC) else {'base': '', 'first': {}}
+scan_day = (d.get('scannedAt') or '')[:10]
+hist_changed = False
 items = []
 for mid, v in d['items'].items():
     t = re.sub(r'\s+', ' ', v.get('title') or '').strip()
@@ -38,10 +45,19 @@ for mid, v in d['items'].items():
     isfur = bool(v['fur']) if 'fur' in v else bool(FUR.search(t) and not NOT_FUR.search(t))
     it = {'i': mid, 't': t, 'p': int(v.get('price') or 0), 'm': m, 'f': 1 if isfur else 0, 'o': 1 if mid in ONLY else 0}
     if 'ord' in v: it['k'] = int(v['ord'])   # メルカリの「新しい順」での位置（0がいちばん新しい出品）
+    if isfur:
+        if mid not in hist['first'] and scan_day:
+            hist['first'][mid] = scan_day; hist_changed = True
+        fs = hist['first'].get(mid) or ''
+        if hist.get('base') and fs > hist['base']:
+            it['n'] = str(int(fs[5:7])) + '/' + str(int(fs[8:10]))   # 例 '11/28'（この日の版から毛皮タブに出た）
     items.append(it)
 items.sort(key=lambda x: (x['m'] or '￿', x['t']))
+if hist_changed:
+    json.dump(hist, open(HIST_SRC, 'w'), ensure_ascii=False)
+BASE = hist.get('base') or ''
 HAS_ORD = all('k' in x for x in items)
-data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items, 'r': ritems, 'ord': 1 if HAS_ORD else 0}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
+data = json.dumps({'at': d.get('scannedAt') or '', 'onlyAt': only.get('at') or '', 'items': items, 'r': ritems, 'ord': 1 if HAS_ORD else 0, 'base': (str(int(BASE[5:7])) + '/' + str(int(BASE[8:10]))) if BASE else ''}, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
 
 HTML = r'''<!doctype html>
 <html lang="ja">
@@ -64,6 +80,8 @@ h1{font-size:20px;margin:0}
 .chip{flex:1;min-height:40px;border-radius:10px;border:1.5px solid var(--line);background:var(--chip);color:var(--ink);font-size:14px;font-weight:700}
 .chip.on{background:var(--chipOn);color:var(--chipOnInk);border-color:var(--chipOn)}
 .chip.sort{font-size:12.5px;min-height:36px}
+.new{display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:800;color:#fff;background:#16a34a;border-radius:8px;padding:3px 9px;margin:0 0 6px}
+.card.isnew{border:2px solid #16a34a;background:linear-gradient(0deg,rgba(22,163,74,.07),rgba(22,163,74,.07)),var(--card)}
 .no{display:inline-block;min-width:1.6em;margin-right:6px;font-size:12px;font-weight:800;color:var(--sub);font-variant-numeric:tabular-nums}
 #q{width:100%;min-height:42px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);font-size:16px;padding:6px 12px}
 main{padding:8px 16px calc(40px + env(safe-area-inset-bottom));max-width:720px;margin:0 auto}
@@ -99,6 +117,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     <button class="chip sort" data-s="new">出品が新しい順</button>
     <button class="chip sort" data-s="mgmt">仕入れ月ごと</button>
   </div>
+  <div class="chips" id="newRow" style="display:none"><button class="chip" id="newOnly"></button></div>
   <div class="chips" id="onlyRow" style="display:none"><button class="chip" id="only">ラクマに無い物だけ</button><button class="chip" id="ronly" style="display:none">ラクマだけの物</button></div>
   <input id="q" type="search" placeholder="タイトル・管理番号でしぼる" autocomplete="off">
 </header>
@@ -110,7 +129,10 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
   var D = JSON.parse(document.getElementById('data').textContent);
   var mode = 'fur', q = '', only = false;
   // 並び：出品が古い順（既定）／新しい順／仕入れ月ごと。選んだ並びはこの端末に覚えておく
-  var sortMode = D.ord ? 'old' : 'mgmt';
+  var sortMode = 'mgmt';   // 既定は前と同じ「管理番号が古い順」（ユーザーがこの順でラックに掛けている）
+  var newOnly = false, newBtn = document.getElementById('newOnly'), newN = D.items.filter(function(x){ return x.n; }).length;
+  if (newN) { document.getElementById('newRow').style.display = ''; newBtn.textContent = '✅ ' + D.base + ' より後に追加した物だけ（' + newN + '点）';
+    newBtn.addEventListener('click', function(){ newOnly = !newOnly; newBtn.className = 'chip' + (newOnly ? ' on' : ''); render(); window.scrollTo(0, 0); }); }
   try { var sv = localStorage.getItem('mercari-sort'); if (D.ord && (sv === 'old' || sv === 'new' || sv === 'mgmt')) sortMode = sv; } catch (e) {}
   var onlyBtn = document.getElementById('only'), onlyN = D.items.filter(function(x){ return x.o; }).length;
   var rak = false, rBtn = document.getElementById('ronly'), RL = D.r || [];
@@ -136,6 +158,7 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
       if (mode === 'fur' && !x.f) return false;
       if (mode === 'other' && x.f) return false;
       if (!rak && only && !x.o) return false;
+      if (!rak && newOnly && !x.n) return false;
       if (kw && (x.t + ' ' + x.m).toLowerCase().indexOf(kw) < 0) return false;
       return true;
     });
@@ -153,10 +176,11 @@ h2{font-size:14px;margin:18px 0 8px;color:var(--sub);display:flex;justify-conten
     groups.forEach(function(g){
       if (g.name) { var h = el('h2'); h.appendChild(el('span', null, g.name)); h.appendChild(el('span', null, g.rows.length + '点')); frag.appendChild(h); }
       g.rows.forEach(function(x){
-        var card = el('div', 'card');
+        var card = el('div', 'card' + (!rak && x.n ? ' isnew' : ''));
         var a = el('a', 'ph'); a.href = rak ? 'https://item.fril.jp/' + x.h : 'https://jp.mercari.com/item/' + x.i; a.target = '_blank'; a.rel = 'noopener noreferrer';
         var img = document.createElement('img'); img.loading = 'lazy'; img.alt = ''; img.src = rak ? x.u : 'https://static.mercdn.net/thumb/item/webp/' + x.i + '_1.jpg'; a.appendChild(img); card.appendChild(a);
         var body = el('div', 'body');
+        if (!rak && x.n) body.appendChild(el('div', 'new', '✅ 追加（' + x.n + ' の一覧から）'));
         var tt = el('div', 't'); if (byOrd) { seq++; tt.appendChild(el('span', 'no', seq + '.')); } tt.appendChild(document.createTextNode(x.t)); body.appendChild(tt);
         var meta = el('div', 'meta'); var pr = el('b', null, '¥' + x.p.toLocaleString()); meta.appendChild(pr); meta.appendChild(el('span', null, x.m ? '管理番号 ' + x.m : '管理番号なし')); if (rak) meta.appendChild(el('span', 'tag', 'メルカリに無い')); else if (x.o) meta.appendChild(el('span', 'tag', 'ラクマに無い')); body.appendChild(meta);
         var btns = el('div', 'btns');
